@@ -15,7 +15,9 @@ Pianifica i tuoi percorsi ciclistici con l'aiuto dell'AI. Inserisci distanza, ti
 
 ## Requisiti
 
-- **Docker Desktop** — [scarica qui](https://www.docker.com/products/docker-desktop/)
+- **Docker Desktop**
+  - Mac: [scarica qui](https://www.docker.com/products/docker-desktop/)
+  - Windows: [scarica qui](https://www.docker.com/products/docker-desktop/) — richiede **WSL2** (Windows Subsystem for Linux 2). Se non è già installato, esegui prima `wsl --install` in PowerShell come amministratore e riavvia il PC.
 - Una chiave API di uno di questi provider AI:
   - [Anthropic Claude](https://console.anthropic.com) (consigliato)
   - [OpenAI](https://platform.openai.com)
