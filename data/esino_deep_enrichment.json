@@ -1,0 +1,9 @@
+{
+  "partial": true,
+  "samples_total": 12,
+  "samples_resolved": 0,
+  "failure_rate": 1.0,
+  "unresolved_percent": 100.0,
+  "elapsed_s": 136.6,
+  "reason": "Troppi campioni non risolti (100% > 35%). I dati OSM non sono affidabili — mantenere i placeholder."
+}

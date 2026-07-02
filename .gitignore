@@ -1,0 +1,40 @@
+# Secrets
+.env
+
+# Python
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+
+# BRouter tiles (large binary files, auto-downloaded at runtime)
+brouter/segments4/*.rd5
+
+# BRouter source (embedded git repo, not needed for deployment)
+brouter/brouter-src/
+
+# Database
+data/*.sqlite
+data/*.db
+
+# User data (generated at runtime, not versioned)
+routes/generated/
+routes/planned/
+config/user_memory.yaml
+
+# GPX files
+*.gpx
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp

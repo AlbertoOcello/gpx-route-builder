@@ -1,0 +1,48 @@
+{
+  "gpx_path": "data/test_C2_traversal.gpx",
+  "analysis": {
+    "distance_km": 27.82,
+    "elevation_gain_m": 34.4,
+    "elevation_loss_m": 34.6,
+    "loop_closed": true,
+    "endpoint_match_m": null,
+    "violations": [],
+    "closure_distance_m": 0.0
+  },
+  "enrichment": {
+    "partial": false,
+    "samples_total": 28,
+    "samples_resolved": 28,
+    "failure_rate": 0.0,
+    "unresolved_percent": 0.0,
+    "elapsed_s": 97.6,
+    "asphalt_percent": 92.9,
+    "gravel_percent": 7.1,
+    "cobblestone_percent": 0.0,
+    "main_road_percent": 3.6,
+    "secondary_percent": 0.0,
+    "trail_percent": 7.1,
+    "trail_count": 2,
+    "cobblestone_detected": false,
+    "ss16_detected": true,
+    "inferred_percent": 7.1,
+    "near_natural_percent": 89.3,
+    "near_natural_count": 25
+  },
+  "trail_nodes": [
+    [
+      43.6489932,
+      13.3477728
+    ],
+    [
+      43.6441717,
+      13.3457575
+    ],
+    [
+      43.6430466,
+      13.3514449
+    ]
+  ],
+  "baseline_trail_pct": 8.3,
+  "delta_pp": -1.2
+}

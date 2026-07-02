@@ -1,0 +1,149 @@
+{
+  "request": {
+    "start": {
+      "name": "Senigallia",
+      "lat": 43.713652,
+      "lon": 13.2278056
+    },
+    "target_km": 60,
+    "distance_tolerance_km": 5,
+    "route_type": "loop",
+    "waypoints_stages": [],
+    "preferred_direction": [
+      "colline",
+      "borghi"
+    ],
+    "desired_places": [],
+    "avoid_places": [
+      "SS16"
+    ],
+    "max_elevation_gain_m": 700,
+    "candidate_count": 3
+  },
+  "scored": [
+    {
+      "id": "A",
+      "strategy_name": "Colline del Misa — Trekking",
+      "component_scores": {
+        "distance_match": {
+          "score": 0.0,
+          "placeholder": false
+        },
+        "elevation": {
+          "score": 100.0,
+          "placeholder": false
+        },
+        "traffic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "surface": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "scenic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "user_preferences": {
+          "score": 70.0,
+          "placeholder": true
+        }
+      },
+      "total_score": 64.0,
+      "discarded": true,
+      "discard_reason": "Distanza 41.6 km fuori tolleranza (18.4 km > 2× 5 km = 10 km)"
+    },
+    {
+      "id": "B",
+      "strategy_name": "Valle Cesano — Gravel",
+      "component_scores": {
+        "distance_match": {
+          "score": 71.8,
+          "placeholder": false
+        },
+        "elevation": {
+          "score": 22.3,
+          "placeholder": false
+        },
+        "traffic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "surface": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "scenic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "user_preferences": {
+          "score": 70.0,
+          "placeholder": true
+        }
+      },
+      "total_score": 63.11,
+      "discarded": false,
+      "discard_reason": null
+    },
+    {
+      "id": "C",
+      "strategy_name": "Borghi della Valcesano Nord — Fastbike",
+      "component_scores": {
+        "distance_match": {
+          "score": 100.0,
+          "placeholder": false
+        },
+        "elevation": {
+          "score": 100.0,
+          "placeholder": false
+        },
+        "traffic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "surface": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "scenic": {
+          "score": 70.0,
+          "placeholder": true
+        },
+        "user_preferences": {
+          "score": 70.0,
+          "placeholder": true
+        }
+      },
+      "total_score": 79.0,
+      "discarded": false,
+      "discard_reason": null
+    }
+  ],
+  "decision": {
+    "winner": "C",
+    "rationale": "Il candidato C 'Borghi della Valcesano Nord — Fastbike' è il vincitore netto con un total_score di 79.0, distanziando B di quasi 16 punti. I dati reali confermano la scelta: 58.68 km rientrano perfettamente nella tolleranza ±5 km (score distanza: 100/100) e il dislivello di 583 m è ben al di sotto del limite di 700 m (score dislivello: 100/100). Il candidato B, pur valido, presenta un dislivello di 1244 m che supera abbondantemente il massimo richiesto, penalizzandolo severamente (score elevazione: 22.3/100).",
+    "question_for_user": null,
+    "ranking": [
+      {
+        "id": "C",
+        "total_score": 79.0,
+        "rank": 1,
+        "note": "Distanza 58.68 km (±1.3 km dal target) e dislivello 583 m: entrambi i parametri reali perfetti. Vincitore."
+      },
+      {
+        "id": "B",
+        "total_score": 63.11,
+        "rank": 2,
+        "note": "Distanza 66.41 km accettabile (score 71.8), ma dislivello 1244 m supera di quasi il doppio il limite di 700 m (score 22.3). Secondo classificato."
+      },
+      {
+        "id": "A",
+        "total_score": 64.0,
+        "rank": 3,
+        "note": "Scartato — distanza 41.6 km fuori tolleranza (18.4 km oltre il doppio della tolleranza consentita di ±5 km)."
+      }
+    ]
+  }
+}

@@ -1,0 +1,126 @@
+{
+  "request": {
+    "start": {
+      "name": "Senigallia",
+      "lat": 43.713652,
+      "lon": 13.2278056
+    },
+    "target_km": 60,
+    "distance_tolerance_km": 5,
+    "route_type": "loop",
+    "waypoints_stages": [],
+    "preferred_direction": [
+      "colline",
+      "borghi"
+    ],
+    "desired_places": [],
+    "avoid_places": [
+      "SS16"
+    ],
+    "max_elevation_gain_m": 700,
+    "candidate_count": 3,
+    "avoid_surfaces": [
+      "cobblestone",
+      "mud"
+    ],
+    "preferred_gravel_percent": 10,
+    "max_gravel_percent": 20
+  },
+  "scored": [
+    {
+      "id": "A",
+      "total_score": 64.0,
+      "discarded": true,
+      "discard_reason": "Distanza 41.6 km fuori tolleranza (18.4 km > 2× 5 km = 10 km)",
+      "osm_source": "missing",
+      "component_scores": {
+        "distance_match": 0.0,
+        "elevation": 100.0,
+        "user_preferences": 70.0,
+        "surface": 70.0,
+        "traffic": 70.0,
+        "scenic": 70.0
+      }
+    },
+    {
+      "id": "B",
+      "total_score": 66.18,
+      "discarded": true,
+      "discard_reason": "Sterrato 25.0% supera max_gravel_percent=20% (UserMemory)",
+      "osm_source": "real",
+      "component_scores": {
+        "distance_match": 71.8,
+        "elevation": 22.3,
+        "user_preferences": 70.0,
+        "surface": 35.0,
+        "traffic": 99.3,
+        "scenic": 68.1
+      }
+    },
+    {
+      "id": "C",
+      "total_score": 89.14,
+      "discarded": false,
+      "discard_reason": null,
+      "osm_source": "real",
+      "component_scores": {
+        "distance_match": 100.0,
+        "elevation": 100.0,
+        "user_preferences": 70.0,
+        "surface": 93.2,
+        "traffic": 94.3,
+        "scenic": 40.0
+      }
+    }
+  ],
+  "decision": {
+    "winner": "C",
+    "rationale": "Il candidato C (Borghi della Valcesano Nord — Fastbike) è l'unico candidato valido e ottiene un punteggio eccellente di 89.14. I dati reali confermano una distanza di 58.68 km (perfettamente dentro la tolleranza ±5 km rispetto ai 60 richiesti) e un dislivello di 583 m, ben al di sotto del massimo consentito di 700 m. Il loop risulta correttamente chiuso.",
+    "question_for_user": null,
+    "options": [],
+    "ranking": [
+      {
+        "id": "C",
+        "total_score": 89.14,
+        "rank": 1,
+        "note": "Vincitore — 58.68 km, 583 m D+, loop chiuso, distanza e dislivello reali ottimali"
+      }
+    ]
+  },
+  "osm_enrichments": {
+    "B": {
+      "partial": false,
+      "samples_total": 65,
+      "samples_resolved": 60,
+      "failure_rate": 0.077,
+      "unresolved_percent": 7.7,
+      "elapsed_s": 211.8,
+      "asphalt_percent": 75.0,
+      "gravel_percent": 25.0,
+      "cobblestone_percent": 0.0,
+      "main_road_percent": 0.0,
+      "secondary_percent": 8.3,
+      "trail_percent": 11.7,
+      "trail_count": 7,
+      "cobblestone_detected": false,
+      "ss16_detected": false,
+      "inferred_percent": 28.3
+    },
+    "C": {
+      "partial": false,
+      "samples_total": 58,
+      "samples_resolved": 58,
+      "failure_rate": 0.0,
+      "unresolved_percent": 0.0,
+      "elapsed_s": 270.2,
+      "gravel_percent": 3.4,
+      "asphalt_percent": 94.8,
+      "cobblestone_percent": 1.7,
+      "main_road_percent": 0.0,
+      "secondary_percent": 65.5,
+      "cobblestone_detected": true,
+      "ss16_detected": false,
+      "inferred_percent": 25.9
+    }
+  }
+}

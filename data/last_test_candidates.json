@@ -1,0 +1,77 @@
+{
+  "saved_at": "2026-06-29T11:01:40.789563+00:00",
+  "request": {
+    "start": {
+      "name": "Senigallia",
+      "lat": 43.713652,
+      "lon": 13.2278056
+    },
+    "target_km": 60,
+    "distance_tolerance_km": 5,
+    "route_type": "loop",
+    "waypoints_stages": [],
+    "preferred_direction": [
+      "colline",
+      "borghi"
+    ],
+    "desired_places": [],
+    "avoid_places": [
+      "SS16"
+    ],
+    "max_elevation_gain_m": 700,
+    "candidate_count": 3
+  },
+  "candidates": [
+    {
+      "id": "A",
+      "strategy_name": "Colline del Misa — Trekking",
+      "profile": "trekking",
+      "route_type": "loop",
+      "gpx_path": "/Users/albertoocello/Projects-GPX-RB/routes/generated/20260629_130140/candidate_A.gpx",
+      "status": "ok",
+      "analysis": {
+        "distance_km": 41.61,
+        "elevation_gain_m": 410.4,
+        "elevation_loss_m": 410.6,
+        "loop_closed": true,
+        "endpoint_match_m": null,
+        "violations": [],
+        "closure_distance_m": 0.0
+      }
+    },
+    {
+      "id": "B",
+      "strategy_name": "Valle Cesano — Gravel",
+      "profile": "gravel",
+      "route_type": "loop",
+      "gpx_path": "/Users/albertoocello/Projects-GPX-RB/routes/generated/20260629_130140/candidate_B.gpx",
+      "status": "ok",
+      "analysis": {
+        "distance_km": 66.41,
+        "elevation_gain_m": 1244.2,
+        "elevation_loss_m": 1243.9,
+        "loop_closed": true,
+        "endpoint_match_m": null,
+        "violations": [],
+        "closure_distance_m": 0.0
+      }
+    },
+    {
+      "id": "C",
+      "strategy_name": "Borghi della Valcesano Nord — Fastbike",
+      "profile": "fastbike",
+      "route_type": "loop",
+      "gpx_path": "/Users/albertoocello/Projects-GPX-RB/routes/generated/20260629_130140/candidate_C.gpx",
+      "status": "ok",
+      "analysis": {
+        "distance_km": 58.68,
+        "elevation_gain_m": 583.4,
+        "elevation_loss_m": 583.6,
+        "loop_closed": true,
+        "endpoint_match_m": null,
+        "violations": [],
+        "closure_distance_m": 0.0
+      }
+    }
+  ]
+}

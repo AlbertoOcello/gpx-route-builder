@@ -1,0 +1,16 @@
+{
+  "partial": false,
+  "samples_total": 58,
+  "samples_resolved": 58,
+  "failure_rate": 0.0,
+  "unresolved_percent": 0.0,
+  "elapsed_s": 270.2,
+  "gravel_percent": 3.4,
+  "asphalt_percent": 94.8,
+  "cobblestone_percent": 1.7,
+  "main_road_percent": 0.0,
+  "secondary_percent": 65.5,
+  "cobblestone_detected": true,
+  "ss16_detected": false,
+  "inferred_percent": 25.9
+}

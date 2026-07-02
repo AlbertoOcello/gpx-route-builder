@@ -1,0 +1,140 @@
+{
+  "saved_at": "2026-06-29T11:01:40.413904+00:00",
+  "request": {
+    "start": {
+      "name": "Senigallia",
+      "lat": 43.713652,
+      "lon": 13.2278056
+    },
+    "target_km": 60,
+    "distance_tolerance_km": 5,
+    "route_type": "loop",
+    "waypoints_stages": [],
+    "preferred_direction": [
+      "colline",
+      "borghi"
+    ],
+    "desired_places": [],
+    "avoid_places": [
+      "SS16"
+    ],
+    "max_elevation_gain_m": 700,
+    "candidate_count": 3
+  },
+  "strategies": [
+    {
+      "name": "Colline del Misa — Trekking",
+      "route_type": "loop",
+      "profile": "trekking",
+      "requires_geocoding": false,
+      "estimated_km": 60.0,
+      "rationale": "Anello verso sud-ovest risalendo la valle del Misa fino a Corinaldo, poi piegando a nord-est verso Ripe prima di rientrare a Senigallia. Strade bianche e sentieri collinari, borghi medievali.",
+      "waypoints": [
+        {
+          "role": "start",
+          "name": "Senigallia",
+          "lat": 43.713652,
+          "lon": 13.2278056,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "Corinaldo",
+          "lat": 43.6488157,
+          "lon": 13.0476591,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "Ripe, Trecastelli",
+          "lat": 43.6604182,
+          "lon": 13.1196005,
+          "needs_geocoding": false
+        },
+        {
+          "role": "end",
+          "name": "Senigallia",
+          "lat": 43.6773749,
+          "lon": 13.2105712,
+          "needs_geocoding": false
+        }
+      ]
+    },
+    {
+      "name": "Valle Cesano — Gravel",
+      "route_type": "loop",
+      "profile": "gravel",
+      "requires_geocoding": false,
+      "estimated_km": 60.0,
+      "rationale": "Anello verso sud-est in direzione della valle del Cesano, toccando Mondavio con la sua rocca rinascimentale, poi risalendo verso nord-ovest attraverso San Giorgio di Pesaro prima di tornare verso la costa. Percorso su strade sterrate e carrarecce collinari.",
+      "waypoints": [
+        {
+          "role": "start",
+          "name": "Senigallia",
+          "lat": 43.713652,
+          "lon": 13.2278056,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "Mondavio",
+          "lat": 43.6742046,
+          "lon": 12.968771,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "San Giorgio di Pesaro",
+          "lat": 43.717362,
+          "lon": 12.978961,
+          "needs_geocoding": false
+        },
+        {
+          "role": "end",
+          "name": "Senigallia",
+          "lat": 43.6773749,
+          "lon": 13.2105712,
+          "needs_geocoding": false
+        }
+      ]
+    },
+    {
+      "name": "Borghi della Valcesano Nord — Fastbike",
+      "route_type": "loop",
+      "profile": "fastbike",
+      "requires_geocoding": false,
+      "estimated_km": 60.0,
+      "rationale": "Anello su strade asfaltate secondarie verso ovest fino a Ostra, poi deviazione a sud-est verso Barbara prima di rientrare lungo la valle del Nevola. Percorso veloce su asfalto rurale con dolci saliscendi collinari.",
+      "waypoints": [
+        {
+          "role": "start",
+          "name": "Senigallia",
+          "lat": 43.713652,
+          "lon": 13.2278056,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "Ostra",
+          "lat": 43.6037928,
+          "lon": 13.1507935,
+          "needs_geocoding": false
+        },
+        {
+          "role": "via",
+          "name": "Barbara, Ancona",
+          "lat": 43.5833434,
+          "lon": 13.0181782,
+          "needs_geocoding": false
+        },
+        {
+          "role": "end",
+          "name": "Senigallia",
+          "lat": 43.6773749,
+          "lon": 13.2105712,
+          "needs_geocoding": false
+        }
+      ]
+    }
+  ]
+}

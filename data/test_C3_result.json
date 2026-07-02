@@ -1,0 +1,64 @@
+{
+  "strategy_name": "Valle dell'Esino — Sentiero Fluviale via Chiaravalle",
+  "profile": "trekking",
+  "approach_found": true,
+  "approach_wp": "Chiaravalle",
+  "traversal_nodes": [
+    [
+      43.6489932,
+      13.3477728
+    ],
+    [
+      43.6441717,
+      13.3457575
+    ],
+    [
+      43.6430466,
+      13.3514449
+    ]
+  ],
+  "analysis": {
+    "distance_km": 38.45,
+    "elevation_gain_m": 160.9,
+    "elevation_loss_m": 161.2,
+    "loop_closed": true,
+    "endpoint_match_m": null,
+    "violations": [],
+    "closure_distance_m": 0.0
+  },
+  "enrichment": {
+    "partial": false,
+    "samples_total": 38,
+    "samples_resolved": 30,
+    "failure_rate": 0.211,
+    "unresolved_percent": 21.1,
+    "elapsed_s": 179.7,
+    "asphalt_percent": 96.7,
+    "gravel_percent": 3.3,
+    "cobblestone_percent": 0.0,
+    "main_road_percent": 0.0,
+    "secondary_percent": 16.7,
+    "trail_percent": 6.7,
+    "trail_count": 2,
+    "cobblestone_detected": false,
+    "ss16_detected": false,
+    "inferred_percent": 23.3,
+    "near_natural_percent": 34.2,
+    "near_natural_count": 13
+  },
+  "ss16_crossing_dist_m": 0.011110532820519816,
+  "comparison": {
+    "C2": {
+      "trail_pct": 7.1,
+      "ss16": true,
+      "near_natural": 89.3,
+      "dist_km": 27.8
+    },
+    "C3": {
+      "trail_pct": 6.7,
+      "ss16": false,
+      "near_natural": 34.2,
+      "dist_km": 38.45
+    }
+  }
+}

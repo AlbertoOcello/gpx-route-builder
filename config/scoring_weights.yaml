@@ -1,0 +1,15 @@
+# Pesi scoring (SRS §8.1) — somma = 1.0
+weights:
+  traffic:          0.30   # OSM real (main_road_percent + secondary_percent)
+  surface:          0.15   # OSM real (gravel vs UserMemory preferred/max)
+  distance_match:   0.15   # GPX real
+  elevation:        0.10   # GPX real
+  scenic:           0.10   # OSM proxy (trail_percent) — da raffinare con POI
+  naturalness:      0.15   # OSM real (trail + near_natural_percent + gravel)
+  user_preferences: 0.05   # placeholder (fase futura: POI + storico)
+  endpoint_match:   0.0    # attivo solo per route_type = point_to_point (Fase 11)
+
+# Penalità hard (SRS §8.2)
+hard_penalties:
+  loop_open_discard:       true   # loop_closed=false → scartato automaticamente
+  distance_factor_discard: 2.0   # |diff| > factor × tolerance_km → scartato
