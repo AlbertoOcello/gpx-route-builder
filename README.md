@@ -17,7 +17,21 @@ Pianifica i tuoi percorsi ciclistici con l'aiuto dell'AI. Inserisci distanza, ti
 
 - **Docker Desktop**
   - Mac: [scarica qui](https://www.docker.com/products/docker-desktop/)
-  - Windows: [scarica qui](https://www.docker.com/products/docker-desktop/) — richiede **WSL2** (Windows Subsystem for Linux 2). Se non è già installato, esegui prima `wsl --install` in PowerShell come amministratore e riavvia il PC.
+  - Windows: [scarica qui](https://www.docker.com/products/docker-desktop/)
+
+    > **Solo Windows — prima di installare Docker, installa WSL2:**
+    >
+    > WSL2 è un componente di Windows che Docker richiede per funzionare. Per installarlo:
+    >
+    > 1. Premi il tasto **Start**, digita `PowerShell`, poi fai clic destro sull'icona che appare e scegli **"Esegui come amministratore"**.
+    > 2. Se Windows ti chiede "Vuoi consentire a questa app di apportare modifiche?", clicca **Sì**.
+    > 3. Nella finestra nera che si apre, incolla questo comando e premi **Invio**:
+    >    ```
+    >    wsl --install
+    >    ```
+    > 4. Aspetta che finisca (ci vogliono un paio di minuti), poi **riavvia il PC**.
+    >
+    > Dopo il riavvio puoi installare Docker Desktop normalmente.
 - Una chiave API di uno di questi provider AI:
   - [Anthropic Claude](https://console.anthropic.com) (consigliato)
   - [OpenAI](https://platform.openai.com)
