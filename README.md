@@ -1,3 +1,5 @@
+🇮🇹 [Italiano](README.md) | 🇬🇧 [English](README_EN.md)
+
 # GPX Route Builder (by A. Ocello)
 
 Pianifica i tuoi percorsi ciclistici con l'aiuto dell'AI. Inserisci distanza, tipo di terreno e luoghi preferiti — il sistema genera tre percorsi GPX pronti da caricare su Garmin, Strava o Komoot.
