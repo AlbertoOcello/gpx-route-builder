@@ -306,13 +306,42 @@ with tab_planner:
 
     with col_form:
         st.markdown("**Partenza**")
+
+        # Inizializza i default UNA SOLA VOLTA (setdefault è no-op se già presenti).
+        # Separare init da rendering evita che value= nel number_input sovrascriva
+        # il session_state aggiornato dal geocoding a ogni rerun silenzioso.
+        st.session_state.setdefault("pl_slat", 43.7136520)
+        st.session_state.setdefault("pl_slon", 13.2278056)
+
         col_s1, col_s2, col_s3 = st.columns([2, 1, 1])
         with col_s1:
-            pl_start_name = st.text_input("Nome", value="Senigallia", key="pl_sname")
+            _nc, _bc = st.columns([3, 1])
+            with _nc:
+                pl_start_name = st.text_input("Nome", value="Senigallia", key="pl_sname")
+            with _bc:
+                st.write("")  # allinea verticalmente con il label dell'input
+                geo_btn = st.button(
+                    "📍", key="btn_geo_start",
+                    help="Geocodifica il nome → aggiorna lat/lon e mappa",
+                    use_container_width=True,
+                )
+            # Geocoding QUI: aggiorna session_state prima che col_s2/col_s3 leggano i valori.
+            if geo_btn:
+                _gname = (st.session_state.get("pl_sname") or "").strip()
+                if _gname:
+                    from geocoding_agent import geocode_place as _gp
+                    with st.spinner(f"Geocoding «{_gname}»…"):
+                        _gresult = _gp(_gname, region=None)
+                    if _gresult:
+                        st.session_state["pl_slat"] = _gresult[0]
+                        st.session_state["pl_slon"] = _gresult[1]
+                    else:
+                        st.warning(f"«{_gname}» non trovato — prova un nome più preciso o inserisci le coordinate manualmente")
+        # number_input senza value=: legge SOLO da session_state, mai da un default hardcoded.
         with col_s2:
-            pl_start_lat = st.number_input("Lat", value=43.7136520, format="%.7f", key="pl_slat")
+            pl_start_lat = st.number_input("Lat", format="%.7f", step=1e-7, key="pl_slat")
         with col_s3:
-            pl_start_lon = st.number_input("Lon", value=13.2278056, format="%.7f", key="pl_slon")
+            pl_start_lon = st.number_input("Lon", format="%.7f", step=1e-7, key="pl_slon")
 
         col_d1, col_d2 = st.columns(2)
         with col_d1:
@@ -375,7 +404,7 @@ with tab_planner:
             )
 
         pl_avoid_roads = st.text_input(
-            "Strade da evitare (virgola, es. SS16, SP7)", value="SS16", key="pl_avoid",
+            "Strade da evitare (virgola, es. SS16, SP7)", value="", key="pl_avoid",
         )
         pl_free_text = st.text_area(
             "Note libere (priorità assoluta)",
@@ -447,11 +476,8 @@ with tab_planner:
 
     # ── Esecuzione pianificazione ─────────────────────────────────────────────
     if plan_btn or regen_btn:
-        if plan_btn:
-            request_to_use = _pl_build_request()
-            st.session_state["pl_request"] = request_to_use
-        else:
-            request_to_use = st.session_state.get("pl_request") or _pl_build_request()
+        request_to_use = _pl_build_request()
+        st.session_state["pl_request"] = request_to_use
 
         with st.status("🗺️ Pianificazione in corso...", expanded=True) as _pl_status:
             try:
@@ -618,7 +644,16 @@ with tab_planner:
                 st.markdown("**USER PROMPT:**")
                 st.code(res["user_prompt"], language="text")
         else:
-            st.info("Compila il form e clicca **Pianifica waypoint** per vedere l'anteprima.")
+            cur_lat = st.session_state.get("pl_slat", 43.7136520)
+            cur_lon = st.session_state.get("pl_slon", 13.2278056)
+            m_init = folium.Map(location=[cur_lat, cur_lon], zoom_start=11, scrollWheelZoom=False)
+            folium.Marker(
+                [cur_lat, cur_lon],
+                popup=st.session_state.get("pl_sname", "Partenza"),
+                icon=folium.Icon(color="green", icon="play"),
+            ).add_to(m_init)
+            st_folium(m_init, width=None, height=460, key="pl_init_map", use_container_width=True)
+            st.caption("Punto di partenza corrente — compila il form e clicca **Pianifica waypoint**")
 
 
 # ─── Tab: Geolocalizza ────────────────────────────────────────────────────────
@@ -1089,7 +1124,12 @@ with tab_builder:
                     diff = dist - target_km_b
                     is_w = c["id"] == winner_id_b
                     indicator = "★" if is_w else ("✗" if s["discarded"] else "·")
-                    stato = f"SCARTATO — {s['discard_reason']}" if s["discarded"] else "valido"
+                    if s["discarded"]:
+                        stato = f"SCARTATO — {s['discard_reason']}"
+                    elif s.get("distance_warning"):
+                        stato = f"⚠ {s['distance_warning']}"
+                    else:
+                        stato = "valido"
                     rows_b.append({
                         "  ": indicator, "ID": c["id"], "Nome": c["strategy_name"],
                         "Profilo": c["profile"], "km reali": f"{dist:.1f}",
@@ -1138,18 +1178,19 @@ with tab_builder:
                             col_bm1.metric("Score", f"{s_b['total_score']:.1f}/100")
                             col_bm2.metric("Distanza", f"{c_b['analysis']['distance_km']:.1f} km")
                             col_bm3.metric("Dislivello", f"{c_b['analysis']['elevation_gain_m']:.0f} m")
+                            if s_b.get("distance_warning"):
+                                st.warning(f"⚠ {s_b['distance_warning']}")
                         m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
                         st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
-                        if not s_b["discarded"]:
-                            with open(c_b["gpx_path"], "rb") as f:
-                                gpx_bytes_b = f.read()
-                            st.download_button(
-                                label=f"⬇ Scarica GPX — {c_b['id']} {c_b['strategy_name']}",
-                                data=gpx_bytes_b,
-                                file_name=f"{bld_sel}_{c_b['id']}.gpx",
-                                mime="application/gpx+xml",
-                                key=f"bld_dl_{c_b['id']}",
-                            )
+                        with open(c_b["gpx_path"], "rb") as f:
+                            gpx_bytes_b = f.read()
+                        st.download_button(
+                            label=f"⬇ Scarica GPX — {c_b['id']} {c_b['strategy_name']}",
+                            data=gpx_bytes_b,
+                            file_name=f"{bld_sel}_{c_b['id']}.gpx",
+                            mime="application/gpx+xml",
+                            key=f"bld_dl_{c_b['id']}",
+                        )
 
                 # Decision Agent
                 st.divider()

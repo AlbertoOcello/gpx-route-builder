@@ -43,43 +43,56 @@ _SETTLEMENT_RANK_MAX = 25
 # geocode_place ritorna None se trovati solo POI → triggera il fallback regionale.
 
 
-def geocode_place(name: str, region: str = "Marche, Italia") -> tuple[float, float] | None:
+def geocode_place(
+    name: str,
+    region: str | None = "Marche, Italia",
+    country_codes: str = "it",
+    language: str = "it",
+) -> tuple[float, float] | None:
     """
     Ritorna (lat, lon) o None se il luogo non viene trovato come SETTLEMENT.
 
+    region=None  → ricerca Italia-wide (q=name, countrycodes=it): usare per il punto
+                   di partenza dove la regione è ignota.
+    region=str   → appende la regione alla query per disambiguare waypoint locali
+                   (comportamento storico per la pipeline Planner).
+
     Logica:
     1. Controlla la cache SQLite — ritorna immediatamente senza API call su hit.
-    2. Su cache miss: sleep 1s + Nominatim con limit=5.
+    2. Su cache miss: sleep 1s + Nominatim con countrycodes e language.
     3. Filtra i risultati a place_rank ≤ SETTLEMENT_RANK_MAX (≤25).
-       Scarta POI, banche, strade: evita che "BCC Corinaldo" batta "Corinaldo" comune.
-    4. Se nessun settlement trovato: ritorna None (il chiamante prova una regione più ampia).
+    4. Se nessun settlement trovato: ritorna None.
     5. Tra i settlement trovati, sceglie quello con place_rank minimo.
-    6. Salva in cache solo i risultati salvati.
-
-    Propaga eccezioni di rete/servizio (GeocoderTimedOut, ecc.) al chiamante.
+    6. Salva in cache.
     """
-    query = f"{name}, {region}"
+    query = name if region is None else f"{name}, {region}"
 
     with _get_conn() as conn:
-        # ① Cache check — PRIMA della chiamata API
+        # ① Cache check
         row = conn.execute(
             "SELECT lat, lon FROM geocoding_cache WHERE query = ?", (query,)
         ).fetchone()
         if row:
-            return float(row[0]), float(row[1])  # Cache hit: nessuna API call
+            return float(row[0]), float(row[1])
 
-        # ② Rate limit — 1 req/sec obbligatorio per Nominatim pubblico
+        # ② Rate limit
         time.sleep(1.0)
 
-        # ③ Chiamata API — limit=5 per poter filtrare tra più risultati
-        results = _GEOLOCATOR.geocode(query, exactly_one=False, limit=5) or []
+        # ③ Chiamata API — q=query, countrycodes e language per risultati corretti
+        results = _GEOLOCATOR.geocode(
+            query,
+            exactly_one=False,
+            limit=5,
+            country_codes=country_codes or None,
+            language=language or None,
+        ) or []
 
-        # ④ Filtra a soli settlement (place_rank ≤ 25) — scarta POI e strade
+        # ④ Filtra a soli settlement (place_rank ≤ 25)
         settlements = [r for r in results if int(r.raw.get("place_rank", 99)) <= _SETTLEMENT_RANK_MAX]
         if not settlements:
-            return None  # Nessun settlement trovato → il chiamante prova fallback
+            return None
 
-        # ⑤ Scegli il settlement geograficamente più rilevante (place_rank minimo)
+        # ⑤ Scegli il settlement con place_rank minimo (più rilevante geograficamente)
         location = min(settlements, key=lambda r: int(r.raw.get("place_rank", 99)))
 
         conn.execute(

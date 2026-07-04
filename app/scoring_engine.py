@@ -180,17 +180,17 @@ def score_candidate(
     # ── Penalità hard geometriche (SRS §8.2) ─────────────────────────────────
     discarded = False
     discard_reason: str | None = None
+    distance_warning: str | None = None
 
     diff_km = abs(distance_km - target_km)
     factor  = float(penalties.get("distance_factor_discard", 2.0))
     if diff_km > factor * tolerance_km:
-        discarded = True
-        discard_reason = (
-            f"Distanza {distance_km:.1f} km fuori tolleranza "
-            f"({diff_km:.1f} km > {factor:.0f}× {tolerance_km:.0f} km = {factor * tolerance_km:.0f} km)"
+        distance_warning = (
+            f"Supera il target di {diff_km:.1f} km "
+            f"(oltre {factor:.0f}× la tolleranza ±{tolerance_km:.0f} km)"
         )
 
-    if not discarded and penalties.get("loop_open_discard", True):
+    if penalties.get("loop_open_discard", True):
         if route_type in ("loop", "out_and_back") and loop_closed is False:
             discarded = True
             discard_reason = "Anello non chiuso (loop_closed=false)"
@@ -317,6 +317,7 @@ def score_candidate(
         "total_score":            round(total, 2),
         "discarded":              discarded,
         "discard_reason":         discard_reason,
+        "distance_warning":       distance_warning,
         "osm_unresolved_percent": osm_unresolved,
         "osm_source":             "real" if osm_ok else ("partial" if enrichment else "missing"),
     }
