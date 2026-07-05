@@ -2159,17 +2159,17 @@ with tab_ride:
                 st.error(f"{t('ride_analysis.gpx_error')}: {_e}")
 
         # Optional route link — reads narrative from a saved Planner route
-        _planned_routes = _load_planned_routes()
+        _saved_routes = _load_saved_routes()
         _route_narrative = None
-        if _planned_routes:
+        if _saved_routes:
             _route_link_none = t("ride_analysis.route_link_none")
             _route_sel = st.selectbox(
                 t("ride_analysis.route_link"),
-                options=[_route_link_none] + sorted(_planned_routes.keys()),
+                options=[_route_link_none] + sorted(_saved_routes.keys()),
                 key="ride_route_sel",
             )
             if _route_sel != _route_link_none:
-                _route_narrative = _planned_routes[_route_sel].get("route_narrative")
+                _route_narrative = _saved_routes[_route_sel].get("route_narrative")
 
         # Determine active profile (must be saved, not "new")
         _active_profile = None if _is_new_profile else (_existing or None)
