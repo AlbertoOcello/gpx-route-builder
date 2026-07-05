@@ -2028,21 +2028,35 @@ with tab_ride:
                     min_value=0, max_value=2000,
                     value=int(_existing.get("wh") or 500),
                 )
-                _assistance = st.slider(
-                    t("ride_analysis.bike_assistance"),
-                    1, 5,
-                    value=int(_existing.get("assistance_level") or 3),
-                    help=t("ride_analysis.bike_assistance_help"),
-                )
                 _battery_pct = st.number_input(
                     t("ride_analysis.bike_battery_pct"),
                     min_value=0, max_value=100,
                     value=int(_existing.get("battery_pct") or 100),
                 )
+                _min_battery_pct = st.number_input(
+                    t("ride_analysis.bike_min_battery"),
+                    min_value=0, max_value=80,
+                    value=int(_existing.get("min_battery_pct") or 0),
+                    help=t("ride_analysis.bike_min_battery_help"),
+                )
+                _style_codes = ["eco", "mixed", "comfort", "max"]
+                _style_labels = [t(f"ride_analysis.riding_style_{c}") for c in _style_codes]
+                _cur_style = _existing.get("riding_style") or "mixed"
+                _cur_style_idx = (
+                    _style_codes.index(_cur_style) if _cur_style in _style_codes else 1
+                )
+                _riding_style_label = st.selectbox(
+                    t("ride_analysis.riding_style"),
+                    _style_labels,
+                    index=_cur_style_idx,
+                    help=t("ride_analysis.riding_style_help"),
+                )
+                _riding_style = _style_codes[_style_labels.index(_riding_style_label)]
             else:
                 _wh = None
-                _assistance = None
                 _battery_pct = None
+                _min_battery_pct = None
+                _riding_style = None
 
             st.markdown(f"**{t('ride_analysis.driver_header')}**")
             _driver_weight = st.number_input(
@@ -2098,9 +2112,10 @@ with tab_ride:
                         bike_model=_bike_model or None,
                         bike_type=_bike_type,
                         wh=_wh,
-                        assistance_level=_assistance,
                         battery_pct=_battery_pct,
+                        min_battery_pct=_min_battery_pct,
                         bike_weight_kg=_bike_weight,
+                        riding_style=_riding_style,
                         driver_weight_kg=_driver_weight,
                         driver_age=_driver_age,
                         driver_sex=_driver_sex,
@@ -2175,9 +2190,10 @@ with tab_ride:
 
             # Battery row (ebike only)
             if _r_is_ebike:
-                _rb1, _rb2 = st.columns(2)
+                _rb1, _rb2, _rb3 = st.columns(3)
                 _batt_v = _r.get("battery_pct_consumed")
                 _rng_v = _r.get("range_remaining_km")
+                _assist_v = _r.get("estimated_assistance_level")
                 _rb1.metric(
                     t("ride_analysis.battery_consumed"),
                     f"{_batt_v:.0f}%" if _batt_v is not None else t("ride_analysis.ebike_na"),
@@ -2185,6 +2201,10 @@ with tab_ride:
                 _rb2.metric(
                     t("ride_analysis.range_remaining"),
                     f"{_rng_v:.0f} km" if _rng_v is not None else t("ride_analysis.ebike_na"),
+                )
+                _rb3.metric(
+                    t("ride_analysis.est_assist"),
+                    f"{_assist_v:.1f}/5" if _assist_v is not None else t("ride_analysis.ebike_na"),
                 )
 
             # Main metrics row

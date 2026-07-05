@@ -16,6 +16,20 @@ import gpxpy
 
 import ai_client
 
+# Descrizioni verbose per riding_style usate nel prompt AI
+_STYLE_DESC_IT = {
+    "eco":     "risparmio massimo batteria (usa assistenza minima, solo nei tratti più duri)",
+    "mixed":   "pedalata mista (alterna livelli bassi e medi, equilibrio sforzo/batteria)",
+    "comfort": "comfort totale (assistenza medio-alta per mantenere la frequenza cardiaca bassa)",
+    "max":     "massima assistenza (usa sempre il livello più alto disponibile)",
+}
+_STYLE_DESC_EN = {
+    "eco":     "maximum battery saving (minimal assistance, only on the hardest sections)",
+    "mixed":   "mixed riding (alternates low and medium levels, balances effort and battery)",
+    "comfort": "full comfort (medium-high assistance to keep heart rate low)",
+    "max":     "maximum assistance (always uses the highest available level)",
+}
+
 
 def analyze_gpx_bytes(file_bytes: bytes) -> dict:
     """Parse GPX bytes and return distance/elevation stats."""
@@ -46,12 +60,14 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
     """
     Call the AI with GPX stats + rider profile.
     Returns a dict with keys:
-      battery_pct_consumed, range_remaining_km (null if not ebike),
+      battery_pct_consumed, range_remaining_km, estimated_assistance_level
+        (all null if not ebike),
       calories_kcal, time_estimate_min, avg_hr_bpm (null if no fcmax),
       fatigue_index (1-10), advice (list[str]), disclaimer (str)
     """
     is_ebike = (profile.get("bike_type") or "").lower() == "ebike"
     lang_instr = "Rispondi in italiano." if lang == "it" else "Reply in English."
+    style_map = _STYLE_DESC_IT if lang == "it" else _STYLE_DESC_EN
 
     system = f"""Sei un esperto di ciclismo, biomeccanica e fisiologia dello sport.
 Analizza il giro ciclabile descritto e fornisci stime personalizzate realistiche.
@@ -61,6 +77,7 @@ Schema JSON da rispettare ESATTAMENTE (non aggiungere né rimuovere chiavi):
 {{
   "battery_pct_consumed": <float 0-100 oppure null se non ebike>,
   "range_remaining_km": <float oppure null se non ebike>,
+  "estimated_assistance_level": <float 1.0-5.0 stimato dall'AI oppure null se non ebike>,
   "calories_kcal": <integer>,
   "time_estimate_min": <integer>,
   "avg_hr_bpm": <integer oppure null se FC max non disponibile>,
@@ -68,6 +85,7 @@ Schema JSON da rispettare ESATTAMENTE (non aggiungere né rimuovere chiavi):
   "advice": [<string>, <string>, <string>],
   "disclaimer": "<testo disclaimer medico nella lingua richiesta>"
 }}
+Il campo estimated_assistance_level rappresenta il livello medio di assistenza (scala 1-5) che stimi questo ciclista utilizzerà su questo specifico percorso, tenendo conto dello stile dichiarato, della forma fisica, del dislivello e della distanza.
 Il disclaimer deve essere: "Questa analisi è puramente indicativa e non costituisce diagnosi medica. Consulta un medico per valutazioni sulla tua salute." in italiano oppure "This analysis is indicative only and does not constitute medical advice. Consult a doctor for health assessments." in inglese."""
 
     lines = [
@@ -88,10 +106,14 @@ Il disclaimer deve essere: "Questa analisi è puramente indicativa e non costitu
     if is_ebike:
         if profile.get("wh"):
             lines.append(f"- Capacità batteria: {profile['wh']} Wh")
-        if profile.get("assistance_level"):
-            lines.append(f"- Livello assistenza: {profile['assistance_level']}/5")
         if profile.get("battery_pct") is not None:
             lines.append(f"- Stato batteria iniziale: {profile['battery_pct']}%")
+        min_batt = profile.get("min_battery_pct") or 0
+        if min_batt > 0:
+            lines.append(f"- Autonomia minima desiderata a fine percorso: {min_batt}% (vincolo: la batteria non deve scendere sotto questo valore)")
+        style_code = profile.get("riding_style") or "mixed"
+        style_desc = style_map.get(style_code, style_map["mixed"])
+        lines.append(f"- Stile di utilizzo assistenza: {style_desc}")
     if profile.get("bike_weight_kg"):
         lines.append(f"- Peso bici: {profile['bike_weight_kg']} kg")
 
@@ -110,7 +132,11 @@ Il disclaimer deve essere: "Questa analisi è puramente indicativa e non costitu
         lines.append(f"- Note salute: {profile['driver_health_notes']}")
 
     if not is_ebike:
-        lines += ["", "Nota: NON è una ebike → battery_pct_consumed e range_remaining_km DEVONO essere null."]
+        lines += [
+            "",
+            "Nota: NON è una ebike → battery_pct_consumed, range_remaining_km e "
+            "estimated_assistance_level DEVONO essere null.",
+        ]
     if not profile.get("driver_fcmax"):
         lines += ["", "Nota: FC max non disponibile → avg_hr_bpm DEVE essere null."]
 
@@ -142,6 +168,7 @@ def render_html_report(
         l_rider = "Rider"
         l_battery = "Battery consumed (est.)"
         l_range = "Remaining range (est.)"
+        l_est_assist = "Est. assist. level"
         l_calories = "Calories burned"
         l_time = "Estimated time"
         l_hr = "Avg heart rate (est.)"
@@ -161,6 +188,7 @@ def render_html_report(
         l_rider = "Ciclista"
         l_battery = "Batteria consumata (stima)"
         l_range = "Autonomia residua (stima)"
+        l_est_assist = "Livello assist. stimato"
         l_calories = "Calorie consumate"
         l_time = "Tempo stimato"
         l_hr = "FC media stimata"
@@ -187,8 +215,10 @@ def render_html_report(
 
     batt = analysis.get("battery_pct_consumed")
     rng = analysis.get("range_remaining_km")
-    batt_str = f"{batt:.0f}%" if batt is not None and is_ebike else ("—" if is_ebike else "")
-    rng_str = f"{rng:.0f} km" if rng is not None and is_ebike else ("—" if is_ebike else "")
+    est_assist = analysis.get("estimated_assistance_level")
+    batt_str = f"{batt:.0f}%" if batt is not None else "—"
+    rng_str = f"{rng:.0f} km" if rng is not None else "—"
+    assist_str = f"{est_assist:.1f}/5" if est_assist is not None else "—"
 
     # ── Profile summary ───────────────────────────────────────────────────────
     bike_model = profile.get("bike_model", "")
@@ -220,11 +250,15 @@ def render_html_report(
           <div class="lbl">{l_range}</div>
           <div class="val">{rng_str}</div>
         </div>
+        <div class="metric">
+          <div class="lbl">{l_est_assist}</div>
+          <div class="val">{assist_str}</div>
+        </div>
       </div>"""
 
     # ── Advice list ───────────────────────────────────────────────────────────
     advice_items = "".join(
-        f"<li>{a}</li>" for a in (analysis.get("advice") or [])
+        f"<li>{adv}</li>" for adv in (analysis.get("advice") or [])
     )
 
     disclaimer_text = analysis.get("disclaimer", "")

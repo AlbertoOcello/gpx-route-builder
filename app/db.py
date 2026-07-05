@@ -190,6 +190,13 @@ def init_db() -> None:
         if "annotations_json" not in cols:
             conn.execute("ALTER TABLE user_feedback ADD COLUMN annotations_json TEXT")
 
+        # ALTER TABLE idempotente: nuove colonne ride_profiles
+        rp_cols = {r[1] for r in conn.execute("PRAGMA table_info(ride_profiles)").fetchall()}
+        if "riding_style" not in rp_cols:
+            conn.execute("ALTER TABLE ride_profiles ADD COLUMN riding_style TEXT")
+        if "min_battery_pct" not in rp_cols:
+            conn.execute("ALTER TABLE ride_profiles ADD COLUMN min_battery_pct REAL")
+
     _migrate_geocoding_cache()
     _seed_known_avoid_roads()
 
@@ -434,9 +441,10 @@ def save_ride_profile(
     bike_model: str | None = None,
     bike_type: str | None = None,
     wh: float | None = None,
-    assistance_level: int | None = None,
     battery_pct: float | None = None,
+    min_battery_pct: float | None = None,
     bike_weight_kg: float | None = None,
+    riding_style: str | None = None,
     driver_weight_kg: float | None = None,
     driver_age: int | None = None,
     driver_sex: str | None = None,
@@ -452,14 +460,16 @@ def save_ride_profile(
         if existing:
             conn.execute(
                 """UPDATE ride_profiles SET
-                   bike_model=?, bike_type=?, wh=?, assistance_level=?,
-                   battery_pct=?, bike_weight_kg=?, driver_weight_kg=?,
+                   bike_model=?, bike_type=?, wh=?,
+                   battery_pct=?, min_battery_pct=?, bike_weight_kg=?,
+                   riding_style=?, driver_weight_kg=?,
                    driver_age=?, driver_sex=?, driver_fitness=?,
                    driver_fcmax=?, driver_health_notes=?
                    WHERE name=?""",
                 (
-                    bike_model, bike_type, wh, assistance_level,
-                    battery_pct, bike_weight_kg, driver_weight_kg,
+                    bike_model, bike_type, wh,
+                    battery_pct, min_battery_pct, bike_weight_kg,
+                    riding_style, driver_weight_kg,
                     driver_age, driver_sex, driver_fitness,
                     driver_fcmax, driver_health_notes, name,
                 ),
@@ -467,14 +477,16 @@ def save_ride_profile(
             return existing["id"]
         cur = conn.execute(
             """INSERT INTO ride_profiles
-               (name, bike_model, bike_type, wh, assistance_level,
-                battery_pct, bike_weight_kg, driver_weight_kg,
+               (name, bike_model, bike_type, wh,
+                battery_pct, min_battery_pct, bike_weight_kg,
+                riding_style, driver_weight_kg,
                 driver_age, driver_sex, driver_fitness,
                 driver_fcmax, driver_health_notes)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
-                name, bike_model, bike_type, wh, assistance_level,
-                battery_pct, bike_weight_kg, driver_weight_kg,
+                name, bike_model, bike_type, wh,
+                battery_pct, min_battery_pct, bike_weight_kg,
+                riding_style, driver_weight_kg,
                 driver_age, driver_sex, driver_fitness,
                 driver_fcmax, driver_health_notes,
             ),
