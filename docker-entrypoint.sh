@@ -25,6 +25,44 @@ download_if_missing "E4_N43.rd5"
 # E4/N44 — Bologna area
 download_if_missing "E4_N44.rd5"
 
+# ── BRouter: avvio in background ──────────────────────────────────────────────
+BROUTER_PORT=17777
+BROUTER_JAR="/app/brouter/brouter.jar"
+BROUTER_CHECK="http://localhost:${BROUTER_PORT}/brouter?lonlats=13.22,43.71|13.50,43.60&profile=trekking&alternativeidx=0&format=gpx"
+
+echo "[entrypoint] Avvio BRouter in background (porta ${BROUTER_PORT})..."
+java -jar "${BROUTER_JAR}" \
+    /app/brouter/segments4 \
+    /app/brouter/profiles2 \
+    /app/brouter/customprofiles \
+    "${BROUTER_PORT}" \
+    > /var/log/brouter.log 2>&1 &
+BROUTER_PID=$!
+
+echo "[entrypoint] BRouter PID=${BROUTER_PID} — attendo che sia pronto..."
+BROUTER_READY=0
+for i in $(seq 1 36); do
+    # Controlla prima che il processo sia ancora in vita
+    if ! kill -0 "${BROUTER_PID}" 2>/dev/null; then
+        echo "[entrypoint] ERRORE: BRouter (PID=${BROUTER_PID}) è terminato inaspettatamente."
+        echo "[entrypoint] --- log BRouter ---"
+        cat /var/log/brouter.log || true
+        echo "[entrypoint] -------------------"
+        break
+    fi
+    if curl -sf --max-time 5 "${BROUTER_CHECK}" > /dev/null 2>&1; then
+        echo "[entrypoint] BRouter pronto dopo $((i * 5))s."
+        BROUTER_READY=1
+        break
+    fi
+    echo "[entrypoint] Tentativo ${i}/36 — BRouter non ancora pronto, ritento tra 5s..."
+    sleep 5
+done
+
+if [ "${BROUTER_READY}" -eq 0 ]; then
+    echo "[entrypoint] WARN: BRouter non risponde su porta ${BROUTER_PORT} dopo 180s — Streamlit partirà comunque."
+fi
+
 # ── Ollama: pull modello se AI_PROVIDER=ollama ─────────────────────────────
 if [ "${AI_PROVIDER}" = "ollama" ]; then
     OLLAMA_BASE="${OLLAMA_URL:-http://ollama:11434}"

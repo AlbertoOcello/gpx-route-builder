@@ -1,30 +1,9 @@
 services:
-  brouter:
-    image: openjdk:21-slim
-    working_dir: /app
-    volumes:
-      - ./brouter:/app/brouter
-      - segments4:/app/brouter/segments4
-    command: >
-      java -jar brouter/brouter.jar
-      brouter/segments4
-      brouter/profiles2
-      brouter/customprofiles
-      17777
-    ports:
-      - "17777:17777"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:17777/brouter?lonlats=13.22,43.71|13.50,43.60&profile=trekking&alternativeidx=0&format=gpx"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 10s
-
   app:
     build: .
     ports:
       - "8501:8501"
+      - "17777:17777"     # BRouter (opzionale — utile per debug/chiamate dirette)
     environment:
       - AI_PROVIDER=${AI_PROVIDER:-claude}
       - AI_MODEL=${AI_MODEL:-}
@@ -32,19 +11,22 @@ services:
       - GEMINI_API_KEY=${GEMINI_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
-      - BROUTER_URL=http://brouter:17777
+      - BROUTER_URL=http://localhost:17777
     volumes:
       - ./routes:/app/routes
       - ./data:/app/data
       - segments4:/app/brouter/segments4
-    depends_on:
-      brouter:
-        condition: service_healthy
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8501/_stcore/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
 
   # ── Ollama (opzionale) ─────────────────────────────────────────────────────
   # Attiva con: docker compose --profile ollama up
-  # oppure: docker compose up ollama app brouter
+  # oppure: docker compose up ollama app
   #
   # GPU Nvidia: decommentare il blocco `deploy` sotto.
   # Modelli: docker exec gpx-rb-ollama ollama pull llama3.2
