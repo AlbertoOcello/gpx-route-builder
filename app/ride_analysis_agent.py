@@ -4,18 +4,26 @@ ride_analysis_agent.py — Analisi ciclistica personalizzata.
 Flusso:
   1. analyze_gpx_bytes()  — estrae stats + metadata + track points dal GPX
   2. run_analysis()        — chiama AI con stats + profilo, ritorna dict strutturato
-  3. render_html_report()  — genera HTML scaricabile con mappa SVG e profilo completo
+  3. render_html_report()  — genera HTML scaricabile con mappa Folium (via Selenium)
+                             e narrativa del percorso
 """
 from __future__ import annotations
 
+import html as _html_mod
 import io
 import json
+import logging
 import math
+import os
+import tempfile
+import time
 from datetime import datetime
 
 import gpxpy
 
 import ai_client
+
+_log = logging.getLogger(__name__)
 
 # Descrizioni verbose per riding_style usate nel prompt AI
 _STYLE_DESC_IT = {
@@ -45,6 +53,18 @@ _STYLE_LABELS = {
     },
 }
 
+# Chromium binary + driver paths (Debian bookworm / Docker)
+_CHROME_BINS = [
+    "/usr/bin/chromium",
+    "/usr/bin/chromium-browser",
+    "/usr/bin/google-chrome",
+]
+_CHROMEDRIVER_BINS = [
+    "/usr/bin/chromedriver",
+    "/usr/lib/chromium/chromedriver",
+    "/usr/lib/chromium-browser/chromedriver",
+]
+
 
 def analyze_gpx_bytes(file_bytes: bytes) -> dict:
     """Parse GPX bytes and return distance/elevation stats + metadata + track points."""
@@ -62,17 +82,16 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
     uphill, downhill = gpx.get_uphill_downhill()
     elevations = [pt.elevation for pt in points if pt.elevation is not None]
 
-    # Route name: try gpx.name → first track name → fallback
+    # Route name: gpx.name → first track name → None
     gpx_name = (
         (gpx.name or "").strip()
         or (gpx.tracks[0].name or "").strip()
         or None
     )
 
-    # Sample track points (max 600) for the SVG map
+    # Sample track points (max 600) for the map
     step = max(1, len(points) // 600)
     sampled = [(pt.latitude, pt.longitude) for pt in points[::step]]
-    # Always include the last point
     last = (points[-1].latitude, points[-1].longitude)
     if sampled[-1] != last:
         sampled.append(last)
@@ -88,35 +107,136 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
     }
 
 
+# ── Map rendering ──────────────────────────────────────────────────────────────
+
+def _folium_screenshot_b64(
+    track_points: list[tuple[float, float]],
+    width: int = 640,
+    height: int = 340,
+) -> str | None:
+    """
+    Render a Folium map of the GPX track using headless Chromium via Selenium.
+    Returns a base64-encoded PNG string, or None on any failure (caller falls back to SVG).
+    """
+    if len(track_points) < 2:
+        return None
+    try:
+        import base64
+        import folium
+        from selenium import webdriver
+        from selenium.webdriver.chrome.options import Options
+        from selenium.webdriver.chrome.service import Service
+        from selenium.webdriver.common.by import By
+        from selenium.webdriver.support import expected_conditions as EC
+        from selenium.webdriver.support.ui import WebDriverWait
+
+        center_lat = sum(p[0] for p in track_points) / len(track_points)
+        center_lon = sum(p[1] for p in track_points) / len(track_points)
+
+        m = folium.Map(
+            location=[center_lat, center_lon],
+            tiles="CartoDB positron",
+            zoom_start=12,
+        )
+        folium.PolyLine(
+            locations=track_points,
+            color="#0055cc",
+            weight=3,
+            opacity=0.9,
+        ).add_to(m)
+        folium.CircleMarker(
+            location=track_points[0],
+            radius=7,
+            color="white",
+            weight=2,
+            fill=True,
+            fill_color="#27ae60",
+            fill_opacity=1.0,
+        ).add_to(m)
+        folium.CircleMarker(
+            location=track_points[-1],
+            radius=7,
+            color="white",
+            weight=2,
+            fill=True,
+            fill_color="#e74c3c",
+            fill_opacity=1.0,
+        ).add_to(m)
+        m.fit_bounds([
+            [min(p[0] for p in track_points), min(p[1] for p in track_points)],
+            [max(p[0] for p in track_points), max(p[1] for p in track_points)],
+        ])
+
+        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
+            tmp_path = f.name
+        m.save(tmp_path)
+
+        opts = Options()
+        opts.add_argument("--headless=new")
+        opts.add_argument("--no-sandbox")
+        opts.add_argument("--disable-dev-shm-usage")
+        opts.add_argument("--disable-gpu")
+        opts.add_argument(f"--window-size={width},{height}")
+
+        for chrome in _CHROME_BINS:
+            if os.path.exists(chrome):
+                opts.binary_location = chrome
+                break
+
+        svc = Service()
+        for chromedriver in _CHROMEDRIVER_BINS:
+            if os.path.exists(chromedriver):
+                svc = Service(chromedriver)
+                break
+
+        driver = webdriver.Chrome(service=svc, options=opts)
+        try:
+            driver.set_window_size(width, height)
+            driver.get(f"file://{tmp_path}")
+            try:
+                WebDriverWait(driver, 8).until(
+                    EC.presence_of_element_located((By.CLASS_NAME, "leaflet-container"))
+                )
+                time.sleep(2)  # let tiles finish loading
+            except Exception:
+                time.sleep(3)  # fallback wait if WebDriverWait fails
+            png = driver.get_screenshot_as_png()
+        finally:
+            driver.quit()
+            os.unlink(tmp_path)
+
+        return base64.b64encode(png).decode()
+
+    except Exception as exc:
+        _log.warning("[ride_analysis] folium screenshot failed: %s — falling back to SVG", exc)
+        return None
+
+
 def _track_to_svg(
     points: list[tuple[float, float]],
     width: int = 640,
     height: int = 300,
 ) -> str:
     """
-    Build an inline SVG polyline from (lat, lon) points using Mercator projection.
-    Returns an empty string if fewer than 2 points are provided.
+    Fallback: build an inline SVG polyline from (lat, lon) points using Mercator projection.
+    Returns empty string if fewer than 2 points are provided.
     """
     if len(points) < 2:
         return ""
 
     def merc(lat: float, lon: float) -> tuple[float, float]:
-        x = lon
-        y = math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
-        return x, y
+        return lon, math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
 
     projected = [merc(lat, lon) for lat, lon in points]
     xs = [p[0] for p in projected]
     ys = [p[1] for p in projected]
-
     min_x, max_x = min(xs), max(xs)
     min_y, max_y = min(ys), max(ys)
     dx = max_x - min_x or 1e-9
     dy = max_y - min_y or 1e-9
 
     pad = 24
-    uw = width - 2 * pad
-    uh = height - 2 * pad
+    uw, uh = width - 2 * pad, height - 2 * pad
     scale = min(uw / dx, uh / dy)
     ox = pad + (uw - dx * scale) / 2
     oy = pad + (uh - dy * scale) / 2
@@ -126,7 +246,6 @@ def _track_to_svg(
 
     coords = [to_svg(px, py) for px, py in projected]
     pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
-
     sx, sy = coords[0]
     ex, ey = coords[-1]
 
@@ -141,6 +260,8 @@ def _track_to_svg(
         f"</svg>"
     )
 
+
+# ── AI analysis ────────────────────────────────────────────────────────────────
 
 def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
     """
@@ -208,7 +329,9 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
                 "(vincolo: la batteria non deve scendere sotto questo valore)"
             )
         style_code = profile.get("riding_style") or "mixed"
-        lines.append(f"- Stile di utilizzo assistenza: {style_map.get(style_code, style_map['mixed'])}")
+        lines.append(
+            f"- Stile di utilizzo assistenza: {style_map.get(style_code, style_map['mixed'])}"
+        )
     if profile.get("bike_weight_kg"):
         lines.append(f"- Peso bici: {profile['bike_weight_kg']} kg")
 
@@ -240,21 +363,28 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
     return json.loads(raw)
 
 
+# ── HTML report ────────────────────────────────────────────────────────────────
+
 def _dash(val: object) -> str:
-    """Return str(val) or '—' if val is None/empty."""
+    """Return str(val) or '—' if val is None/falsy-zero."""
     if val is None or val == "" or val == 0:
         return "—"
     return str(val)
 
 
 def render_html_report(
-    analysis: dict, gpx_stats: dict, profile: dict, lang: str
+    analysis: dict,
+    gpx_stats: dict,
+    profile: dict,
+    lang: str,
+    route_narrative: str | None = None,
 ) -> str:
     """
-    Generate a downloadable HTML report with:
-    - SVG map of the GPX track
-    - Route info (name, distance, elevation)
-    - Complete rider + bike profile
+    Generate a self-contained downloadable HTML report with:
+    - Folium map screenshot (Selenium/Chromium) — falls back to SVG if unavailable
+    - Route info (name from GPX metadata, distance, elevation)
+    - Planner narrative (between route data and profile, if provided)
+    - Complete bike + rider profile
     - AI analysis results
     - Personalised advice
     - Medical disclaimer
@@ -262,22 +392,21 @@ def render_html_report(
     is_en = lang == "en"
     is_ebike = (profile.get("bike_type") or "").lower() == "ebike"
     now = datetime.now().strftime("%d/%m/%Y %H:%M")
-
     style_labels = _STYLE_LABELS.get(lang, _STYLE_LABELS["it"])
 
-    # ── Localised labels ──────────────────────────────────────────────────────
+    # ── Labels ────────────────────────────────────────────────────────────────
     if is_en:
         title = "🔋 Ride Analysis Report"
         subtitle = "GPX Route Builder — Personalised cycling analysis"
         s_map = "Route Map"
         s_route = "Route Data"
+        s_narrative = "Route Spirit"
         s_bike = "Bike"
         s_rider = "Rider"
         s_profile_full = "Analysis Profile"
         s_results = "Analysis Results"
         s_advice = "Personalised Advice"
         s_disclaimer = "⚠️ Medical Disclaimer"
-        l_route_name = "Route"
         l_dist = "Distance"
         l_elev_up = "Elevation gain"
         l_elev_down = "Elevation loss"
@@ -310,13 +439,13 @@ def render_html_report(
         subtitle = "GPX Route Builder — Analisi ciclistica personalizzata"
         s_map = "Mappa Percorso"
         s_route = "Dati Percorso"
+        s_narrative = "Spirito del Percorso"
         s_bike = "Bici"
         s_rider = "Ciclista"
         s_profile_full = "Profilo Analisi"
         s_results = "Risultati Analisi"
         s_advice = "Consigli Personalizzati"
         s_disclaimer = "⚠️ Disclaimer Medico"
-        l_route_name = "Percorso"
         l_dist = "Distanza"
         l_elev_up = "Dislivello +"
         l_elev_down = "Dislivello −"
@@ -345,19 +474,30 @@ def render_html_report(
         l_start = "Partenza"
         l_end = "Arrivo"
 
-    # ── SVG map ───────────────────────────────────────────────────────────────
+    # ── Map section ───────────────────────────────────────────────────────────
     track_points = gpx_stats.get("track_points") or []
-    svg_map = _track_to_svg(track_points)
     map_section = ""
-    if svg_map:
+    if track_points:
+        b64 = _folium_screenshot_b64(track_points)
         legend = (
             f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
             f'<span style="color:#e74c3c">●</span> {l_end}'
         )
-        map_section = f"""
+        if b64:
+            map_section = f"""
 <div class="card">
   <h2>🗺️ {s_map}</h2>
-  <div style="border-radius:8px;overflow:hidden;line-height:0">{svg_map}</div>
+  <img src="data:image/png;base64,{b64}"
+       style="width:100%;border-radius:8px;display:block" alt="Route map">
+  <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
+</div>"""
+        else:
+            svg = _track_to_svg(track_points)
+            if svg:
+                map_section = f"""
+<div class="card">
+  <h2>🗺️ {s_map}</h2>
+  <div style="border-radius:8px;overflow:hidden;line-height:0">{svg}</div>
   <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
 </div>"""
 
@@ -367,9 +507,17 @@ def render_html_report(
     elev_down = f"{gpx_stats['elevation_loss_m']:.0f} m"
     max_alt = (
         f"{gpx_stats['max_elevation_m']:.0f} m"
-        if gpx_stats.get("max_elevation_m")
-        else "—"
+        if gpx_stats.get("max_elevation_m") else "—"
     )
+
+    # ── Narrative section (between route data and profile) ────────────────────
+    narrative_section = ""
+    if route_narrative and route_narrative.strip():
+        narrative_section = f"""
+<div class="card">
+  <h2>📖 {s_narrative}</h2>
+  <p class="narrative-text">{_html_mod.escape(route_narrative.strip())}</p>
+</div>"""
 
     # ── Profile rows ──────────────────────────────────────────────────────────
     def prow(label: str, value: str) -> str:
@@ -405,7 +553,7 @@ def render_html_report(
     bike_html = "\n".join(bike_rows)
     driver_html = "\n".join(driver_rows)
 
-    # ── Analysis results ──────────────────────────────────────────────────────
+    # ── Results ───────────────────────────────────────────────────────────────
     time_min = analysis.get("time_estimate_min")
     if time_min:
         h, m = divmod(int(time_min), 60)
@@ -419,10 +567,8 @@ def render_html_report(
         else "#f39c12" if isinstance(fatigue, int) and fatigue <= 6
         else "#e74c3c"
     )
-
     avg_hr = analysis.get("avg_hr_bpm")
     hr_str = f"{avg_hr} bpm" if avg_hr else "—"
-
     batt = analysis.get("battery_pct_consumed")
     rng = analysis.get("range_remaining_km")
     est_assist = analysis.get("estimated_assistance_level")
@@ -440,17 +586,17 @@ def render_html_report(
   </div>"""
 
     advice_items = "".join(
-        f"<li>{adv}</li>" for adv in (analysis.get("advice") or [])
+        f"<li>{_html_mod.escape(adv)}</li>" for adv in (analysis.get("advice") or [])
     )
-    disclaimer_text = analysis.get("disclaimer", "")
+    disclaimer_text = _html_mod.escape(analysis.get("disclaimer", ""))
 
-    # ── HTML ──────────────────────────────────────────────────────────────────
+    # ── Full HTML ─────────────────────────────────────────────────────────────
     return f"""<!DOCTYPE html>
 <html lang="{'en' if is_en else 'it'}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title}</title>
+<title>{_html_mod.escape(title)}</title>
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;line-height:1.5}}
@@ -476,6 +622,7 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 .prow{{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f0f0}}
 .plbl{{font-size:.82rem;color:#888}}
 .pval{{font-size:.82rem;font-weight:600;color:#222;text-align:right;max-width:55%}}
+.narrative-text{{font-size:.9rem;color:#333;line-height:1.8;white-space:pre-wrap}}
 .advice ul{{padding-left:20px}}
 .advice li{{margin-bottom:8px;color:#333}}
 .disclaimer{{background:#fffbe6;border-left:4px solid #f0b429;border-radius:0 8px 8px 0;padding:14px 18px}}
@@ -494,14 +641,14 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 <div class="hdr">
   <h1>{title}</h1>
   <div class="sub">{subtitle}</div>
-  <div class="meta">{l_generated}: {now} &nbsp;·&nbsp; {profile.get("name","")}</div>
+  <div class="meta">{l_generated}: {now} &nbsp;·&nbsp; {_html_mod.escape(profile.get("name",""))}</div>
 </div>
 
 {map_section}
 
 <div class="card">
   <h2>📍 {s_route}</h2>
-  <div class="route-name">{gpx_name}</div>
+  <div class="route-name">{_html_mod.escape(gpx_name)}</div>
   <div class="route-grid">
     <div class="route-cell"><div class="lbl">{l_dist}</div><div class="val">{gpx_stats["distance_km"]} km</div></div>
     <div class="route-cell"><div class="lbl">{l_elev_up}</div><div class="val">{elev_up}</div></div>
@@ -509,6 +656,8 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
     <div class="route-cell"><div class="lbl">{l_max_alt}</div><div class="val">{max_alt}</div></div>
   </div>
 </div>
+
+{narrative_section}
 
 <div class="card">
   <h2>👤 {s_profile_full}</h2>
