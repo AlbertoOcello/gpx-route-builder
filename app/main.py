@@ -2032,6 +2032,7 @@ with tab_ride:
                     t("ride_analysis.bike_assistance"),
                     1, 5,
                     value=int(_existing.get("assistance_level") or 3),
+                    help=t("ride_analysis.bike_assistance_help"),
                 )
                 _battery_pct = st.number_input(
                     t("ride_analysis.bike_battery_pct"),
