@@ -2148,6 +2148,7 @@ with tab_ride:
             try:
                 _gpx_bytes = _gpx_file.read()
                 _gpx_stats = ride_analysis.analyze_gpx_bytes(_gpx_bytes)
+                _gpx_stats["gpx_filename"] = Path(_gpx_file.name).stem
                 st.subheader(t("ride_analysis.gpx_stats"))
                 _gc1, _gc2, _gc3, _gc4 = st.columns(4)
                 _gc1.metric(t("ride_analysis.gpx_dist"), f"{_gpx_stats['distance_km']} km")
@@ -2263,7 +2264,7 @@ with tab_ride:
                 _r, _rg, _rp, _rl,
                 route_narrative=_route_narrative,
             )
-            _gpx_base = re.sub(r"[^\w]+", "_", (_rg.get("gpx_name") or "analisi")).strip("_").lower() or "analisi"
+            _gpx_base = _rg.get("gpx_filename") or re.sub(r"[^\w]+", "_", (_rg.get("gpx_name") or "analisi")).strip("_").lower() or "analisi"
             st.download_button(
                 label=t("ride_analysis.download_btn"),
                 data=_html.encode("utf-8"),
