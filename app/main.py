@@ -2158,8 +2158,17 @@ with tab_ride:
             except Exception as _e:
                 st.error(f"{t('ride_analysis.gpx_error')}: {_e}")
 
-        # Optional route link — reads narrative from a saved Planner route
+        # Optional route link — reads narrative from a saved Planner route.
+        # Auto-detect: Builder GPX filenames follow {route_name}_{strategy}.gpx;
+        # strip the last _X suffix to recover the Planner route name.
         _saved_routes = _load_saved_routes()
+        if _gpx_file and st.session_state.get("_ride_last_gpx") != _gpx_file.name:
+            st.session_state["_ride_last_gpx"] = _gpx_file.name
+            _stem = Path(_gpx_file.name).stem       # e.g. "anello_senigallia_B"
+            _base = re.sub(r"_[A-Z]$", "", _stem)   # strip single-letter strategy suffix
+            if _base in _saved_routes:
+                st.session_state["ride_route_sel"] = _base  # pre-select before widget renders
+
         _route_narrative = None
         if _saved_routes:
             _route_link_none = t("ride_analysis.route_link_none")
