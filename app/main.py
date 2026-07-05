@@ -1967,6 +1967,10 @@ with tab_ride:
     with col_prof:
         st.subheader(t("ride_analysis.profile_header"))
 
+        # Consume pending selection BEFORE the widget renders
+        if "_ride_profile_pending_sel" in st.session_state:
+            st.session_state["ride_profile_sel"] = st.session_state.pop("_ride_profile_pending_sel")
+
         _profiles = db.list_ride_profiles()
         _profile_names = [p["name"] for p in _profiles]
         _sel_options = [t("ride_analysis.profile_new")] + _profile_names
@@ -2104,7 +2108,7 @@ with tab_ride:
                         driver_health_notes=_driver_health or None,
                     )
                     st.success(t("ride_analysis.saved_ok").format(name=_profile_name.strip()))
-                    st.session_state["ride_profile_sel"] = _profile_name.strip()
+                    st.session_state["_ride_profile_pending_sel"] = _profile_name.strip()
                     st.rerun()
                 except Exception as _e:
                     st.error(f"❌ {_e}")
