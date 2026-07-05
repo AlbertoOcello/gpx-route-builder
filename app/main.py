@@ -20,7 +20,8 @@ from candidate_generator import generate_candidates
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
 from gpx_analyzer import analyze_gpx
-from i18n import t, render_language_selector
+from i18n import t, render_language_selector, active_lang
+import ride_analysis_agent as ride_analysis
 from learning_agent import update_user_memory_from_feedback
 from models import RouteRequest, StartPoint
 from planner_agent import (
@@ -38,12 +39,13 @@ st.set_page_config(page_title=t("app.page_title"), layout="wide")
 st.title(t("app.title"))
 render_language_selector()
 
-tab_planner, tab_geo, tab_builder, tab_analizza, tab_dbg = st.tabs([
+tab_planner, tab_geo, tab_builder, tab_analizza, tab_dbg, tab_ride = st.tabs([
     t("tabs.planner"),
     t("tabs.geo"),
     t("tabs.builder"),
     t("tabs.analizza"),
     t("tabs.debug"),
+    t("tabs.ride"),
 ])
 
 _PLANNED_DIR = Path("routes/planned")
@@ -1952,3 +1954,269 @@ with tab_dbg:
                     if st.button("🔕", key=f"deact_obs_{_obs['id']}", help=t("debug.obstacle_deactivate_help")):
                         db.deactivate_obstacle(_obs["id"])
                         st.rerun()
+
+# ─── Tab: 🔋 Analisi Giro ─────────────────────────────────────────────────────
+
+with tab_ride:
+    st.subheader(t("ride_analysis.subheader"))
+    st.caption(t("ride_analysis.caption"))
+
+    col_prof, col_main = st.columns([1, 2], gap="large")
+
+    # ── Left column: profile management ──────────────────────────────────────
+    with col_prof:
+        st.subheader(t("ride_analysis.profile_header"))
+
+        _profiles = db.list_ride_profiles()
+        _profile_names = [p["name"] for p in _profiles]
+        _sel_options = [t("ride_analysis.profile_new")] + _profile_names
+
+        _sel = st.selectbox(
+            t("ride_analysis.profile_select"),
+            _sel_options,
+            key="ride_profile_sel",
+        )
+        _is_new_profile = _sel == t("ride_analysis.profile_new")
+        _existing = (
+            {} if _is_new_profile
+            else next((p for p in _profiles if p["name"] == _sel), {})
+        )
+
+        # Form key includes selected profile to reset fields on profile change
+        _form_key = f"ride_profile_form_{_sel}"
+        with st.form(_form_key):
+            _profile_name = st.text_input(
+                t("ride_analysis.profile_name"),
+                value=_existing.get("name", ""),
+                placeholder=t("ride_analysis.profile_name_ph"),
+            )
+
+            st.markdown(f"**{t('ride_analysis.bike_header')}**")
+            _bike_model = st.text_input(
+                t("ride_analysis.bike_model"),
+                value=_existing.get("bike_model", ""),
+                placeholder=t("ride_analysis.bike_model_ph"),
+            )
+
+            _bike_codes = ["ebike", "muscolare", "gravel", "mtb", "road"]
+            _bike_labels = [t(f"ride_analysis.bike_types.{c}") for c in _bike_codes]
+            _cur_type = _existing.get("bike_type", "ebike")
+            _cur_type_idx = (
+                _bike_codes.index(_cur_type) if _cur_type in _bike_codes else 0
+            )
+            _bike_label_sel = st.selectbox(
+                t("ride_analysis.bike_type"), _bike_labels, index=_cur_type_idx
+            )
+            _bike_type = _bike_codes[_bike_labels.index(_bike_label_sel)]
+            _is_ebike_form = _bike_type == "ebike"
+
+            _bike_weight = st.number_input(
+                t("ride_analysis.bike_weight"),
+                min_value=5.0, max_value=50.0,
+                value=float(_existing.get("bike_weight_kg") or 12.0),
+                step=0.5,
+            )
+
+            if _is_ebike_form:
+                st.caption(t("ride_analysis.bike_ebike_only"))
+                _wh = st.number_input(
+                    t("ride_analysis.bike_wh"),
+                    min_value=0, max_value=2000,
+                    value=int(_existing.get("wh") or 500),
+                )
+                _assistance = st.slider(
+                    t("ride_analysis.bike_assistance"),
+                    1, 5,
+                    value=int(_existing.get("assistance_level") or 3),
+                )
+                _battery_pct = st.number_input(
+                    t("ride_analysis.bike_battery_pct"),
+                    min_value=0, max_value=100,
+                    value=int(_existing.get("battery_pct") or 100),
+                )
+            else:
+                _wh = None
+                _assistance = None
+                _battery_pct = None
+
+            st.markdown(f"**{t('ride_analysis.driver_header')}**")
+            _driver_weight = st.number_input(
+                t("ride_analysis.driver_weight"),
+                min_value=30.0, max_value=200.0,
+                value=float(_existing.get("driver_weight_kg") or 75.0),
+                step=0.5,
+            )
+            _driver_age = st.number_input(
+                t("ride_analysis.driver_age"),
+                min_value=10, max_value=100,
+                value=int(_existing.get("driver_age") or 35),
+            )
+            _sex_opts = ["M", "F", t("ride_analysis.sex_other")]
+            _cur_sex = _existing.get("driver_sex", "M")
+            _sex_idx = _sex_opts.index(_cur_sex) if _cur_sex in _sex_opts else 0
+            _driver_sex = st.selectbox(
+                t("ride_analysis.driver_sex"), _sex_opts, index=_sex_idx
+            )
+            _driver_fitness = st.slider(
+                t("ride_analysis.driver_fitness"),
+                1, 5,
+                value=int(_existing.get("driver_fitness") or 3),
+            )
+            _driver_fcmax = st.number_input(
+                t("ride_analysis.driver_fcmax"),
+                min_value=0, max_value=250,
+                value=int(_existing.get("driver_fcmax") or 0),
+                help="0 = skip",
+            )
+            _driver_health = st.text_area(
+                t("ride_analysis.driver_health"),
+                value=_existing.get("driver_health_notes", ""),
+                placeholder=t("ride_analysis.driver_health_ph"),
+            )
+
+            _csave, _cdel = st.columns(2)
+            with _csave:
+                _do_save = st.form_submit_button(t("ride_analysis.btn_save"), type="primary")
+            with _cdel:
+                _do_delete = st.form_submit_button(
+                    t("ride_analysis.btn_delete"),
+                    disabled=_is_new_profile,
+                )
+
+        if _do_save:
+            if not _profile_name.strip():
+                st.error(t("ride_analysis.name_required"))
+            else:
+                try:
+                    db.save_ride_profile(
+                        name=_profile_name.strip(),
+                        bike_model=_bike_model or None,
+                        bike_type=_bike_type,
+                        wh=_wh,
+                        assistance_level=_assistance,
+                        battery_pct=_battery_pct,
+                        bike_weight_kg=_bike_weight,
+                        driver_weight_kg=_driver_weight,
+                        driver_age=_driver_age,
+                        driver_sex=_driver_sex,
+                        driver_fitness=_driver_fitness,
+                        driver_fcmax=int(_driver_fcmax) if _driver_fcmax else None,
+                        driver_health_notes=_driver_health or None,
+                    )
+                    st.success(t("ride_analysis.saved_ok").format(name=_profile_name.strip()))
+                    st.session_state["ride_profile_sel"] = _profile_name.strip()
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"❌ {_e}")
+
+        if _do_delete and not _is_new_profile and _existing:
+            db.delete_ride_profile(_existing["id"])
+            st.success(t("ride_analysis.deleted_ok"))
+            st.rerun()
+
+    # ── Right column: GPX upload + analysis ──────────────────────────────────
+    with col_main:
+        st.subheader(t("ride_analysis.gpx_header"))
+        _gpx_file = st.file_uploader(
+            t("ride_analysis.gpx_upload"),
+            type=["gpx"],
+            key="ride_gpx_upload",
+        )
+
+        _gpx_stats = None
+        if _gpx_file:
+            try:
+                _gpx_bytes = _gpx_file.read()
+                _gpx_stats = ride_analysis.analyze_gpx_bytes(_gpx_bytes)
+                st.subheader(t("ride_analysis.gpx_stats"))
+                _gc1, _gc2, _gc3, _gc4 = st.columns(4)
+                _gc1.metric(t("ride_analysis.gpx_dist"), f"{_gpx_stats['distance_km']} km")
+                _gc2.metric(t("ride_analysis.gpx_elev_up"), f"{_gpx_stats['elevation_gain_m']:.0f} m")
+                _gc3.metric(t("ride_analysis.gpx_elev_down"), f"{_gpx_stats['elevation_loss_m']:.0f} m")
+                if _gpx_stats.get("max_elevation_m"):
+                    _gc4.metric(t("ride_analysis.gpx_max_alt"), f"{_gpx_stats['max_elevation_m']:.0f} m")
+            except Exception as _e:
+                st.error(f"{t('ride_analysis.gpx_error')}: {_e}")
+
+        # Determine active profile (must be saved, not "new")
+        _active_profile = None if _is_new_profile else (_existing or None)
+
+        if not _gpx_stats:
+            st.info(t("ride_analysis.need_gpx"))
+        elif not _active_profile:
+            st.info(t("ride_analysis.need_profile"))
+
+        if _gpx_stats and _active_profile:
+            if st.button(t("ride_analysis.btn_analyze"), type="primary", key="ride_btn_analyze"):
+                with st.spinner(t("ride_analysis.analyzing")):
+                    try:
+                        _lang = active_lang()
+                        _result = ride_analysis.run_analysis(_gpx_stats, _active_profile, _lang)
+                        st.session_state["ride_result"] = _result
+                        st.session_state["ride_result_gpx"] = _gpx_stats
+                        st.session_state["ride_result_profile"] = _active_profile
+                        st.session_state["ride_result_lang"] = _lang
+                    except Exception as _e:
+                        st.error(f"❌ {_e}")
+
+        if "ride_result" in st.session_state:
+            _r = st.session_state["ride_result"]
+            _rg = st.session_state["ride_result_gpx"]
+            _rp = st.session_state["ride_result_profile"]
+            _rl = st.session_state.get("ride_result_lang", active_lang())
+
+            st.subheader(t("ride_analysis.results_header"))
+            _r_is_ebike = (_rp.get("bike_type") or "").lower() == "ebike"
+
+            # Battery row (ebike only)
+            if _r_is_ebike:
+                _rb1, _rb2 = st.columns(2)
+                _batt_v = _r.get("battery_pct_consumed")
+                _rng_v = _r.get("range_remaining_km")
+                _rb1.metric(
+                    t("ride_analysis.battery_consumed"),
+                    f"{_batt_v:.0f}%" if _batt_v is not None else t("ride_analysis.ebike_na"),
+                )
+                _rb2.metric(
+                    t("ride_analysis.range_remaining"),
+                    f"{_rng_v:.0f} km" if _rng_v is not None else t("ride_analysis.ebike_na"),
+                )
+
+            # Main metrics row
+            _rm1, _rm2, _rm3, _rm4 = st.columns(4)
+            _time_min = _r.get("time_estimate_min")
+            if _time_min:
+                _th, _tm = divmod(int(_time_min), 60)
+                _time_str = f"{_th}h {_tm:02d}m" if _th else f"{_tm}min"
+            else:
+                _time_str = "—"
+            _avg_hr = _r.get("avg_hr_bpm")
+            _rm1.metric(t("ride_analysis.calories"), f"{_r.get('calories_kcal', '—')} kcal")
+            _rm2.metric(t("ride_analysis.time_est"), _time_str)
+            _rm3.metric(
+                t("ride_analysis.avg_hr"),
+                f"{_avg_hr} bpm" if _avg_hr else t("ride_analysis.hr_na"),
+            )
+            _rm4.metric(t("ride_analysis.fatigue"), f"{_r.get('fatigue_index', '—')}/10")
+
+            # Advice
+            _advice = _r.get("advice") or []
+            if _advice:
+                st.subheader(t("ride_analysis.advice_header"))
+                for _adv in _advice:
+                    st.markdown(f"• {_adv}")
+
+            # Disclaimer
+            _disc = _r.get("disclaimer", "")
+            if _disc:
+                st.warning(f"⚠️ {_disc}")
+
+            # HTML report download
+            _html = ride_analysis.render_html_report(_r, _rg, _rp, _rl)
+            st.download_button(
+                label=t("ride_analysis.download_btn"),
+                data=_html.encode("utf-8"),
+                file_name=t("ride_analysis.download_name"),
+                mime="text/html",
+                key="ride_download_btn",
+            )

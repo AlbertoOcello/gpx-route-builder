@@ -160,6 +160,25 @@ def init_db() -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_ko_active ON known_obstacles(active);
 
+    -- Profili ciclista/bici per Analisi Giro
+    CREATE TABLE IF NOT EXISTS ride_profiles (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at          TEXT    DEFAULT (datetime('now')),
+        name                TEXT    NOT NULL UNIQUE,
+        bike_model          TEXT,
+        bike_type           TEXT,
+        wh                  REAL,
+        assistance_level    INTEGER,
+        battery_pct         REAL,
+        bike_weight_kg      REAL,
+        driver_weight_kg    REAL,
+        driver_age          INTEGER,
+        driver_sex          TEXT,
+        driver_fitness      INTEGER,
+        driver_fcmax        INTEGER,
+        driver_health_notes TEXT
+    );
+
     -- Colonna annotations_json in user_feedback (idempotente via IF NOT EXISTS non supportata
     -- per ALTER, lo gestisce il codice Python sotto)
     """
@@ -406,6 +425,82 @@ def db_stats() -> dict:
     ]
     with get_conn() as conn:
         return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}
+
+
+# ── Ride profiles (Analisi Giro) ─────────────────────────────────────────────
+
+def save_ride_profile(
+    name: str,
+    bike_model: str | None = None,
+    bike_type: str | None = None,
+    wh: float | None = None,
+    assistance_level: int | None = None,
+    battery_pct: float | None = None,
+    bike_weight_kg: float | None = None,
+    driver_weight_kg: float | None = None,
+    driver_age: int | None = None,
+    driver_sex: str | None = None,
+    driver_fitness: int | None = None,
+    driver_fcmax: int | None = None,
+    driver_health_notes: str | None = None,
+) -> int:
+    """Upsert ride profile by name. Returns the profile id."""
+    with get_conn() as conn:
+        existing = conn.execute(
+            "SELECT id FROM ride_profiles WHERE name = ?", (name,)
+        ).fetchone()
+        if existing:
+            conn.execute(
+                """UPDATE ride_profiles SET
+                   bike_model=?, bike_type=?, wh=?, assistance_level=?,
+                   battery_pct=?, bike_weight_kg=?, driver_weight_kg=?,
+                   driver_age=?, driver_sex=?, driver_fitness=?,
+                   driver_fcmax=?, driver_health_notes=?
+                   WHERE name=?""",
+                (
+                    bike_model, bike_type, wh, assistance_level,
+                    battery_pct, bike_weight_kg, driver_weight_kg,
+                    driver_age, driver_sex, driver_fitness,
+                    driver_fcmax, driver_health_notes, name,
+                ),
+            )
+            return existing["id"]
+        cur = conn.execute(
+            """INSERT INTO ride_profiles
+               (name, bike_model, bike_type, wh, assistance_level,
+                battery_pct, bike_weight_kg, driver_weight_kg,
+                driver_age, driver_sex, driver_fitness,
+                driver_fcmax, driver_health_notes)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                name, bike_model, bike_type, wh, assistance_level,
+                battery_pct, bike_weight_kg, driver_weight_kg,
+                driver_age, driver_sex, driver_fitness,
+                driver_fcmax, driver_health_notes,
+            ),
+        )
+        return cur.lastrowid
+
+
+def list_ride_profiles() -> list[dict]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM ride_profiles ORDER BY name"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_ride_profile(profile_id: int) -> dict | None:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM ride_profiles WHERE id = ?", (profile_id,)
+        ).fetchone()
+    return dict(row) if row else None
+
+
+def delete_ride_profile(profile_id: int) -> None:
+    with get_conn() as conn:
+        conn.execute("DELETE FROM ride_profiles WHERE id = ?", (profile_id,))
 
 
 # Inizializza al primo import
