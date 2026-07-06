@@ -31,7 +31,7 @@ BROUTER_JAR="/app/brouter/brouter.jar"
 BROUTER_CHECK="http://localhost:${BROUTER_PORT}/brouter?lonlats=13.22,43.71|13.50,43.60&profile=trekking&alternativeidx=0&format=gpx"
 
 echo "[entrypoint] Avvio BRouter in background (porta ${BROUTER_PORT})..."
-java -jar "${BROUTER_JAR}" \
+java -cp "${BROUTER_JAR}" btools.server.RouteServer \
     /app/brouter/segments4 \
     /app/brouter/profiles2 \
     /app/brouter/customprofiles \
