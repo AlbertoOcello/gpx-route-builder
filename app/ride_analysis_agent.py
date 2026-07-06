@@ -94,103 +94,51 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
 
 # ── Map rendering ──────────────────────────────────────────────────────────────
 
-def _folium_map_iframe(
+def _matplotlib_track_png_b64(
     track_points: list[tuple[float, float]],
-    height: int = 380,
-) -> str:
+    width: int = 640,
+    height: int = 320,
+) -> str | None:
     """
-    Build a Folium/Leaflet map and embed it via the srcdoc attribute.
-    srcdoc is supported on all modern browsers including iOS Safari (unlike
-    data:text/html;base64 URIs which iOS blocks).
-    Returns empty string on failure (caller falls back to SVG).
+    Render GPX track as PNG using matplotlib (non-interactive, no pyplot global state).
+    Applies Mercator aspect correction. Returns base64 string or None on any failure.
     """
     if len(track_points) < 2:
-        return ""
+        return None
     try:
-        import folium
+        import base64
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
 
         lats = [p[0] for p in track_points]
         lons = [p[1] for p in track_points]
+        cos_lat = math.cos(math.radians(sum(lats) / len(lats)))
+        lons_m = [lon * cos_lat for lon in lons]
 
-        m = folium.Map(tiles="CartoDB positron")
-        folium.PolyLine(
-            locations=track_points,
-            color="#0055cc",
-            weight=3,
-            opacity=0.9,
-        ).add_to(m)
-        folium.CircleMarker(
-            location=track_points[0],
-            radius=7, color="white", weight=2,
-            fill=True, fill_color="#27ae60", fill_opacity=1.0,
-        ).add_to(m)
-        folium.CircleMarker(
-            location=track_points[-1],
-            radius=7, color="white", weight=2,
-            fill=True, fill_color="#e74c3c", fill_opacity=1.0,
-        ).add_to(m)
-        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
+        dpi = 100
+        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="#dde8dd")
+        ax = fig.add_subplot(111)
+        ax.set_facecolor("#dde8dd")
+        ax.plot(lons_m, lats, color="#0055cc", linewidth=2.0,
+                solid_capstyle="round", zorder=2)
+        ax.plot(lons_m[0], lats[0], "o", color="#27ae60", markersize=9, zorder=3,
+                markeredgecolor="white", markeredgewidth=1.5)
+        ax.plot(lons_m[-1], lats[-1], "o", color="#e74c3c", markersize=9, zorder=3,
+                markeredgecolor="white", markeredgewidth=1.5)
+        ax.set_aspect("equal")
+        ax.axis("off")
 
-        # srcdoc: escape only & and " to keep the HTML attribute valid
-        map_html = m.get_root().render()
-        srcdoc = map_html.replace("&", "&amp;").replace('"', "&quot;")
-        return (
-            f'<iframe srcdoc="{srcdoc}" '
-            f'width="100%" height="{height}" '
-            f'style="border:0;border-radius:8px;display:block"></iframe>'
-        )
+        canvas = FigureCanvasAgg(fig)
+        buf = io.BytesIO()
+        canvas.print_figure(buf, format="png", bbox_inches="tight",
+                            pad_inches=0.15, facecolor="#dde8dd")
+        buf.seek(0)
+        b64 = base64.b64encode(buf.read()).decode()
+        _log.info("[ride_analysis] matplotlib PNG ok: %d chars base64", len(b64))
+        return b64
     except Exception as exc:
-        _log.warning("[ride_analysis] folium iframe failed: %s — falling back to SVG", exc)
-        return ""
-
-
-def _track_to_svg(
-    points: list[tuple[float, float]],
-    width: int = 640,
-    height: int = 300,
-) -> str:
-    """
-    Fallback: build an inline SVG polyline from (lat, lon) points using Mercator projection.
-    Returns empty string if fewer than 2 points are provided.
-    """
-    if len(points) < 2:
-        return ""
-
-    def merc(lat: float, lon: float) -> tuple[float, float]:
-        return lon, math.log(math.tan(math.pi / 4 + math.radians(lat) / 2))
-
-    projected = [merc(lat, lon) for lat, lon in points]
-    xs = [p[0] for p in projected]
-    ys = [p[1] for p in projected]
-    min_x, max_x = min(xs), max(xs)
-    min_y, max_y = min(ys), max(ys)
-    dx = max_x - min_x or 1e-9
-    dy = max_y - min_y or 1e-9
-
-    pad = 24
-    uw, uh = width - 2 * pad, height - 2 * pad
-    scale = min(uw / dx, uh / dy)
-    ox = pad + (uw - dx * scale) / 2
-    oy = pad + (uh - dy * scale) / 2
-
-    def to_svg(px: float, py: float) -> tuple[float, float]:
-        return ox + (px - min_x) * scale, oy + (max_y - py) * scale
-
-    coords = [to_svg(px, py) for px, py in projected]
-    pts_str = " ".join(f"{x:.1f},{y:.1f}" for x, y in coords)
-    sx, sy = coords[0]
-    ex, ey = coords[-1]
-
-    return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" '
-        f'width="{width}" height="{height}" viewBox="0 0 {width} {height}">'
-        f'<rect width="{width}" height="{height}" fill="#dde8dd" rx="10"/>'
-        f'<polyline points="{pts_str}" fill="none" stroke="#0055cc" '
-        f'stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>'
-        f'<circle cx="{sx:.1f}" cy="{sy:.1f}" r="6" fill="#27ae60" stroke="white" stroke-width="2"/>'
-        f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="6" fill="#e74c3c" stroke="white" stroke-width="2"/>'
-        f"</svg>"
-    )
+        _log.warning("[ride_analysis] matplotlib PNG failed: %s", exc)
+        return None
 
 
 # ── AI analysis ────────────────────────────────────────────────────────────────
@@ -410,34 +358,17 @@ def render_html_report(
     track_points = gpx_stats.get("track_points") or []
     map_section = ""
     if track_points:
-        legend = (
-            f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
-            f'<span style="color:#e74c3c">●</span> {l_end}'
-        )
-        svg = _track_to_svg(track_points)
-        svg_fallback = ""
-        if svg:
-            svg_fallback = f"""
-  <details style="margin-top:10px">
-    <summary style="font-size:.75rem;color:#888;cursor:pointer;user-select:none">
-      📍 Traccia GPX (offline / fallback)
-    </summary>
-    <div style="border-radius:8px;overflow:hidden;line-height:0;margin-top:6px">{svg}</div>
-  </details>"""
-        iframe = _folium_map_iframe(track_points)
-        if iframe:
+        b64 = _matplotlib_track_png_b64(track_points)
+        if b64:
+            legend = (
+                f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
+                f'<span style="color:#e74c3c">●</span> {l_end}'
+            )
             map_section = f"""
 <div class="card">
   <h2>🗺️ {s_map}</h2>
-  {iframe}
-  <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
-  {svg_fallback}
-</div>"""
-        elif svg:
-            map_section = f"""
-<div class="card">
-  <h2>🗺️ {s_map}</h2>
-  <div style="border-radius:8px;overflow:hidden;line-height:0">{svg}</div>
+  <img src="data:image/png;base64,{b64}"
+       style="width:100%;border-radius:8px;display:block" alt="Route map">
   <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
 </div>"""
 
