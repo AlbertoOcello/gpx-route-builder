@@ -94,60 +94,53 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
 
 # ── Map rendering ──────────────────────────────────────────────────────────────
 
-def _matplotlib_track_png_b64(
+def _folium_map_iframe(
     track_points: list[tuple[float, float]],
-    width: int = 640,
-    height: int = 320,
-) -> str | None:
+    height: int = 380,
+) -> str:
     """
-    Render GPX track as a PNG using matplotlib (Agg backend — no display needed).
-    Applies Mercator aspect correction. Returns base64 PNG or None on failure
-    (caller falls back to SVG).
+    Build a full Folium/Leaflet map and embed it as a base64 data-URI iframe.
+    The browser renders OSM tiles directly — no Selenium, no screenshot.
+    Returns empty string on failure (caller falls back to SVG).
     """
     if len(track_points) < 2:
-        return None
+        return ""
     try:
         import base64
-        # Use Figure+FigureCanvasAgg directly — avoids pyplot global state
-        # and the matplotlib.use("Agg") call that fails when Streamlit has
-        # already initialised matplotlib with a different backend.
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
+        import folium
 
         lats = [p[0] for p in track_points]
         lons = [p[1] for p in track_points]
 
-        # Mercator aspect correction: 1° lon ≠ 1° lat in distance
-        cos_lat = math.cos(math.radians(sum(lats) / len(lats)))
-        lons_m = [lon * cos_lat for lon in lons]
+        m = folium.Map(tiles="CartoDB positron")
+        folium.PolyLine(
+            locations=track_points,
+            color="#0055cc",
+            weight=3,
+            opacity=0.9,
+        ).add_to(m)
+        folium.CircleMarker(
+            location=track_points[0],
+            radius=7, color="white", weight=2,
+            fill=True, fill_color="#27ae60", fill_opacity=1.0,
+        ).add_to(m)
+        folium.CircleMarker(
+            location=track_points[-1],
+            radius=7, color="white", weight=2,
+            fill=True, fill_color="#e74c3c", fill_opacity=1.0,
+        ).add_to(m)
+        m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
 
-        dpi = 100
-        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="#dde8dd")
-        ax = fig.add_subplot(111)
-        ax.set_facecolor("#dde8dd")
-
-        ax.plot(lons_m, lats, color="#0055cc", linewidth=2.0,
-                solid_capstyle="round", zorder=2)
-        ax.plot(lons_m[0], lats[0], "o", color="#27ae60", markersize=9, zorder=3,
-                markeredgecolor="white", markeredgewidth=1.5)
-        ax.plot(lons_m[-1], lats[-1], "o", color="#e74c3c", markersize=9, zorder=3,
-                markeredgecolor="white", markeredgewidth=1.5)
-
-        ax.set_aspect("equal")
-        ax.axis("off")
-
-        canvas = FigureCanvasAgg(fig)
-        buf = io.BytesIO()
-        canvas.print_figure(buf, format="png", bbox_inches="tight", pad_inches=0.15,
-                            facecolor="#dde8dd")
-        buf.seek(0)
-        b64 = base64.b64encode(buf.read()).decode()
-        _log.info("[ride_analysis] matplotlib PNG ok: %d bytes base64", len(b64))
-        return b64
-
+        map_html = m.get_root().render()
+        b64 = base64.b64encode(map_html.encode("utf-8")).decode("ascii")
+        return (
+            f'<iframe src="data:text/html;base64,{b64}" '
+            f'width="100%" height="{height}" '
+            f'style="border:0;border-radius:8px;display:block"></iframe>'
+        )
     except Exception as exc:
-        _log.warning("[ride_analysis] matplotlib PNG failed: %s — falling back to SVG", exc)
-        return None
+        _log.warning("[ride_analysis] folium iframe failed: %s — falling back to SVG", exc)
+        return ""
 
 
 def _track_to_svg(
@@ -416,17 +409,16 @@ def render_html_report(
     track_points = gpx_stats.get("track_points") or []
     map_section = ""
     if track_points:
-        b64 = _matplotlib_track_png_b64(track_points)
         legend = (
             f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
             f'<span style="color:#e74c3c">●</span> {l_end}'
         )
-        if b64:
+        iframe = _folium_map_iframe(track_points)
+        if iframe:
             map_section = f"""
 <div class="card">
   <h2>🗺️ {s_map}</h2>
-  <img src="data:image/png;base64,{b64}"
-       style="width:100%;border-radius:8px;display:block" alt="Route map">
+  {iframe}
   <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
 </div>"""
         else:
