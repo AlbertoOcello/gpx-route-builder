@@ -4,7 +4,7 @@ ride_analysis_agent.py — Analisi ciclistica personalizzata.
 Flusso:
   1. analyze_gpx_bytes()  — estrae stats + metadata + track points dal GPX
   2. run_analysis()        — chiama AI con stats + profilo, ritorna dict strutturato
-  3. render_html_report()  — genera HTML scaricabile con mappa Folium (via Selenium)
+  3. render_html_report()  — genera HTML scaricabile con mappa matplotlib PNG
                              e narrativa del percorso
 """
 from __future__ import annotations
@@ -14,9 +14,6 @@ import io
 import json
 import logging
 import math
-import os
-import tempfile
-import time
 from datetime import datetime
 
 import gpxpy
@@ -52,18 +49,6 @@ _STYLE_LABELS = {
         "max": "🚀 Maximum assistance",
     },
 }
-
-# Chromium binary + driver paths (Debian bookworm / Docker)
-_CHROME_BINS = [
-    "/usr/bin/chromium",
-    "/usr/bin/chromium-browser",
-    "/usr/bin/google-chrome",
-]
-_CHROMEDRIVER_BINS = [
-    "/usr/bin/chromedriver",
-    "/usr/lib/chromium/chromedriver",
-    "/usr/lib/chromium-browser/chromedriver",
-]
 
 
 def analyze_gpx_bytes(file_bytes: bytes) -> dict:
@@ -109,106 +94,55 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
 
 # ── Map rendering ──────────────────────────────────────────────────────────────
 
-def _folium_screenshot_b64(
+def _matplotlib_track_png_b64(
     track_points: list[tuple[float, float]],
     width: int = 640,
-    height: int = 340,
+    height: int = 320,
 ) -> str | None:
     """
-    Render a Folium map of the GPX track using headless Chromium via Selenium.
-    Returns a base64-encoded PNG string, or None on any failure (caller falls back to SVG).
+    Render GPX track as a PNG using matplotlib (Agg backend — no display needed).
+    Applies Mercator aspect correction. Returns base64 PNG or None on failure
+    (caller falls back to SVG).
     """
     if len(track_points) < 2:
         return None
     try:
         import base64
-        import folium
-        from selenium import webdriver
-        from selenium.webdriver.chrome.options import Options
-        from selenium.webdriver.chrome.service import Service
-        from selenium.webdriver.common.by import By
-        from selenium.webdriver.support import expected_conditions as EC
-        from selenium.webdriver.support.ui import WebDriverWait
+        import matplotlib
+        matplotlib.use("Agg")
+        import matplotlib.pyplot as plt
 
-        center_lat = sum(p[0] for p in track_points) / len(track_points)
-        center_lon = sum(p[1] for p in track_points) / len(track_points)
+        lats = [p[0] for p in track_points]
+        lons = [p[1] for p in track_points]
 
-        m = folium.Map(
-            location=[center_lat, center_lon],
-            tiles="CartoDB positron",
-            zoom_start=12,
-        )
-        folium.PolyLine(
-            locations=track_points,
-            color="#0055cc",
-            weight=3,
-            opacity=0.9,
-        ).add_to(m)
-        folium.CircleMarker(
-            location=track_points[0],
-            radius=7,
-            color="white",
-            weight=2,
-            fill=True,
-            fill_color="#27ae60",
-            fill_opacity=1.0,
-        ).add_to(m)
-        folium.CircleMarker(
-            location=track_points[-1],
-            radius=7,
-            color="white",
-            weight=2,
-            fill=True,
-            fill_color="#e74c3c",
-            fill_opacity=1.0,
-        ).add_to(m)
-        m.fit_bounds([
-            [min(p[0] for p in track_points), min(p[1] for p in track_points)],
-            [max(p[0] for p in track_points), max(p[1] for p in track_points)],
-        ])
+        # Mercator aspect correction: 1° lon ≠ 1° lat in distance
+        cos_lat = math.cos(math.radians(sum(lats) / len(lats)))
+        lons_m = [lon * cos_lat for lon in lons]
 
-        with tempfile.NamedTemporaryFile(suffix=".html", delete=False) as f:
-            tmp_path = f.name
-        m.save(tmp_path)
+        dpi = 100
+        fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
+        fig.patch.set_facecolor("#dde8dd")
+        ax.set_facecolor("#dde8dd")
 
-        opts = Options()
-        opts.add_argument("--headless=new")
-        opts.add_argument("--no-sandbox")
-        opts.add_argument("--disable-dev-shm-usage")
-        opts.add_argument("--disable-gpu")
-        opts.add_argument(f"--window-size={width},{height}")
+        ax.plot(lons_m, lats, color="#0055cc", linewidth=2.0,
+                solid_capstyle="round", zorder=2)
+        ax.plot(lons_m[0], lats[0], "o", color="#27ae60", markersize=9, zorder=3,
+                markeredgecolor="white", markeredgewidth=1.5)
+        ax.plot(lons_m[-1], lats[-1], "o", color="#e74c3c", markersize=9, zorder=3,
+                markeredgecolor="white", markeredgewidth=1.5)
 
-        for chrome in _CHROME_BINS:
-            if os.path.exists(chrome):
-                opts.binary_location = chrome
-                break
+        ax.set_aspect("equal")
+        ax.axis("off")
 
-        svc = Service()
-        for chromedriver in _CHROMEDRIVER_BINS:
-            if os.path.exists(chromedriver):
-                svc = Service(chromedriver)
-                break
-
-        driver = webdriver.Chrome(service=svc, options=opts)
-        try:
-            driver.set_window_size(width, height)
-            driver.get(f"file://{tmp_path}")
-            try:
-                WebDriverWait(driver, 8).until(
-                    EC.presence_of_element_located((By.CLASS_NAME, "leaflet-container"))
-                )
-                time.sleep(2)  # let tiles finish loading
-            except Exception:
-                time.sleep(3)  # fallback wait if WebDriverWait fails
-            png = driver.get_screenshot_as_png()
-        finally:
-            driver.quit()
-            os.unlink(tmp_path)
-
-        return base64.b64encode(png).decode()
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.15,
+                    facecolor=fig.get_facecolor())
+        plt.close(fig)
+        buf.seek(0)
+        return base64.b64encode(buf.read()).decode()
 
     except Exception as exc:
-        _log.warning("[ride_analysis] folium screenshot failed: %s — falling back to SVG", exc)
+        _log.warning("[ride_analysis] matplotlib PNG failed: %s — falling back to SVG", exc)
         return None
 
 
@@ -478,7 +412,7 @@ def render_html_report(
     track_points = gpx_stats.get("track_points") or []
     map_section = ""
     if track_points:
-        b64 = _folium_screenshot_b64(track_points)
+        b64 = _matplotlib_track_png_b64(track_points)
         legend = (
             f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
             f'<span style="color:#e74c3c">●</span> {l_end}'

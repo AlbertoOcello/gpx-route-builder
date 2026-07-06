@@ -36,6 +36,7 @@ java -cp "${BROUTER_JAR}" btools.server.RouteServer \
     /app/brouter/profiles2 \
     /app/brouter/customprofiles \
     "${BROUTER_PORT}" \
+    1 \
     > /var/log/brouter.log 2>&1 &
 BROUTER_PID=$!
 

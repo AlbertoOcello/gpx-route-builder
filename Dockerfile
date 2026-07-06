@@ -1,10 +1,8 @@
 FROM python:3.12-slim
 
-# Java 21 for BRouter + Chromium for Folium map screenshots
+# Java 21 for BRouter
 RUN apt-get update && apt-get install -y --no-install-recommends \
     openjdk-21-jre-headless \
-    chromium \
-    chromium-driver \
     curl \
     wget \
     && rm -rf /var/lib/apt/lists/*
