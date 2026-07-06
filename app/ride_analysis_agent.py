@@ -108,9 +108,11 @@ def _matplotlib_track_png_b64(
         return None
     try:
         import base64
-        import matplotlib
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
+        # Use Figure+FigureCanvasAgg directly — avoids pyplot global state
+        # and the matplotlib.use("Agg") call that fails when Streamlit has
+        # already initialised matplotlib with a different backend.
+        from matplotlib.backends.backend_agg import FigureCanvasAgg
+        from matplotlib.figure import Figure
 
         lats = [p[0] for p in track_points]
         lons = [p[1] for p in track_points]
@@ -120,8 +122,8 @@ def _matplotlib_track_png_b64(
         lons_m = [lon * cos_lat for lon in lons]
 
         dpi = 100
-        fig, ax = plt.subplots(figsize=(width / dpi, height / dpi), dpi=dpi)
-        fig.patch.set_facecolor("#dde8dd")
+        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="#dde8dd")
+        ax = fig.add_subplot(111)
         ax.set_facecolor("#dde8dd")
 
         ax.plot(lons_m, lats, color="#0055cc", linewidth=2.0,
@@ -134,12 +136,14 @@ def _matplotlib_track_png_b64(
         ax.set_aspect("equal")
         ax.axis("off")
 
+        canvas = FigureCanvasAgg(fig)
         buf = io.BytesIO()
-        fig.savefig(buf, format="png", bbox_inches="tight", pad_inches=0.15,
-                    facecolor=fig.get_facecolor())
-        plt.close(fig)
+        canvas.print_figure(buf, format="png", bbox_inches="tight", pad_inches=0.15,
+                            facecolor="#dde8dd")
         buf.seek(0)
-        return base64.b64encode(buf.read()).decode()
+        b64 = base64.b64encode(buf.read()).decode()
+        _log.info("[ride_analysis] matplotlib PNG ok: %d bytes base64", len(b64))
+        return b64
 
     except Exception as exc:
         _log.warning("[ride_analysis] matplotlib PNG failed: %s — falling back to SVG", exc)
