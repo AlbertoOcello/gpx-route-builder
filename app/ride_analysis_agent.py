@@ -99,14 +99,14 @@ def _folium_map_iframe(
     height: int = 380,
 ) -> str:
     """
-    Build a full Folium/Leaflet map and embed it as a base64 data-URI iframe.
-    The browser renders OSM tiles directly — no Selenium, no screenshot.
+    Build a Folium/Leaflet map and embed it via the srcdoc attribute.
+    srcdoc is supported on all modern browsers including iOS Safari (unlike
+    data:text/html;base64 URIs which iOS blocks).
     Returns empty string on failure (caller falls back to SVG).
     """
     if len(track_points) < 2:
         return ""
     try:
-        import base64
         import folium
 
         lats = [p[0] for p in track_points]
@@ -131,10 +131,11 @@ def _folium_map_iframe(
         ).add_to(m)
         m.fit_bounds([[min(lats), min(lons)], [max(lats), max(lons)]])
 
+        # srcdoc: escape only & and " to keep the HTML attribute valid
         map_html = m.get_root().render()
-        b64 = base64.b64encode(map_html.encode("utf-8")).decode("ascii")
+        srcdoc = map_html.replace("&", "&amp;").replace('"', "&quot;")
         return (
-            f'<iframe src="data:text/html;base64,{b64}" '
+            f'<iframe srcdoc="{srcdoc}" '
             f'width="100%" height="{height}" '
             f'style="border:0;border-radius:8px;display:block"></iframe>'
         )
@@ -413,6 +414,16 @@ def render_html_report(
             f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
             f'<span style="color:#e74c3c">●</span> {l_end}'
         )
+        svg = _track_to_svg(track_points)
+        svg_fallback = ""
+        if svg:
+            svg_fallback = f"""
+  <details style="margin-top:10px">
+    <summary style="font-size:.75rem;color:#888;cursor:pointer;user-select:none">
+      📍 Traccia GPX (offline / fallback)
+    </summary>
+    <div style="border-radius:8px;overflow:hidden;line-height:0;margin-top:6px">{svg}</div>
+  </details>"""
         iframe = _folium_map_iframe(track_points)
         if iframe:
             map_section = f"""
@@ -420,11 +431,10 @@ def render_html_report(
   <h2>🗺️ {s_map}</h2>
   {iframe}
   <div style="font-size:.75rem;color:#888;margin-top:6px;text-align:center">{legend}</div>
+  {svg_fallback}
 </div>"""
-        else:
-            svg = _track_to_svg(track_points)
-            if svg:
-                map_section = f"""
+        elif svg:
+            map_section = f"""
 <div class="card">
   <h2>🗺️ {s_map}</h2>
   <div style="border-radius:8px;overflow:hidden;line-height:0">{svg}</div>
