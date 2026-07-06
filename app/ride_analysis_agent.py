@@ -550,6 +550,7 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 .route-cell{{background:#f8fafc;border-radius:8px;padding:10px 14px}}
 .route-cell .lbl{{font-size:.7rem;text-transform:uppercase;letter-spacing:.04em;color:#777;margin-bottom:2px}}
 .route-cell .val{{font-size:1rem;font-weight:700;color:#1a1a2e}}
+.route-title{{font-size:2rem;font-weight:800;color:#1a1a2e;margin-bottom:16px;line-height:1.2}}
 .route-name{{font-size:1.05rem;font-weight:600;color:#0f3460;margin-bottom:12px}}
 .profile-cols{{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}}
 .profile-section-title{{font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#666;margin:12px 0 6px}}
@@ -572,13 +573,13 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 <body>
 <div class="wrap">
 
+<h1 class="route-title">{_html_mod.escape(gpx_stats.get("gpx_filename") or gpx_name)}</h1>
+
 <div class="hdr">
   <h1>{title}</h1>
   <div class="sub">{subtitle}</div>
   <div class="meta">{l_generated}: {now} &nbsp;·&nbsp; {_html_mod.escape(profile.get("name",""))}</div>
 </div>
-
-{map_section}
 
 <div class="card">
   <h2>📍 {s_route}</h2>
@@ -590,6 +591,8 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
     <div class="route-cell"><div class="lbl">{l_max_alt}</div><div class="val">{max_alt}</div></div>
   </div>
 </div>
+
+{map_section}
 
 {narrative_section}
 
