@@ -61,7 +61,7 @@ echo.
 :: ── 2. Apri il browser quando Streamlit risponde ───────────────────────────────
 
 start /b powershell -WindowStyle Hidden -Command ^
-    "do { Start-Sleep 3 } until (try { (Invoke-WebRequest 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $false }); Start-Sleep 1; Start-Process 'http://localhost:8501'"
+    "do { Start-Sleep 2 } until (try { (Invoke-WebRequest 'http://localhost:8501/_stcore/health' -UseBasicParsing -TimeoutSec 2).StatusCode -eq 200 } catch { $false }); Start-Sleep 1; Start-Process 'http://localhost:8501'"
 
 :: ── 3. docker compose up (foreground — i log restano visibili) ────────────────
 

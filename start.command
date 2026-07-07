@@ -57,7 +57,7 @@ echo ""
 
 (
     until curl -sf http://localhost:8501/_stcore/health >/dev/null 2>&1; do
-        sleep 3
+        sleep 2
     done
     sleep 1
     open http://localhost:8501
