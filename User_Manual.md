@@ -1,5 +1,63 @@
 # GPX Route Builder — User Manual
 
+## Quick Installation
+
+> For full step-by-step instructions see the [README](README_EN.md).
+
+**What you need:**
+- [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running
+- An API key from [Anthropic Claude](https://console.anthropic.com), [OpenAI](https://platform.openai.com), [Google Gemini](https://aistudio.google.com) — or [Ollama](https://ollama.ai) locally (free)
+
+**Steps:**
+
+1. Create an empty folder on your Desktop, for example `gpx-route-builder`
+
+2. Inside the folder create a file called **`docker-compose.yml`** with this content:
+
+   ```yaml
+   services:
+     app:
+       image: albertoocello/gpx-route-builder:latest
+       ports:
+         - "8501:8501"
+       environment:
+         - AI_PROVIDER=${AI_PROVIDER:-claude}
+         - AI_MODEL=${AI_MODEL:-}
+         - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+         - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+         - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+         - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+       volumes:
+         - ./routes:/app/routes
+         - ./data:/app/data
+         - segments4:/app/brouter/segments4
+       restart: unless-stopped
+   
+   volumes:
+     segments4:
+   ```
+
+3. Inside the folder create a file called **`.env`** with your API key:
+
+   ```
+   AI_PROVIDER=claude
+   ANTHROPIC_API_KEY=sk-ant-...
+   ```
+
+4. Open the terminal in the folder and start:
+
+   ```bash
+   docker compose up
+   ```
+
+   On first run Docker downloads the image (~500 MB) and OSM maps. Wait for `Local URL: http://localhost:8501`.
+
+5. Open your browser at **`http://localhost:8501`**
+
+**Updates:** `docker compose pull && docker compose up`
+
+---
+
 ## Overview
 
 GPX Route Builder is an AI-assisted tool for planning cycling routes. The workflow is split into two phases:

@@ -1,6 +1,7 @@
 services:
   app:
-    build: .
+    image: albertoocello/gpx-route-builder:latest
+    # build: .   # sviluppatori: decommenta per compilare localmente
     ports:
       - "8501:8501"
       - "17777:17777"     # BRouter (opzionale — utile per debug/chiamate dirette)

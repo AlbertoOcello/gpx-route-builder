@@ -45,61 +45,141 @@ Plan your cycling routes with the help of AI. Enter distance, terrain type and p
 
 ## Installation
 
-### 1. Download the project
+### Step 1 — Make sure Docker Desktop is running
 
-```bash
-git clone https://github.com/AlbertoOcello/gpx-route-builder.git
-cd gpx-route-builder
+Open Docker Desktop from the Applications menu (Mac) or Desktop (Windows) and wait until the icon stops animating. Docker must be running before you proceed.
+
+---
+
+### Step 2 — Create the project folder
+
+Create a new empty folder on your computer where you want to keep the application, for example `gpx-route-builder` on your Desktop.
+
+**Open the terminal in that folder:**
+
+- **Mac**: open Finder, navigate to the folder, then right-click → **"Services" → "New Terminal at Folder"**
+  _(or open Terminal and drag the folder into the window)_
+- **Windows**: open File Explorer, navigate to the folder, then click the address bar at the top, type `cmd` and press **Enter**
+
+---
+
+### Step 3 — Create the `docker-compose.yml` file
+
+In the folder you just created, create a text file called **`docker-compose.yml`** with this content:
+
+```yaml
+services:
+  app:
+    image: albertoocello/gpx-route-builder:latest
+    ports:
+      - "8501:8501"
+    environment:
+      - AI_PROVIDER=${AI_PROVIDER:-claude}
+      - AI_MODEL=${AI_MODEL:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - GEMINI_API_KEY=${GEMINI_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_URL=${OLLAMA_URL:-http://ollama:11434}
+    volumes:
+      - ./routes:/app/routes
+      - ./data:/app/data
+      - segments4:/app/brouter/segments4
+    restart: unless-stopped
+
+volumes:
+  segments4:
 ```
 
-### 2. Configure the API key
+> **How to create the file:**
+> - **Mac**: open TextEdit, go to **Format → Make Plain Text**, paste the content, then **File → Save** with the name `docker-compose.yml` (remove the `.txt` extension if present).
+> - **Windows**: open Notepad, paste the content, then **File → Save As**, type `docker-compose.yml` in the filename box, and in the **"Save as type"** dropdown choose **"All Files (*.*)"**, then save.
 
-Copy the example file and enter your key:
+---
 
-```bash
-cp .env.example .env
+### Step 4 — Create the `.env` file with your API key
+
+In the same folder create a file called **`.env`** (yes, it starts with a dot) with this content:
+
 ```
-
-Open `.env` with a text editor and edit:
-
-```
-# Choose the provider: claude | openai | gemini | ollama
 AI_PROVIDER=claude
-AI_MODEL=claude-sonnet-4-6
-
-# Enter the key for the chosen provider
 ANTHROPIC_API_KEY=sk-ant-...
-# OPENAI_API_KEY=sk-...
-# GEMINI_API_KEY=...
-
-# For Ollama only (no key required)
-# AI_PROVIDER=ollama
-# OLLAMA_URL=http://localhost:11434
-# AI_MODEL=llama3.2
 ```
 
-### 3. Start
+Replace `sk-ant-...` with your actual API key.
+
+> **How to get an API key:**
+> - **Claude (Anthropic)** — go to [console.anthropic.com](https://console.anthropic.com) → **API Keys** → **Create Key**
+> - **OpenAI** — go to [platform.openai.com/api-keys](https://platform.openai.com/api-keys) → **Create new secret key**; in the `.env` file use `AI_PROVIDER=openai` and `OPENAI_API_KEY=sk-...`
+> - **Google Gemini** — go to [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey) → **Create API key**; use `AI_PROVIDER=gemini` and `GEMINI_API_KEY=...`
+> - **Ollama (free, local)** — no key needed, use `AI_PROVIDER=ollama` (see the Ollama section below)
+
+> **How to create the `.env` file:**
+> - **Mac**: in the Terminal opened in the folder, type `touch .env`, then open it with `open -e .env` (opens in TextEdit).
+> - **Windows**: in the command prompt, type `copy NUL .env`, then open it with `notepad .env`.
+
+---
+
+### Step 5 — Start the application
+
+In the terminal opened in the project folder, type:
 
 ```bash
 docker compose up
 ```
 
-On first launch it automatically downloads the OSM maps for your area (may take a few minutes).
+On the first run Docker automatically downloads the application image (~500 MB) and the OSM cycling maps for your area. **This takes a few minutes** — wait until you see a line like:
 
-### 4. Open the browser
+```
+  You can now view your Streamlit app in your browser.
+  Local URL: http://localhost:8501
+```
+
+---
+
+### Step 6 — Open the browser
+
+Open your preferred browser and go to:
 
 ```
 http://localhost:8501
 ```
 
+The application is ready. You can leave the terminal open in the background — do not close it, otherwise the application will stop.
+
+To stop the application: go back to the terminal and press **Ctrl+C**.
+
 ---
 
 ## Updates
 
+When a new version is released, open the terminal in the project folder and type:
+
 ```bash
-git pull
-docker compose up --build
+docker compose pull
+docker compose up
 ```
+
+Docker automatically downloads the updated version.
+
+---
+
+## Using Ollama (free AI, no keys)
+
+If you want to use Ollama instead of a cloud provider, edit the `.env` file:
+
+```
+AI_PROVIDER=ollama
+OLLAMA_URL=http://ollama:11434
+AI_MODEL=llama3.2
+```
+
+And start with the Ollama profile:
+
+```bash
+docker compose --profile ollama up
+```
+
+Ollama downloads the model on first launch (this may take some time depending on model size).
 
 ---
 
@@ -118,5 +198,40 @@ docker compose up --build
 ## Notes
 
 - Generated GPX files are compatible with Garmin, Komoot, Strava and any app that reads the standard GPX format.
-- The database and user preferences are saved locally on your computer — nothing is sent to external servers (except calls to the chosen AI provider).
-- To change the geographic area (default: Marche, Italy) edit `BROUTER_TILE` in `.env`.
+- Routes and user preferences are saved locally on your computer in the `routes/` and `data/` folders created automatically. Nothing is sent to external servers (except calls to the chosen AI provider).
+- To change the geographic area (default: Marche, Italy) add `BROUTER_TILE=E13_N44` (or the coordinates of the desired tile) in the `.env` file.
+
+---
+
+## For developers
+
+To work on the source code, clone the repository and build the image locally:
+
+```bash
+git clone https://github.com/AlbertoOcello/gpx-route-builder.git
+cd gpx-route-builder
+cp .env.example .env
+# edit .env with your API key
+```
+
+In the repo's `docker-compose.yml`, replace the `image:` line with `build: .`:
+
+```yaml
+services:
+  app:
+    build: .          # build locally
+    # image: albertoocello/gpx-route-builder:latest
+```
+
+Then start with rebuild:
+
+```bash
+docker compose up --build
+```
+
+To publish a new image to Docker Hub:
+
+```bash
+docker build -t albertoocello/gpx-route-builder:latest .
+docker push albertoocello/gpx-route-builder:latest
+```
