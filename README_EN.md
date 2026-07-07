@@ -43,7 +43,38 @@ Plan your cycling routes with the help of AI. Enter distance, terrain type and p
 
 ---
 
-## Installation
+## Simple Installation (users)
+
+Download the installer from the [Releases page](https://github.com/AlbertoOcello/gpx-route-builder/releases/latest):
+
+| System | File to download |
+|---|---|
+| **Mac** (macOS 11+) | `GPX-Route-Builder-Mac.dmg` |
+| **Windows** (10/11) | `GPX-Route-Builder-Setup.exe` |
+
+### Mac
+
+1. Open the `.dmg` file
+2. Drag **GPX Route Builder** into the **Applications** folder
+3. Open the app from Launchpad or Applications
+   > **First launch — Gatekeeper:** if you see "cannot be opened", go to **System Settings → Privacy & Security** and click **"Open Anyway"**
+4. On first launch choose your AI provider and enter your API key
+5. The browser opens automatically at `http://localhost:8501`
+
+### Windows
+
+1. Run `GPX-Route-Builder-Setup.exe`
+   > **SmartScreen:** click **"More info" → "Run anyway"**
+2. Follow the wizard (no administrator rights required)
+3. Double-click the Desktop icon
+4. On first launch choose your AI provider and enter your API key
+5. The browser opens automatically at `http://localhost:8501`
+
+> **Docker Desktop** is required — if not installed, the app guides you through the download.
+
+---
+
+## Manual Installation (advanced)
 
 ### Step 1 — Make sure Docker Desktop is running
 

@@ -43,7 +43,38 @@ Pianifica i tuoi percorsi ciclistici con l'aiuto dell'AI. Inserisci distanza, ti
 
 ---
 
-## Installazione
+## Installazione semplice (utenti)
+
+Scarica l'installer dalla [pagina Releases](https://github.com/AlbertoOcello/gpx-route-builder/releases/latest):
+
+| Sistema | File da scaricare |
+|---|---|
+| **Mac** (macOS 11+) | `GPX-Route-Builder-Mac.dmg` |
+| **Windows** (10/11) | `GPX-Route-Builder-Setup.exe` |
+
+### Mac
+
+1. Apri il file `.dmg`
+2. Trascina **GPX Route Builder** nella cartella **Applicazioni**
+3. Apri l'app dal Launchpad o da Applicazioni
+   > **Prima apertura — Gatekeeper:** se compare "impossibile aprire", vai in **Impostazioni di Sistema → Privacy e Sicurezza** e clicca **"Apri comunque"**
+4. Al primo avvio scegli il provider AI e inserisci la tua chiave API
+5. Il browser si apre automaticamente su `http://localhost:8501`
+
+### Windows
+
+1. Esegui `GPX-Route-Builder-Setup.exe`
+   > **SmartScreen:** clicca **"Ulteriori informazioni" → "Esegui comunque"**
+2. Segui il wizard (non richiede permessi amministratore)
+3. Doppio clic sull'icona sul Desktop
+4. Al primo avvio scegli il provider AI e inserisci la tua chiave API
+5. Il browser si apre automaticamente su `http://localhost:8501`
+
+> **Docker Desktop** è necessario — se non è installato, l'app ti guida nel download.
+
+---
+
+## Installazione manuale (avanzata)
 
 ### Passo 1 — Assicurati che Docker Desktop sia avviato
 

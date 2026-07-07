@@ -1,6 +1,26 @@
 # GPX Route Builder — User Manual
 
-## Quick Installation
+## Simple Installation (users)
+
+Download the installer from the [GitHub Releases page](https://github.com/AlbertoOcello/gpx-route-builder/releases/latest):
+
+**Mac:** download `GPX-Route-Builder-Mac.dmg`
+1. Open the `.dmg`, drag the icon to **Applications**
+2. Open the app — if Gatekeeper blocks it: **System Settings → Privacy & Security → "Open Anyway"**
+3. On first launch enter your AI API key
+4. The browser opens at `http://localhost:8501`
+
+**Windows:** download `GPX-Route-Builder-Setup.exe`
+1. Run the wizard — if SmartScreen appears: **"More info" → "Run anyway"**
+2. Double-click the Desktop icon
+3. On first launch enter your AI API key
+4. The browser opens at `http://localhost:8501`
+
+> **Docker Desktop** is required. The app notifies you if it's not installed and guides you through the download.
+
+---
+
+## Manual Installation (docker compose)
 
 > For full step-by-step instructions see the [README](README_EN.md).
 
