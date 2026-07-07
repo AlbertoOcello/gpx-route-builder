@@ -44,17 +44,21 @@
    ANTHROPIC_API_KEY=sk-ant-...
    ```
 
-4. Apri il terminale nella cartella e avvia:
+4. Scarica `start.command` (Mac) o `start.bat` (Windows) dalla [pagina GitHub](https://github.com/AlbertoOcello/gpx-route-builder) e mettilo nella stessa cartella. Poi:
+   - **Mac**: doppio clic su `start.command` _(prima volta: Impostazioni di Sistema → Privacy e Sicurezza → "Apri comunque")_
+   - **Windows**: doppio clic su `start.bat`
 
+   Lo script avvia Docker, lancia l'applicazione e apre il browser da solo.
+
+   **In alternativa**, dal terminale nella cartella:
    ```bash
    docker compose up
    ```
-
    Al primo avvio Docker scarica l'immagine (~500 MB) e le mappe OSM. Aspetta la riga `Local URL: http://localhost:8501`.
 
-5. Apri il browser su **`http://localhost:8501`**
+5. Apri il browser su **`http://localhost:8501`** _(automatico con gli script di avvio)_
 
-**Aggiornamenti:** `docker compose pull && docker compose up`
+**Aggiornamenti:** doppio clic sullo script di avvio — scarica automaticamente la versione più recente.
 
 ---
 

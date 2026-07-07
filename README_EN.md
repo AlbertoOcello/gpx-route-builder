@@ -121,7 +121,15 @@ Replace `sk-ant-...` with your actual API key.
 
 ### Step 5 — Start the application
 
-In the terminal opened in the project folder, type:
+**Easy method (recommended):** download `start.command` (Mac) or `start.bat` (Windows) from the [project GitHub page](https://github.com/AlbertoOcello/gpx-route-builder) and place it in the same folder. Then:
+
+- **Mac**: double-click `start.command`
+  > The first time macOS may block the file. Go to **System Settings → Privacy & Security**, scroll down to find the message about `start.command` and click **"Open Anyway"**.
+- **Windows**: double-click `start.bat`
+
+The script starts Docker Desktop if it is not already open, launches the application and opens the browser automatically.
+
+**Manual method (terminal):** in the terminal opened in the project folder:
 
 ```bash
 docker compose up
@@ -138,11 +146,11 @@ On the first run Docker automatically downloads the application image (~500 MB) 
 
 ### Step 6 — Open the browser
 
-Open your preferred browser and go to:
-
 ```
 http://localhost:8501
 ```
+
+_(If you used `start.command` or `start.bat` the browser opens automatically.)_
 
 The application is ready. You can leave the terminal open in the background — do not close it, otherwise the application will stop.
 
@@ -152,14 +160,14 @@ To stop the application: go back to the terminal and press **Ctrl+C**.
 
 ## Updates
 
-When a new version is released, open the terminal in the project folder and type:
+When a new version is released, double-click `start.command` / `start.bat` — it automatically pulls the updated image before launching.
+
+Alternatively, from the terminal in the project folder:
 
 ```bash
 docker compose pull
 docker compose up
 ```
-
-Docker automatically downloads the updated version.
 
 ---
 
