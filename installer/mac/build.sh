@@ -72,20 +72,84 @@ codesign --deep --force --verify \
     "$APP_BUNDLE" && echo "   .app firmato" || echo "⚠️  firma saltata — sblocca il keychain e rifai"
 
 echo "==> Sfondo DMG"
-# Crea un semplice sfondo 800x450 con testo
-magick -size 800x450 gradient:"#e8eef5-#d0daea" \
-    -fill "#1d3557" -font Helvetica-Bold -pointsize 26 \
-    -gravity North -annotate +0+60 "GPX Route Builder" \
-    -fill "#457b9d" -font Helvetica -pointsize 17 \
-    -gravity Center -annotate +0+20 "Trascina l'icona nella cartella Applicazioni per installare" \
-    -fill "#888888" -font Helvetica -pointsize 13 \
-    -gravity South -annotate +0+30 "albertoocello/gpx-route-builder" \
-    "$BUILD/dmg_background.png" 2>/dev/null || \
-magick -size 800x450 xc:"#dde8f0" \
-    -fill "#1d3557" -pointsize 22 \
-    -gravity Center -annotate +0+0 "Trascina GPX Route Builder in Applicazioni" \
-    "$BUILD/dmg_background.png"
-echo "   sfondo creato"
+python3 - "$BUILD/dmg_background.png" <<'PYEOF'
+import sys, struct, zlib, os
+
+# ---------- minimal PNG writer (no Pillow dependency) ----------
+def _chunk(tag, data):
+    c = zlib.crc32(tag + data) & 0xFFFFFFFF
+    return struct.pack(">I", len(data)) + tag + data + struct.pack(">I", c)
+
+def write_png(path, w, h, pixels):
+    raw = b""
+    for y in range(h):
+        raw += b"\x00"
+        for x in range(w):
+            raw += bytes(pixels[y][x])
+    compressed = zlib.compress(raw, 6)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+        f.write(_chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0)))
+        f.write(_chunk(b"IDAT", compressed))
+        f.write(_chunk(b"IEND", b""))
+
+W, H = 800, 450
+
+# gradient background: #e8eef5 → #cddaea  (top → bottom)
+top = (0xe8, 0xee, 0xf5)
+bot = (0xcd, 0xda, 0xea)
+
+pixels = []
+for y in range(H):
+    t = y / (H - 1)
+    r = int(top[0] + (bot[0] - top[0]) * t)
+    g = int(top[1] + (bot[1] - top[1]) * t)
+    b = int(top[2] + (bot[2] - top[2]) * t)
+    pixels.append([(r, g, b)] * W)
+
+# ---------- blit text via Pillow if available, else skip ----------
+try:
+    from PIL import Image, ImageDraw, ImageFont
+    img = Image.new("RGB", (W, H))
+    img.putdata([tuple(pixels[y][x]) for y in range(H) for x in range(W)])
+    draw = ImageDraw.Draw(img)
+
+    def load_font(size, bold=False):
+        candidates = [
+            f"/System/Library/Fonts/{'SFNSDisplay-Bold' if bold else 'SFNSDisplay'}.otf",
+            f"/System/Library/Fonts/Supplemental/{'Arial Bold' if bold else 'Arial'}.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+            "/System/Library/Fonts/Geneva.ttf",
+        ]
+        for p in candidates:
+            if os.path.exists(p):
+                try: return ImageFont.truetype(p, size)
+                except: pass
+        return ImageFont.load_default()
+
+    f_title  = load_font(32, bold=True)
+    f_body   = load_font(18)
+    f_small  = load_font(13)
+
+    def centered_x(text, font):
+        bb = draw.textbbox((0, 0), text, font=font)
+        return (W - (bb[2] - bb[0])) // 2
+
+    title = "GPX Route Builder"
+    body  = "Trascina l'icona nella cartella Applicazioni per installare"
+    sub   = "albertoocello/gpx-route-builder  •  v1.0"
+
+    draw.text((centered_x(title, f_title), 70),  title, fill="#1d3557", font=f_title)
+    draw.text((centered_x(body,  f_body),  210), body,  fill="#457b9d", font=f_body)
+    draw.text((centered_x(sub,   f_small), 410), sub,   fill="#888888", font=f_small)
+
+    img.save(sys.argv[1])
+except ImportError:
+    # Pillow not available: write gradient-only PNG
+    write_png(sys.argv[1], W, H, pixels)
+
+print("   sfondo creato")
+PYEOF
 
 echo "==> Creazione .dmg"
 rm -f "$DMG_OUT"
