@@ -191,6 +191,7 @@ Ollama downloads the model on first launch (this may take some time depending on
 | **Geolocate** | Search coordinates for a place or click on the map |
 | **Builder** | Generate the 3 real GPX files with scoring |
 | **Analyse & Feedback** | Compare planned vs real route, add notes |
+| **🔋 Ride Analysis** | Personalised ebike/bike analysis: battery, calories, time, fatigue, AI tips + downloadable HTML report |
 | **Debug** | Inspect prompts, scores and known obstacles |
 
 ---

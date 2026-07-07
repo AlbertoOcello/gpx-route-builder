@@ -181,6 +181,94 @@ Form di valutazione dell'uscita: stelle, domande Sì/No, note libere. Al salvata
 
 ---
 
+## Tab 🔋 Analisi Giro
+
+Analisi personalizzata di un'uscita in bici o ebike: carica il GPX registrato durante il giro, scegli il tuo profilo, e l'AI calcola consumo batteria, calorie, tempo stimato, indice di fatica e consigli. Al termine puoi scaricare un report HTML completo.
+
+---
+
+### Profilo bici + driver
+
+Prima di analizzare devi configurare un profilo che descrive te e la tua bici. Puoi salvare più profili (es. "Ebike Asfalto", "MTB Gravel") e selezionarli al momento dell'analisi.
+
+**Seleziona o crea profilo**
+Scegli un profilo esistente dal menu a tendina oppure seleziona **"Nuovo profilo"** per crearne uno.
+
+**Dati bici**
+- **Modello** — nome della bici (es. `Trek Rail 9.9`, `Specialized Turbo Levo`)
+- **Tipo** — Ebike o Bici normale (cambia i campi disponibili)
+- **Peso bici** — peso del mezzo in kg (influenza il calcolo di sforzo e consumo)
+- _(solo ebike)_ **Capacità batteria** — in Wh (es. 630, 750)
+- _(solo ebike)_ **% batteria al via** — carica al momento della partenza (default 100%)
+- _(solo ebike)_ **% batteria minima** — soglia sotto cui non scendere (riserva di sicurezza)
+- _(solo ebike)_ **Stile pedalata** — influenza il consumo stimato:
+  - 🔋 Risparmio batteria — assistenza minima, solo nei tratti più duri
+  - ⚡ Pedalata mista — alterna livelli bassi e medi
+  - 😌 Comfort totale — assistenza medio-alta, frequenza cardiaca bassa
+  - 🚀 Massima assistenza — livello più alto sempre
+
+**Dati driver**
+- **Peso** — in kg
+- **Età** — anni
+- **Sesso** — M / F / Altro
+- **Livello fitness** — da 1 (principiante) a 5 (atleta); guida la stima di calorie e fatica
+- **FC max** — frequenza cardiaca massima in bpm (se non la conosci, lascia il valore stimato)
+- **Note salute** — campo libero per condizioni rilevanti (es. "problemi al ginocchio", "asma")
+
+Clicca **Salva profilo** per memorizzarlo. I profili salvati sono disponibili in tutte le sessioni successive.
+
+---
+
+### Carica GPX e analisi
+
+**Upload GPX**
+Carica il file GPX registrato durante l'uscita (da Garmin, Wahoo, Strava, Komoot o qualsiasi ciclocomputer). Il sistema calcola automaticamente distanza, dislivello positivo/negativo e altitudine massima.
+
+**Collega route pianificata** _(opzionale)_
+Se il GPX è stato generato dal Builder (es. `anello_senigallia_B.gpx`), la route pianificata corrispondente viene rilevata automaticamente. Puoi anche selezionarla manualmente dal menu a tendina. La narrativa del Planner viene inclusa nel report HTML.
+
+**Avvia analisi**
+Clicca **Analizza** per inviare tutti i dati all'AI. L'elaborazione richiede alcuni secondi.
+
+---
+
+### Risultati
+
+**Solo ebike — riga batteria**
+| Metrica | Descrizione |
+|---|---|
+| % batteria consumata | Percentuale stimata di carica usata sull'intero percorso |
+| Autonomia residua | Km percorribili con la carica rimanente |
+| Livello assistenza stimato | Media del livello di supporto usato (1 = eco → 5 = turbo) |
+
+**Tutti i tipi di bici**
+| Metrica | Descrizione |
+|---|---|
+| Calorie | kcal consumate dal driver (al netto dell'assistenza per ebike) |
+| Tempo stimato | Durata prevista dell'uscita (ore e minuti) |
+| FC media stimata | Frequenza cardiaca media in bpm |
+| Indice di fatica | Da 1 (leggero) a 10 (massimo sforzo) |
+
+**Consigli AI** — bullet list di suggerimenti personalizzati sul percorso, sull'utilizzo della batteria, sulla gestione dello sforzo fisico e sulla sicurezza.
+
+---
+
+### Report HTML scaricabile
+
+Clicca **Scarica report HTML** per ottenere un file autonomo (`{nome_gpx}_analysis.html`) che puoi aprire in qualsiasi browser, condividere o archiviare. Il report contiene:
+
+- **Titolo** — nome del percorso (dal file GPX o dalla route collegata)
+- **Intestazione** — data/ora analisi e nome del profilo usato
+- **Dati percorso** — distanza, dislivello ±, altitudine massima
+- **Mappa PNG** — traccia del percorso generata dal file GPX
+- **Spirito del percorso** — narrativa del Planner, se la route è collegata
+- **Profilo analisi** — dati bici e driver usati
+- **Risultati** — tutti i valori calcolati (batteria, calorie, tempo, fatica)
+- **Consigli** — lista di suggerimenti AI
+- **Disclaimer** — nota sull'accuratezza delle stime
+
+---
+
 ## Tab Debug
 
 Strumento per chi vuole ispezionare il comportamento del sistema.

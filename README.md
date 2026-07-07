@@ -191,6 +191,7 @@ Ollama scarica il modello al primo avvio (dipende dalla dimensione del modello, 
 | **Geolocalizza** | Cerca coordinate di un luogo o clicca sulla mappa |
 | **Builder** | Genera i 3 GPX reali con scoring |
 | **Analizza & Feedback** | Confronta pianificato vs reale, aggiungi note |
+| **🔋 Analisi Giro** | Analisi personalizzata ebike/bici: batteria, calorie, tempo, fatica, consigli AI + report HTML scaricabile |
 | **Debug** | Ispeziona prompt, score e ostacoli noti |
 
 ---
