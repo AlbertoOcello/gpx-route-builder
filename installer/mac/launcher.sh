@@ -73,7 +73,18 @@ fi
 notify "Controllo aggiornamenti..."
 docker pull "$IMAGE" 2>&1 | tail -3
 
-# ── 5. Ciclo di vita del container ────────────────────────────────────────────
+# ── 5. Sostituisci il container se l'immagine è cambiata ─────────────────────
+# Dati persistenti solo via bind mount ($APP_DATA/routes, $APP_DATA/data) e
+# named volume (gpx_rb_segments4) — rimuovere il container non perde nulla.
+PULLED_ID=$(docker image inspect --format '{{.Id}}' "$IMAGE" 2>/dev/null)
+CURRENT_ID=$(docker inspect --format '{{.Image}}' "$CONTAINER" 2>/dev/null || echo "")
+
+if [ -n "$CURRENT_ID" ] && [ "$CURRENT_ID" != "$PULLED_ID" ]; then
+    notify "Nuova versione trovata — aggiorno..."
+    docker rm -f "$CONTAINER" >/dev/null 2>&1
+fi
+
+# ── 6. Ciclo di vita del container ────────────────────────────────────────────
 if docker ps --format "{{.Names}}" 2>/dev/null | grep -q "^${CONTAINER}$"; then
     : # già in esecuzione
 elif docker ps -a --format "{{.Names}}" 2>/dev/null | grep -q "^${CONTAINER}$"; then
@@ -92,7 +103,7 @@ else
         "$IMAGE" >/dev/null
 fi
 
-# ── 6. Polling e apertura browser ─────────────────────────────────────────────
+# ── 7. Polling e apertura browser ─────────────────────────────────────────────
 notify "Avvio in corso..."
 ELAPSED=0
 until curl -sf http://localhost:8501/_stcore/health >/dev/null 2>&1; do

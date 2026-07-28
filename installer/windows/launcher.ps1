@@ -140,7 +140,18 @@ if (-not (Test-Path $ENV_FILE)) {
 Write-Host "Controllo aggiornamenti..."
 & docker pull $IMAGE
 
-# ── 5. Ciclo di vita del container ────────────────────────────────────────────
+# ── 5. Sostituisci il container se l'immagine è cambiata ─────────────────────
+# Dati persistenti solo via bind mount ($APP_DATA\routes, $APP_DATA\data) e
+# named volume (gpx_rb_segments4) — rimuovere il container non perde nulla.
+$pulledId  = & docker image inspect --format '{{.Id}}' $IMAGE 2>$null
+$currentId = & docker inspect --format '{{.Image}}' $CONTAINER 2>$null
+
+if ($currentId -and ($currentId -ne $pulledId)) {
+    Write-Host "Nuova versione trovata — aggiorno..."
+    & docker rm -f $CONTAINER 2>$null | Out-Null
+}
+
+# ── 6. Ciclo di vita del container ────────────────────────────────────────────
 $running = & docker ps --format "{{.Names}}" 2>$null | Where-Object { $_ -eq $CONTAINER }
 $exists  = & docker ps -a --format "{{.Names}}" 2>$null | Where-Object { $_ -eq $CONTAINER }
 
@@ -164,7 +175,7 @@ if ($running) {
         $IMAGE | Out-Null
 }
 
-# ── 6. Polling e apertura browser ─────────────────────────────────────────────
+# ── 7. Polling e apertura browser ─────────────────────────────────────────────
 Write-Host "Attendo che l'app sia pronta..."
 $elapsed = 0
 do {
