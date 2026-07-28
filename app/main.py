@@ -1,6 +1,6 @@
 """
 GPX Route Builder — UI Streamlit
-Tabs: 📐 Planner · 📍 Geolocalizza · 🏗️ Builder · 📊 Analizza & Feedback · 🔧 Debug
+Tabs: 📐 Planner · 📍 Geolocalizza · 🏗️ Builder · 🧭 GPX Optimizer · 📊 Analizza & Feedback · 🔧 Debug
 """
 import datetime
 import json
@@ -20,6 +20,7 @@ from candidate_generator import generate_candidates
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
 from gpx_analyzer import analyze_gpx
+from gpx_optimizer import is_already_optimized, optimize_gpx
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
 from learning_agent import update_user_memory_from_feedback
@@ -39,10 +40,11 @@ st.set_page_config(page_title=t("app.page_title"), layout="wide")
 st.title(t("app.title"))
 render_language_selector()
 
-tab_planner, tab_geo, tab_builder, tab_analizza, tab_dbg, tab_ride = st.tabs([
+tab_planner, tab_geo, tab_builder, tab_optimizer, tab_analizza, tab_dbg, tab_ride = st.tabs([
     t("tabs.planner"),
     t("tabs.geo"),
     t("tabs.builder"),
+    t("tabs.optimizer"),
     t("tabs.analizza"),
     t("tabs.debug"),
     t("tabs.ride"),
@@ -1217,6 +1219,67 @@ with tab_builder:
                         st.info(f"{t('builder.decision_choice')} {q_b}")
                     if opts_b:
                         st.radio(t("builder.decision_option"), opts_b, key="bld_opt_radio")
+
+
+# ─── Tab: GPX Optimizer ────────────────────────────────────────────────────────
+with tab_optimizer:
+    st.subheader(t("optimizer.subheader"))
+    st.caption(t("optimizer.caption"))
+    st.info(t("optimizer.explainer"))
+
+    opt_uploaded = st.file_uploader(t("optimizer.uploader_label"), type=["gpx"], key="opt_uploader")
+
+    if opt_uploaded is not None:
+        try:
+            opt_raw = opt_uploaded.getvalue()
+            opt_gpx_parsed = gpxpy.parse(opt_raw.decode("utf-8"))
+
+            opt_can_proceed = True
+            if is_already_optimized(opt_gpx_parsed):
+                st.warning(t("optimizer.already_optimized"))
+                opt_force = st.checkbox(t("optimizer.force_reoptimize"), key="opt_force_reopt")
+                opt_can_proceed = opt_force
+
+            opt_default_name = opt_gpx_parsed.name or Path(opt_uploaded.name).stem
+            if st.session_state.get("opt_last_file") != opt_uploaded.file_id:
+                st.session_state["opt_last_file"] = opt_uploaded.file_id
+                st.session_state["opt_route_name"] = opt_default_name
+            opt_route_name = st.text_input(t("optimizer.route_name_label"), key="opt_route_name")
+
+            if st.button(t("optimizer.btn_run"), key="opt_btn_run", disabled=not opt_can_proceed):
+                with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False, mode="wb") as tmp_in:
+                    tmp_in.write(opt_raw)
+                    opt_in_path = tmp_in.name
+                with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False) as tmp_out:
+                    opt_out_path = tmp_out.name
+
+                try:
+                    opt_stats = optimize_gpx(opt_in_path, opt_route_name, opt_out_path)
+
+                    col_o1, col_o2, col_o3 = st.columns(3)
+                    col_o1.metric(t("optimizer.metric_points_before"), opt_stats["points_before"])
+                    col_o2.metric(
+                        t("optimizer.metric_points_after"),
+                        opt_stats["points_after"],
+                        delta=f"-{opt_stats['reduction_pct']:.1f}%",
+                    )
+                    col_o3.metric(t("optimizer.metric_waypoints"), opt_stats["waypoints_added"])
+
+                    with open(opt_out_path, "rb") as f:
+                        opt_out_bytes = f.read()
+                    st.download_button(
+                        label=t("optimizer.btn_download"),
+                        data=opt_out_bytes,
+                        file_name=f"{opt_route_name}_edge840.gpx",
+                        mime="application/gpx+xml",
+                        key="opt_dl_btn",
+                    )
+                finally:
+                    for _p in (opt_in_path, opt_out_path):
+                        try: os.unlink(_p)
+                        except OSError: pass
+        except Exception as e:
+            st.error(f"{t('optimizer.parse_error')} {e}")
 
 
 # ─── Tab: Analizza & Feedback ─────────────────────────────────────────────────

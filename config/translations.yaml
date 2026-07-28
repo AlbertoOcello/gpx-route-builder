@@ -6,6 +6,7 @@ it:
     planner: "📐 Planner"
     geo: "📍 Geolocalizza"
     builder: "🏗️ Builder"
+    optimizer: "🧭 GPX Optimizer"
     analizza: "📊 Analizza & Feedback"
     debug: "🔧 Debug"
     ride: "🔋 Analisi Giro"
@@ -164,6 +165,31 @@ it:
     winner_dl: "⬇ Scarica GPX scelto —"
     decision_choice: "**Scelta richiesta:**"
     decision_option: "Seleziona un'opzione:"
+
+  # ── GPX Optimizer ─────────────────────────────────────────────────────────────
+  optimizer:
+    subheader: "Ottimizza GPX per navigazione Garmin"
+    caption: >-
+      Carica un GPX già generato e ottieni un file derivato ottimizzato per
+      la navigazione turn-by-turn — il file sorgente non viene mai modificato.
+    explainer: >-
+      Applica **densità adattiva** ai punti traccia (infittisce su curve e
+      rotatorie, dirada sui rettilinei) per una navigazione più fluida, e
+      aggiunge **waypoint muti di orientamento** ogni pochi km lungo il
+      percorso — semplici segnaposto nome/posizione, senza turn-cue né
+      popup Garmin. Il risultato è un **nuovo file derivato**: il GPX
+      caricato resta intatto.
+    uploader_label: "Carica GPX da ottimizzare"
+    already_optimized: "Questo file risulta già ottimizzato (marcatore gpxoptimizer:v1 trovato)."
+    force_reoptimize: "Ottimizza comunque"
+    route_name_label: "Nome route"
+    btn_run: "🧭 Ottimizza per Garmin"
+    metric_points_before: "Punti prima"
+    metric_points_after: "Punti dopo"
+    metric_reduction: "Riduzione"
+    metric_waypoints: "Waypoint aggiunti"
+    btn_download: "⬇ Scarica GPX ottimizzato"
+    parse_error: "❌ Errore lettura GPX — il file potrebbe non essere un GPX valido o non contenere tracce:"
 
   # ── Analizza & Feedback ──────────────────────────────────────────────────────
   analizza:
@@ -378,6 +404,7 @@ en:
     planner: "📐 Planner"
     geo: "📍 Geolocate"
     builder: "🏗️ Builder"
+    optimizer: "🧭 GPX Optimizer"
     analizza: "📊 Analyse & Feedback"
     debug: "🔧 Debug"
     ride: "🔋 Ride Analysis"
@@ -536,6 +563,30 @@ en:
     winner_dl: "⬇ Download chosen GPX —"
     decision_choice: "**Choice required:**"
     decision_option: "Select an option:"
+
+  # ── GPX Optimizer ─────────────────────────────────────────────────────────────
+  optimizer:
+    subheader: "Optimize GPX for Garmin navigation"
+    caption: >-
+      Upload an already-generated GPX and get a derived file optimized for
+      turn-by-turn navigation — the source file is never modified.
+    explainer: >-
+      Applies **adaptive density** to track points (denser on curves and
+      roundabouts, sparser on straights) for smoother navigation, and adds
+      **silent orientation waypoints** every few km along the route — plain
+      name/position markers, no turn-cues or Garmin popups. The result is a
+      **new derived file**: the uploaded GPX stays intact.
+    uploader_label: "Upload GPX to optimize"
+    already_optimized: "This file appears to be already optimized (gpxoptimizer:v1 marker found)."
+    force_reoptimize: "Optimize anyway"
+    route_name_label: "Route name"
+    btn_run: "🧭 Optimize for Garmin"
+    metric_points_before: "Points before"
+    metric_points_after: "Points after"
+    metric_reduction: "Reduction"
+    metric_waypoints: "Waypoints added"
+    btn_download: "⬇ Download optimized GPX"
+    parse_error: "❌ Error reading GPX — the file may not be a valid GPX or may contain no tracks:"
 
   # ── Analyse & Feedback ───────────────────────────────────────────────────────
   analizza:

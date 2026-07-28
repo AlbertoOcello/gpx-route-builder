@@ -40,8 +40,8 @@ cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
     <key>CFBundleName</key>             <string>GPX Route Builder</string>
     <key>CFBundleDisplayName</key>      <string>GPX Route Builder</string>
     <key>CFBundleIdentifier</key>       <string>com.albertoocello.gpxroutebuilder</string>
-    <key>CFBundleVersion</key>          <string>1.0</string>
-    <key>CFBundleShortVersionString</key><string>1.0</string>
+    <key>CFBundleVersion</key>          <string>1.1</string>
+    <key>CFBundleShortVersionString</key><string>1.1</string>
     <key>CFBundlePackageType</key>      <string>APPL</string>
     <key>CFBundleExecutable</key>       <string>GPX Route Builder</string>
     <key>CFBundleIconFile</key>         <string>AppIcon</string>

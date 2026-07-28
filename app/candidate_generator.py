@@ -14,6 +14,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 
+import gpxpy
+
 from brouter_client import get_route
 from gpx_analyzer import analyze_gpx
 from area_resolver import resolve_area_traversal
@@ -140,6 +142,23 @@ def _expected_end(strategy: dict) -> tuple[float, float] | None:
     return (float(end["lon"]), float(end["lat"])) if end else None
 
 
+def _set_gpx_name(gpx_path: Path, strategy: dict, label: str) -> None:
+    """Il Garmin Edge 840 legge il nome route da <trk><name>, non dal filename."""
+    name = strategy.get("name") or f"Route {label}"
+    try:
+        with open(gpx_path, "r", encoding="utf-8") as f:
+            gpx = gpxpy.parse(f)
+
+        gpx.name = name
+        for track in gpx.tracks:
+            track.name = name
+
+        with open(gpx_path, "w", encoding="utf-8") as f:
+            f.write(gpx.to_xml())
+    except Exception as exc:
+        log.warning("Impossibile impostare il nome GPX per '%s': %s", gpx_path, exc)
+
+
 def _log_brouter_call(strategy: dict, lonlat: list[tuple[float, float]]) -> None:
     """Stampa coordinate start/end passate a BRouter — per verifica loop fix."""
     start_c = lonlat[0]
@@ -202,6 +221,9 @@ def _generate_one(
     try:
         # 2. Chiama BRouter
         get_route(lonlat, profile=strategy["profile"], output_path=str(gpx_path))
+
+        # 2b. Imposta il nome della route nel GPX (BRouter scrive un default fisso)
+        _set_gpx_name(gpx_path, strategy, label)
 
         # 3. Analizza GPX
         analysis = analyze_gpx(

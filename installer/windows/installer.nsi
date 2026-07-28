@@ -3,7 +3,7 @@
 
 Unicode True
 !define APP_NAME    "GPX Route Builder"
-!define APP_VERSION "1.0"
+!define APP_VERSION "1.1"
 !define PUBLISHER   "Alberto Ocello"
 !define EXE_NAME    "GPX-Route-Builder-Setup.exe"
 
