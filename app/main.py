@@ -6,6 +6,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 
@@ -305,6 +306,30 @@ with tab_planner:
     st.subheader(t("planner.subheader"))
     st.caption(t("planner.caption"))
 
+    # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
+    # solo un'assegnazione esplicita a session_state[key] fatta prima del
+    # rendering del widget si riflette davvero sul valore mostrato nel DOM —
+    # un pop() da solo pulisce lo stato Python ma lascia il widget invariato
+    # a schermo (comportamento Streamlit). pl_slat/pl_slon sono gestiti dal
+    # setdefault già presente più sotto: basta rimuoverli qui.
+    if st.session_state.pop("_pl_reset_pending", False):
+        st.session_state.pop("pl_slat", None)
+        st.session_state.pop("pl_slon", None)
+        st.session_state["pl_sname"] = "Senigallia"
+        st.session_state["pl_km"] = 60
+        st.session_state["pl_rt"] = "loop"
+        st.session_state["pl_scenery"] = "misto"
+        st.session_state["pl_athletic"] = "medio"
+        st.session_state["pl_direction"] = t("planner.form.direction_free")
+        st.session_state["pl_ename"] = ""
+        st.session_state["pl_elat"] = 43.6158
+        st.session_state["pl_elon"] = 13.5189
+        st.session_state["pl_wps"] = ""
+        st.session_state["pl_maxss"] = 8.0
+        st.session_state["pl_maxsp"] = 20.0
+        st.session_state["pl_avoid"] = ""
+        st.session_state["pl_free"] = ""
+
     col_form, col_map = st.columns([1, 2], gap="large")
 
     with col_form:
@@ -437,7 +462,7 @@ with tab_planner:
                 free_text=pl_free_text.strip(),
             )
 
-        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
         with col_btn1:
             plan_btn = st.button(t("planner.btn_plan"), type="primary", key="btn_pl_plan")
         with col_btn2:
@@ -447,6 +472,8 @@ with tab_planner:
                 disabled="pl_result" not in st.session_state,
             )
         with col_btn3:
+            reset_btn = st.button(t("planner.btn_reset"), key="btn_pl_reset")
+        with col_btn4:
             accept_btn = st.button(
                 t("planner.btn_accept"),
                 key="btn_pl_accept",
@@ -476,6 +503,19 @@ with tab_planner:
             pl_route_name_final = ""
             confirm_save_btn = False
             cancel_naming_btn = False
+
+    # ── Reset form — torna ai default, non tocca route già salvate su disco ───
+    if reset_btn:
+        _pl_flow_keys = [
+            "pl_result", "pl_request", "pl_naming_active",
+            "pl_name_suggestion", "pl_route_name_final",
+        ]
+        for _k in _pl_flow_keys:
+            st.session_state.pop(_k, None)
+        for _k in [k for k in st.session_state if k.startswith("pl_saved_")]:
+            st.session_state.pop(_k, None)
+        st.session_state["_pl_reset_pending"] = True
+        st.rerun()
 
     # ── Esecuzione pianificazione ─────────────────────────────────────────────
     if plan_btn or regen_btn:
@@ -2017,6 +2057,97 @@ with tab_dbg:
                     if st.button("🔕", key=f"deact_obs_{_obs['id']}", help=t("debug.obstacle_deactivate_help")):
                         db.deactivate_obstacle(_obs["id"])
                         st.rerun()
+
+    # ── Sezione 5: Gestione route (cancellazione con doppia conferma) ────────
+    st.divider()
+    st.subheader(t("debug.routes_mgmt_header"))
+
+    def _fmt_bytes(n: int) -> str:
+        if n >= 1_000_000:
+            return f"{n / 1_000_000:.1f} MB"
+        return f"{n / 1000:.1f} KB"
+
+    # ── 5a. Route pianificate (routes/planned/*.json) ────────────────────────
+    with st.expander(t("debug.routes_mgmt_planned_expander"), expanded=False):
+        _mgmt_routes = _load_saved_routes()
+        if not _mgmt_routes:
+            st.caption(t("debug.no_routes"))
+        else:
+            for _rname, _rdata in _mgmt_routes.items():
+                _confirm_key = f"dbg_confirm_del_route_{_rname}"
+                _rcol1, _rcol2 = st.columns([5, 1])
+                with _rcol1:
+                    st.markdown(
+                        f"**{_rname}** — {t('debug.routes_mgmt_created')} {_rdata.get('created_at', '—')}"
+                    )
+                with _rcol2:
+                    if st.button("🗑️", key=f"dbg_del_route_{_rname}", help=t("debug.routes_mgmt_delete_help")):
+                        st.session_state[_confirm_key] = True
+                        st.rerun()
+
+                if st.session_state.get(_confirm_key):
+                    st.warning(t("debug.routes_mgmt_confirm_msg").format(name=_rname))
+                    _rcc1, _rcc2 = st.columns(2)
+                    with _rcc1:
+                        if st.button(
+                            t("debug.confirm_delete_btn"), key=f"dbg_del_route_yes_{_rname}", type="primary"
+                        ):
+                            (_PLANNED_DIR / f"{_rname}.json").unlink(missing_ok=True)
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
+                    with _rcc2:
+                        if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_route_no_{_rname}"):
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
+
+    # ── 5b. Cartelle GPX generate (routes/generated/*/) ──────────────────────
+    with st.expander(t("debug.gpx_mgmt_expander"), expanded=False):
+        _gen_dir = Path("routes/generated")
+        _gen_folders = sorted(
+            (p for p in _gen_dir.iterdir() if p.is_dir()),
+            key=lambda p: p.name,
+            reverse=True,
+        ) if _gen_dir.exists() else []
+
+        if not _gen_folders:
+            st.caption(t("debug.gpx_mgmt_no_folders"))
+        else:
+            _gen_stats = []
+            for _folder in _gen_folders:
+                _gpx_files = list(_folder.glob("*.gpx"))
+                _gen_stats.append((len(_gpx_files), sum(f.stat().st_size for f in _gpx_files)))
+
+            st.caption(
+                t("debug.gpx_mgmt_total_size").format(size=_fmt_bytes(sum(b for _, b in _gen_stats)))
+            )
+
+            for _folder, (_n_files, _n_bytes) in zip(_gen_folders, _gen_stats):
+                _confirm_key = f"dbg_confirm_del_gpx_{_folder.name}"
+                _gcol1, _gcol2 = st.columns([5, 1])
+                with _gcol1:
+                    st.markdown(
+                        f"**{_folder.name}** — "
+                        f"{t('debug.gpx_mgmt_folder_info').format(n=_n_files, size=_fmt_bytes(_n_bytes))}"
+                    )
+                with _gcol2:
+                    if st.button("🗑️", key=f"dbg_del_gpx_{_folder.name}", help=t("debug.gpx_mgmt_delete_help")):
+                        st.session_state[_confirm_key] = True
+                        st.rerun()
+
+                if st.session_state.get(_confirm_key):
+                    st.warning(t("debug.gpx_mgmt_confirm_msg").format(name=_folder.name, n=_n_files))
+                    _gcc1, _gcc2 = st.columns(2)
+                    with _gcc1:
+                        if st.button(
+                            t("debug.confirm_delete_btn"), key=f"dbg_del_gpx_yes_{_folder.name}", type="primary"
+                        ):
+                            shutil.rmtree(_folder, ignore_errors=True)
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
+                    with _gcc2:
+                        if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_gpx_no_{_folder.name}"):
+                            st.session_state.pop(_confirm_key, None)
+                            st.rerun()
 
 # ─── Tab: 🔋 Analisi Giro ─────────────────────────────────────────────────────
 
