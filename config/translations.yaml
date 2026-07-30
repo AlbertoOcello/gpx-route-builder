@@ -4,12 +4,11 @@ it:
     page_title: "GPX Route Builder (by A. Ocello)"
   tabs:
     planner: "📐 Planner"
-    geo: "📍 Geolocalizza"
     builder: "🏗️ Builder"
     optimizer: "🧭 GPX Optimizer"
-    analizza: "📊 Analizza & Feedback"
-    debug: "🔧 Debug"
     ride: "🔋 Analisi Giro"
+    utility: "🛠️ Utility"
+    post_ride: "🏁 Post Ride"
 
   # ── Planner ──────────────────────────────────────────────────────────────────
   planner:
@@ -269,7 +268,7 @@ it:
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
   debug:
-    info: "Strumenti di debug — utili per sviluppo e diagnosi. Per l'uso quotidiano basta la tab **📐 Planner** o **🏗️ Builder**."
+    info: "Strumenti di ispezione e diagnosi — route pianificate, prompt Claude, ostacoli attivi. Per l'uso quotidiano basta la tab **📐 Planner** o **🏗️ Builder**."
     routes_expander: "📁 Route pianificate (Planner output)"
     no_routes: "Nessuna route salvata ancora."
     select_route: "Seleziona route"
@@ -337,6 +336,20 @@ it:
     gpx_mgmt_folder_info: "{n} file GPX · {size}"
     gpx_mgmt_delete_help: "Elimina questa cartella"
     gpx_mgmt_confirm_msg: "Eliminare definitivamente la cartella **{name}** e tutti i suoi {n} file GPX? L'operazione non è reversibile."
+
+  # ── Utility ──────────────────────────────────────────────────────────────────
+  utility:
+    caption: "Strumenti di supporto: geolocalizzazione, gestione file e diagnostica."
+    sub_geo: "📍 Geolocalizza"
+    sub_filemgmt: "🗑️ Gestione file"
+    sub_viewgpx: "🗺️ Visualizza GPX"
+    sub_debug: "🔧 Debug"
+    filemgmt_caption: "Cancella vecchie route pianificate o cartelle GPX generate per liberare spazio."
+    viewgpx_caption: "Carica un file GPX per vederne statistiche e mappa."
+
+  # ── Post Ride ────────────────────────────────────────────────────────────────
+  post_ride:
+    caption: "Confronta il percorso pianificato con la traccia GPS reale e segnala eventuali problemi incontrati."
 
   ride_analysis:
     subheader: "Analisi Giro Personalizzata"
@@ -416,12 +429,11 @@ en:
     page_title: "GPX Route Builder (by A. Ocello)"
   tabs:
     planner: "📐 Planner"
-    geo: "📍 Geolocate"
     builder: "🏗️ Builder"
     optimizer: "🧭 GPX Optimizer"
-    analizza: "📊 Analyse & Feedback"
-    debug: "🔧 Debug"
     ride: "🔋 Ride Analysis"
+    utility: "🛠️ Utility"
+    post_ride: "🏁 Post Ride"
 
   # ── Planner ──────────────────────────────────────────────────────────────────
   planner:
@@ -680,7 +692,7 @@ en:
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
   debug:
-    info: "Debug tools — useful for development and diagnostics. For daily use the **📐 Planner** or **🏗️ Builder** tab is enough."
+    info: "Inspection and diagnostic tools — planned routes, Claude prompts, active obstacles. For daily use the **📐 Planner** or **🏗️ Builder** tab is enough."
     routes_expander: "📁 Planned routes (Planner output)"
     no_routes: "No saved routes yet."
     select_route: "Select route"
@@ -748,6 +760,20 @@ en:
     gpx_mgmt_folder_info: "{n} GPX files · {size}"
     gpx_mgmt_delete_help: "Delete this folder"
     gpx_mgmt_confirm_msg: "Permanently delete folder **{name}** and all its {n} GPX files? This cannot be undone."
+
+  # ── Utility ──────────────────────────────────────────────────────────────────
+  utility:
+    caption: "Support tools: geolocation, file management, and diagnostics."
+    sub_geo: "📍 Geolocate"
+    sub_filemgmt: "🗑️ File management"
+    sub_viewgpx: "🗺️ View GPX"
+    sub_debug: "🔧 Debug"
+    filemgmt_caption: "Delete old planned routes or generated GPX folders to free up space."
+    viewgpx_caption: "Upload a GPX file to see its stats and map."
+
+  # ── Post Ride ────────────────────────────────────────────────────────────────
+  post_ride:
+    caption: "Compare the planned route with the actual GPS track and report any issues encountered."
 
   ride_analysis:
     subheader: "Personalised Ride Analysis"

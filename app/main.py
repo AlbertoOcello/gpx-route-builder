@@ -1,6 +1,6 @@
 """
 GPX Route Builder — UI Streamlit
-Tabs: 📐 Planner · 📍 Geolocalizza · 🏗️ Builder · 🧭 GPX Optimizer · 📊 Analizza & Feedback · 🔧 Debug
+Tabs: 📐 Planner · 🏗️ Builder · 🧭 GPX Optimizer · 🔋 Analisi Giro · 🛠️ Utility · 🏁 Post Ride
 """
 import datetime
 import json
@@ -41,14 +41,13 @@ st.set_page_config(page_title=t("app.page_title"), layout="wide")
 st.title(t("app.title"))
 render_language_selector()
 
-tab_planner, tab_geo, tab_builder, tab_optimizer, tab_analizza, tab_dbg, tab_ride = st.tabs([
+tab_planner, tab_builder, tab_optimizer, tab_ride, tab_utility, tab_post_ride = st.tabs([
     t("tabs.planner"),
-    t("tabs.geo"),
     t("tabs.builder"),
     t("tabs.optimizer"),
-    t("tabs.analizza"),
-    t("tabs.debug"),
     t("tabs.ride"),
+    t("tabs.utility"),
+    t("tabs.post_ride"),
 ])
 
 _PLANNED_DIR = Path("routes/planned")
@@ -299,6 +298,29 @@ def _save_planned_route(
     path = _PLANNED_DIR / f"{route_name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+# ── Helper GPX ──────────────────────────────────────────────────────────
+def _parse_gpx_bytes(raw: bytes):
+    parsed = gpxpy.parse(raw.decode("utf-8"))
+    pts = [pt for track in parsed.tracks for seg in track.segments for pt in seg.points]
+    coords = [(pt.latitude, pt.longitude) for pt in pts]
+    return pts, coords
+
+
+def _analyze_gpx_bytes(raw: bytes) -> tuple[list, list, dict]:
+    pts, coords = _parse_gpx_bytes(raw)
+    with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False, mode="wb") as tmp:
+        tmp.write(raw)
+        tmp_path = tmp.name
+    try:
+        closure_m = geodesic(coords[0], coords[-1]).meters if len(coords) >= 2 else 0.0
+        auto_rt = "loop" if closure_m < 500 else "out_and_back"
+        analysis = analyze_gpx(tmp_path, route_type=auto_rt)
+    finally:
+        try: os.unlink(tmp_path)
+        except OSError: pass
+    return pts, coords, analysis
 
 
 # ─── Tab: Planner ─────────────────────────────────────────────────────────────
@@ -691,197 +713,6 @@ with tab_planner:
             ).add_to(m_init)
             st_folium(m_init, width=None, height=460, key="pl_init_map", use_container_width=True)
             st.caption(t("planner.result_map_init_caption"))
-
-
-# ─── Tab: Geolocalizza ────────────────────────────────────────────────────────
-with tab_geo:
-    st.subheader(t("geo.subheader"))
-    st.caption(t("geo.caption"))
-
-    def _geo_type_badge(r: dict) -> str:
-        rank = r["place_rank"]
-        cls  = r["class_"]
-        typ  = r["type_"]
-        if rank <= 16: return "🏙️ città"
-        if rank <= 18: return "🏘️ comune"
-        if rank <= 19: return "🏚️ villaggio"
-        if rank <= 25: return "🏠 frazione"
-        if cls == "highway":   return f"🛣️ {typ}"
-        if cls == "amenity":   return f"🏪 {typ}"
-        if cls == "natural":   return f"🌿 {typ}"
-        if cls == "tourism":   return f"🗺️ {typ}"
-        return f"📌 {typ or cls or '?'}"
-
-    def _geo_short(display: str, n: int = 3) -> str:
-        parts = [p.strip() for p in display.split(",")]
-        return ", ".join(parts[:n])
-
-    col_geo_l, col_geo_r = st.columns([1, 2], gap="large")
-
-    # ── Colonna sinistra: controlli + risultati + click output ─────────────────
-    with col_geo_l:
-        st.markdown(t("geo.search_header"))
-        geo_query = st.text_input(
-            "Nome",
-            placeholder=t("geo.search_placeholder"),
-            key="geo_q",
-            label_visibility="collapsed",
-        )
-        col_gs1, col_gs2 = st.columns([2, 1])
-        with col_gs1:
-            geo_search_btn = st.button(t("geo.btn_search"), key="btn_geo_s", type="primary",
-                                       use_container_width=True)
-        with col_gs2:
-            geo_only_it = st.checkbox(t("geo.only_italy"), value=True, key="geo_it")
-
-        if geo_search_btn:
-            if not geo_query.strip():
-                st.warning(t("geo.warn_empty"))
-            else:
-                with st.spinner(t("geo.spinner_nominatim")):
-                    cc = "it" if geo_only_it else None
-                    try:
-                        hits = geocode_search_raw(geo_query.strip(), limit=10, country_codes=cc)
-                        st.session_state["geo_results"] = hits
-                        st.session_state["geo_sel"]     = None
-                    except Exception as exc:
-                        st.error(f"Errore Nominatim: {exc}")
-                        st.session_state["geo_results"] = []
-
-        # ── Lista risultati ────────────────────────────────────────────────────
-        geo_results = st.session_state.get("geo_results", [])
-        if "geo_results" in st.session_state and not geo_results:
-            st.warning(t("geo.warn_no_results"))
-
-        for i, r in enumerate(geo_results):
-            badge  = _geo_type_badge(r)
-            short  = _geo_short(r["display_name"])
-            is_sel = st.session_state.get("geo_sel") == i
-            pfx    = "▶ " if is_sel else ""
-
-            rc1, rc2 = st.columns([5, 2])
-            with rc1:
-                if st.button(
-                    f"{pfx}{badge}  {short}",
-                    key=f"geo_rb_{i}",
-                    help=r["display_name"],
-                    use_container_width=True,
-                ):
-                    st.session_state["geo_sel"] = i
-                    st.rerun()
-            with rc2:
-                st.caption(f"`{r['lat']:.4f}`  \n`{r['lon']:.4f}`")
-
-        # ── Output selezione ricerca ───────────────────────────────────────────
-        geo_sel = st.session_state.get("geo_sel")
-        if geo_sel is not None and geo_results:
-            r = geo_results[geo_sel]
-            coord_s = f"{r['lat']:.5f},{r['lon']:.5f}"
-            st.divider()
-            st.markdown(
-                f"**{_geo_type_badge(r)}** — {_geo_short(r['display_name'], 2)}  \n"
-                f"<small>{r['display_name']}</small>",
-                unsafe_allow_html=True,
-            )
-            st.markdown(t("geo.copy_planner"))
-            st.code(coord_s, language=None)
-
-        # ── Output click sulla mappa ───────────────────────────────────────────
-        geo_clicked = st.session_state.get("geo_clicked")
-        if geo_clicked:
-            lat_c, lon_c = geo_clicked
-            coord_s = f"{lat_c:.5f},{lon_c:.5f}"
-            rev = st.session_state.get("geo_rev", "")
-            st.divider()
-            st.markdown(t("geo.click_header"))
-            if rev:
-                st.caption(rev)
-            st.markdown(t("geo.copy_planner"))
-            st.code(coord_s, language=None)
-
-    # ── Colonna destra: mappa interattiva ─────────────────────────────────────
-    with col_geo_r:
-        st.caption(t("geo.map_caption"))
-
-        geo_results   = st.session_state.get("geo_results", [])
-        geo_sel       = st.session_state.get("geo_sel")
-        geo_clicked   = st.session_state.get("geo_clicked")
-
-        # Centro e zoom iniziali
-        if geo_sel is not None and geo_results:
-            r_sel   = geo_results[geo_sel]
-            geo_ctr = [r_sel["lat"], r_sel["lon"]]
-            geo_z   = 13
-        elif geo_clicked:
-            geo_ctr = list(geo_clicked)
-            geo_z   = 13
-        elif geo_results:
-            geo_ctr = [geo_results[0]["lat"], geo_results[0]["lon"]]
-            geo_z   = 10
-        else:
-            geo_ctr = [43.55, 13.10]   # Centro Marche
-            geo_z   = 9
-
-        m_geo = folium.Map(location=geo_ctr, zoom_start=geo_z, scrollWheelZoom=False)
-
-        # Marcatori risultati ricerca
-        for i, r in enumerate(geo_results):
-            is_sel = i == geo_sel
-            folium.Marker(
-                [r["lat"], r["lon"]],
-                tooltip=(
-                    f"{'▶ ' if is_sel else ''}"
-                    f"[{_geo_type_badge(r)}] {_geo_short(r['display_name'], 2)}"
-                ),
-                popup=folium.Popup(
-                    f"<b>{_geo_short(r['display_name'], 2)}</b><br>"
-                    f"rank={r['place_rank']} · {r['class_']}/{r['type_']}<br>"
-                    f"<small>{r['display_name']}</small>",
-                    max_width=280,
-                ),
-                icon=folium.Icon(
-                    color="red"  if is_sel else "blue",
-                    icon="star"  if is_sel else "circle",
-                    prefix="fa",
-                ),
-            ).add_to(m_geo)
-
-        # Marcatore punto cliccato
-        if geo_clicked:
-            rev = st.session_state.get("geo_rev", "")
-            folium.Marker(
-                list(geo_clicked),
-                tooltip=f"📍 {_geo_short(rev, 2) if rev else 'click'}",
-                popup=folium.Popup(
-                    f"<b>{geo_clicked[0]:.5f}, {geo_clicked[1]:.5f}</b><br>"
-                    f"<small>{rev}</small>",
-                    max_width=280,
-                ),
-                icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
-            ).add_to(m_geo)
-
-        map_data_geo = st_folium(
-            m_geo,
-            width=None,
-            height=520,
-            returned_objects=["last_clicked"],
-            key="geo_map",
-            use_container_width=True,
-        )
-
-        # Gestisci click sulla mappa
-        if map_data_geo and map_data_geo.get("last_clicked"):
-            lc = map_data_geo["last_clicked"]
-            new_c = (round(float(lc["lat"]), 7), round(float(lc["lng"]), 7))
-            if st.session_state.get("geo_clicked") != new_c:
-                st.session_state["geo_clicked"] = new_c
-                with st.spinner(t("geo.reverse_spinner")):
-                    try:
-                        addr = reverse_geocode_address(new_c[0], new_c[1])
-                        st.session_state["geo_rev"] = addr or t("geo.no_address")
-                    except Exception as exc:
-                        st.session_state["geo_rev"] = f"Errore: {exc}"
-                st.rerun()
 
 
 # ─── Tab: Builder ─────────────────────────────────────────────────────────────
@@ -1322,835 +1153,7 @@ with tab_optimizer:
             st.error(f"{t('optimizer.parse_error')} {e}")
 
 
-# ─── Tab: Analizza & Feedback ─────────────────────────────────────────────────
-with tab_analizza:
-    _analizza_viz, _analizza_cmp, _analizza_fb = st.tabs([
-        t("analizza.sub_viz"),
-        t("analizza.sub_compare"),
-        t("analizza.sub_feedback"),
-    ])
-
-    # ── Helper GPX ──────────────────────────────────────────────────────────
-    def _parse_gpx_bytes(raw: bytes):
-        parsed = gpxpy.parse(raw.decode("utf-8"))
-        pts = [pt for track in parsed.tracks for seg in track.segments for pt in seg.points]
-        coords = [(pt.latitude, pt.longitude) for pt in pts]
-        return pts, coords
-
-    def _analyze_gpx_bytes(raw: bytes) -> tuple[list, list, dict]:
-        pts, coords = _parse_gpx_bytes(raw)
-        with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False, mode="wb") as tmp:
-            tmp.write(raw)
-            tmp_path = tmp.name
-        try:
-            closure_m = geodesic(coords[0], coords[-1]).meters if len(coords) >= 2 else 0.0
-            auto_rt = "loop" if closure_m < 500 else "out_and_back"
-            analysis = analyze_gpx(tmp_path, route_type=auto_rt)
-        finally:
-            try: os.unlink(tmp_path)
-            except OSError: pass
-        return pts, coords, analysis
-
-    # ── Sezione 1: Visualizza GPX ───────────────────────────────────────────
-    with _analizza_viz:
-        st.caption(t("analizza.viz_caption"))
-        uploaded_gpx = st.file_uploader(t("analizza.viz_uploader"), type=["gpx"], key="viz_uploader")
-
-        if uploaded_gpx is not None:
-            try:
-                raw_bytes = uploaded_gpx.getvalue()
-                pts_v, coords_v, analysis_v = _analyze_gpx_bytes(raw_bytes)
-                closure_m_v = geodesic(coords_v[0], coords_v[-1]).meters if len(coords_v) >= 2 else 0.0
-                auto_rt_v = "loop" if closure_m_v < 500 else "out_and_back"
-
-                if not pts_v:
-                    st.warning(t("analizza.viz_no_tracks"))
-                else:
-                    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
-                    col_v1.metric(t("analizza.metric_distance"), f"{analysis_v['distance_km']:.1f} km")
-                    col_v2.metric(t("analizza.metric_elev_up"), f"{analysis_v['elevation_gain_m']:.0f} m")
-                    col_v3.metric(t("analizza.metric_elev_down"), f"{analysis_v['elevation_loss_m']:.0f} m")
-                    if auto_rt_v == "loop":
-                        loop_icon = "✅" if analysis_v.get("loop_closed") else "⚠️"
-                        col_v4.metric(t("analizza.metric_loop"), f"{loop_icon} ({analysis_v.get('closure_distance_m', 0):.0f} m)")
-                    else:
-                        col_v4.metric(t("analizza.metric_type"), t("analizza.metric_oadb"))
-
-                    st.caption(f"**{len(pts_v)} punti GPX** · {auto_rt_v} · chiusura {closure_m_v:.0f} m")
-
-                    m_v = folium.Map(location=list(coords_v[0]), zoom_start=12, scrollWheelZoom=False)
-                    folium.PolyLine(coords_v, color="#3a86ff", weight=4, opacity=0.85).add_to(m_v)
-                    folium.Marker(list(coords_v[0]), tooltip="Partenza", icon=folium.Icon(color="green", icon="play")).add_to(m_v)
-                    folium.Marker(list(coords_v[-1]), tooltip="Fine", icon=folium.Icon(color="red", icon="stop")).add_to(m_v)
-                    st_folium(m_v, width=None, height=520, key="viz_map", use_container_width=True)
-            except Exception as e:
-                st.error(f"Errore lettura GPX: {e}")
-
-    # ── Sezione 2: Confronta uscita ─────────────────────────────────────────
-    with _analizza_cmp:
-        st.caption(t("analizza.compare_caption"))
-
-        _CATEGORY_ICONS = {
-            "problema":   ("red",    "exclamation-sign"),
-            "bello":      ("green",  "star"),
-            "attenzione": ("orange", "warning-sign"),
-            "generico":   ("purple", "map-marker"),
-        }
-        _CATEGORY_CSS = {
-            "problema": "#d62728", "bello": "#2ca02c",
-            "attenzione": "#ff7f0e", "generico": "#9467bd",
-        }
-
-        col_cmp1, col_cmp2 = st.columns(2)
-        with col_cmp1:
-            gpx_plan = st.file_uploader(t("analizza.gpx_plan_label"), type=["gpx"], key="cmp_plan")
-        with col_cmp2:
-            gpx_real = st.file_uploader(t("analizza.gpx_real_label"), type=["gpx"], key="cmp_real")
-
-        # ── Rilevamento automatico route_name dal GPX pianificato ──────────
-        _saved_r_cmp = _load_saved_routes()
-        _cmp_rname: str | None = None
-
-        if gpx_plan:
-            _detected, _detect_note = _detect_route_from_plan_gpx(gpx_plan, _saved_r_cmp)
-            if _detected:
-                st.success(t("analizza.route_detected").format(name=_detected, note=_detect_note))
-                _cmp_rname = _detected
-            else:
-                st.warning(_detect_note)
-
-        if not gpx_plan:
-            st.info(t("analizza.no_plan"))
-
-        if gpx_plan and gpx_real:
-            try:
-                pts_p, coords_p, analysis_p = _analyze_gpx_bytes(gpx_plan.getvalue())
-                pts_r, coords_r, analysis_r = _analyze_gpx_bytes(gpx_real.getvalue())
-
-                if not pts_p or not pts_r:
-                    st.warning(t("analizza.no_tracks"))
-                else:
-                    # Metriche a confronto
-                    st.markdown(t("analizza.compare_metrics_header"))
-                    hdr, c1, c2, c3 = st.columns([1.5, 1, 1, 1])
-                    hdr.markdown(t("analizza.col_metric"))
-                    c1.markdown(t("analizza.col_planned"))
-                    c2.markdown(t("analizza.col_real"))
-                    c3.markdown(t("analizza.col_diff"))
-
-                    def _row(label, v1, v2, fmt="{:+.1f}"):
-                        hdr.markdown(label)
-                        c1.markdown(f"{v1:.1f}")
-                        c2.markdown(f"{v2:.1f}")
-                        diff = v2 - v1
-                        color = "green" if abs(diff) < abs(v1) * 0.05 else "orange"
-                        c3.markdown(f":{color}[{fmt.format(diff)}]")
-
-                    _row(t("analizza.row_distance"), analysis_p["distance_km"], analysis_r["distance_km"])
-                    _row(t("analizza.row_elev_up"), analysis_p["elevation_gain_m"], analysis_r["elevation_gain_m"])
-                    _row(t("analizza.row_elev_down"), analysis_p["elevation_loss_m"], analysis_r["elevation_loss_m"])
-
-                    # Deviazione massima
-                    st.markdown(t("analizza.max_dev_header"))
-                    with st.spinner(t("analizza.calc_dev_spinner")):
-                        sample_p = coords_p[::max(1, len(coords_p) // 300)]
-                        sample_r = coords_r[::max(1, len(coords_r) // 300)]
-                        max_dev_m = 0.0
-                        max_dev_coord = None
-                        for pt_r in sample_r:
-                            min_dist = min(geodesic(pt_r, pt_p).meters for pt_p in sample_p)
-                            if min_dist > max_dev_m:
-                                max_dev_m = min_dist
-                                max_dev_coord = pt_r
-
-                    if max_dev_m < 100:
-                        dev_label = t("analizza.dev_identical").format(m=max_dev_m)
-                    elif max_dev_m < 500:
-                        dev_label = t("analizza.dev_moderate").format(m=max_dev_m)
-                    else:
-                        dev_label = t("analizza.dev_large").format(m=max_dev_m)
-
-                    st.metric(t("analizza.max_dev_label"), dev_label)
-
-                    if max_dev_coord:
-                        maps_url = f"https://www.google.com/maps?q={max_dev_coord[0]:.6f},{max_dev_coord[1]:.6f}"
-                        st.markdown(
-                            f"{t('analizza.max_dev_point')} `{max_dev_coord[0]:.5f}, {max_dev_coord[1]:.5f}` "
-                            f"— [{t('analizza.max_dev_gmaps')}]({maps_url})"
-                        )
-
-                    # Salva confronto nella route JSON (se route identificata)
-                    if _cmp_rname and not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
-                        _save_comparison_to_route(_cmp_rname, {
-                            "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                            "gpx_planned": gpx_plan.name,
-                            "gpx_real": gpx_real.name,
-                            "planned_km": round(analysis_p["distance_km"], 2),
-                            "real_km": round(analysis_r["distance_km"], 2),
-                            "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
-                            "real_elev_gain": round(analysis_r["elevation_gain_m"]),
-                            "max_deviation_m": round(max_dev_m),
-                        })
-                        st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
-
-                    # ── Mappa sovrapposta con click handler ─────────────────
-                    st.markdown(t("analizza.map_header"))
-                    st.caption(t("analizza.map_caption"))
-
-                    # Segnaposto esistenti da DB (solo se route identificata)
-                    _existing_annots = db.get_map_annotations(_cmp_rname) if _cmp_rname else []
-
-                    ctr = coords_p[0] if coords_p else coords_r[0]
-                    m_cmp = folium.Map(location=list(ctr), zoom_start=12, scrollWheelZoom=False)
-
-                    fg_p = folium.FeatureGroup(name="Pianificato (blu)", show=True)
-                    folium.PolyLine(coords_p, color="#3a86ff", weight=3, opacity=0.8, tooltip="Pianificato").add_to(fg_p)
-                    fg_p.add_to(m_cmp)
-                    fg_r = folium.FeatureGroup(name="Reale (arancio)", show=True)
-                    folium.PolyLine(coords_r, color="#f4831f", weight=3, opacity=0.8, tooltip="Reale").add_to(fg_r)
-                    fg_r.add_to(m_cmp)
-
-                    if max_dev_coord:
-                        folium.Marker(
-                            list(max_dev_coord),
-                            tooltip=f"Max deviazione: {max_dev_m:.0f} m",
-                            icon=folium.Icon(color="red", icon="exclamation-sign"),
-                        ).add_to(m_cmp)
-
-                    fg_ann = folium.FeatureGroup(name="Segnaposto", show=True)
-                    for _ann in _existing_annots:
-                        _acat = _ann.get("category", "generico")
-                        _acol, _aico = _CATEGORY_ICONS.get(_acat, ("purple", "map-marker"))
-                        folium.Marker(
-                            [_ann["lat"], _ann["lon"]],
-                            tooltip=f"[{_acat}] {_ann['comment'][:40]}",
-                            popup=folium.Popup(
-                                f"<b>{_acat.upper()}</b><br>{_ann['comment']}<br>"
-                                f"<small>{_ann['created_at'][:16]}</small>",
-                                max_width=220,
-                            ),
-                            icon=folium.Icon(color=_acol, icon=_aico, prefix="glyphicon"),
-                        ).add_to(fg_ann)
-                    fg_ann.add_to(m_cmp)
-                    folium.LayerControl(collapsed=False).add_to(m_cmp)
-
-                    _map_result = st_folium(
-                        m_cmp,
-                        width=None,
-                        height=540,
-                        key="cmp_map",
-                        use_container_width=True,
-                        returned_objects=["last_clicked"],
-                    )
-
-                    # ── Pannello aggiunta segnaposto ───────────────────────
-                    _clicked = _map_result.get("last_clicked") if _map_result else None
-                    if _clicked and _clicked != st.session_state.get("cmp_last_click_processed"):
-                        st.session_state["cmp_pending_click"] = {
-                            "lat": _clicked["lat"], "lng": _clicked["lng"],
-                        }
-
-                    _pending = st.session_state.get("cmp_pending_click")
-                    if _pending:
-                        st.divider()
-                        if not _cmp_rname:
-                            st.warning(t("analizza.pin_no_route"))
-                        else:
-                            st.markdown(t("analizza.pin_header").format(route=_cmp_rname))
-                            col_pin1, col_pin2, col_pin3 = st.columns([1, 1, 2])
-                            with col_pin1:
-                                _pin_lat = st.number_input(
-                                    t("analizza.pin_lat"), value=_pending["lat"], format="%.6f", key="pin_lat",
-                                )
-                            with col_pin2:
-                                _pin_lon = st.number_input(
-                                    t("analizza.pin_lon"), value=_pending["lng"], format="%.6f", key="pin_lon",
-                                )
-                            with col_pin3:
-                                _pin_cat = st.selectbox(
-                                    t("analizza.pin_type"), ["generico", "problema", "bello", "attenzione"], key="pin_cat",
-                                )
-                            _pin_comment = st.text_input(
-                                t("analizza.pin_comment"),
-                                key="pin_comment",
-                                placeholder=t("analizza.pin_comment_placeholder"),
-                            )
-                            col_pba, col_pbb = st.columns(2)
-                            with col_pba:
-                                if st.button(t("analizza.btn_pin_save"), type="primary", key="btn_pin_save"):
-                                    if _pin_comment.strip():
-                                        db.save_map_annotation(
-                                            route_name=_cmp_rname,
-                                            lat=_pin_lat,
-                                            lon=_pin_lon,
-                                            comment=_pin_comment.strip(),
-                                            category=_pin_cat,
-                                        )
-                                        st.session_state["cmp_last_click_processed"] = _clicked
-                                        st.session_state.pop("cmp_pending_click", None)
-                                        st.success(f"Salvato: [{_pin_cat}] {_pin_comment.strip()[:50]}")
-                                        st.rerun()
-                                    else:
-                                        st.warning(t("analizza.pin_no_comment"))
-                            with col_pbb:
-                                if st.button(t("analizza.btn_pin_cancel"), key="btn_pin_cancel"):
-                                    st.session_state["cmp_last_click_processed"] = _clicked
-                                    st.session_state.pop("cmp_pending_click", None)
-                                    st.rerun()
-
-                    # ── Lista segnaposto salvati ────────────────────────────
-                    if _existing_annots:
-                        st.divider()
-                        st.markdown(t("analizza.pins_header").format(n=len(_existing_annots)))
-                        for _ann in _existing_annots:
-                            _acat = _ann.get("category", "generico")
-                            col_al, col_ar = st.columns([5, 1])
-                            with col_al:
-                                st.markdown(
-                                    f"<span style='color:{_CATEGORY_CSS.get(_acat,'#9467bd')};font-weight:bold'>"
-                                    f"[{_acat}]</span> {_ann['comment']} "
-                                    f"<small style='color:gray'>({_ann['lat']:.5f}, {_ann['lon']:.5f}) "
-                                    f"· {_ann['created_at'][:16]}</small>",
-                                    unsafe_allow_html=True,
-                                )
-                            with col_ar:
-                                if st.button("🗑", key=f"del_ann_{_ann['id']}", help="Elimina"):
-                                    db.delete_map_annotation(_ann["id"])
-                                    st.rerun()
-
-            except Exception as e:
-                import traceback as _tb
-                st.error(f"Errore confronto GPX: {e}")
-                with st.expander("Traceback"):
-                    st.code(_tb.format_exc())
-
-        elif gpx_plan and not gpx_real:
-            st.info(t("analizza.load_real"))
-
-    # ── Sezione 3: Feedback post-uscita ─────────────────────────────────────
-    with _analizza_fb:
-        st.caption(t("analizza.fb_caption"))
-
-        saved_r_fb = _load_saved_routes()
-        if not saved_r_fb:
-            st.info(t("analizza.fb_no_routes"))
-        else:
-            fb_route_sel = st.selectbox(
-                t("analizza.fb_route_label"),
-                ["— seleziona —"] + list(saved_r_fb.keys()),
-                key="fb_route_sel",
-            )
-            if fb_route_sel != "— seleziona —":
-                rd_fb = saved_r_fb[fb_route_sel]
-                req_fb = rd_fb.get("request", {})
-                narrative_fb = rd_fb.get("route_narrative", "")
-
-                if narrative_fb:
-                    st.info(narrative_fb)
-                st.caption(
-                    f"Target: {req_fb.get('target_km','?')} km · "
-                    f"{req_fb.get('route_type','?')} · "
-                    f"Tema: {req_fb.get('scenery_theme','—')} / {req_fb.get('athletic_theme','—')}"
-                )
-
-                # Builder results — pick candidate
-                builder_res = rd_fb.get("builder_results", {})
-                builder_cands = builder_res.get("candidates", []) if builder_res else []
-                ok_cands_fb = [c for c in builder_cands if c.get("status") in ("ok", "retried")]
-
-                fb_candidate_id = None
-                if ok_cands_fb:
-                    cand_options = ["— nessuno/non so —"] + [
-                        f"{c['id']} — {c['strategy_name']} ({c['profile']})"
-                        for c in ok_cands_fb
-                    ]
-                    fb_cand_sel = st.selectbox(t("analizza.fb_candidate_label"), cand_options, key="fb_cand_sel")
-                    if fb_cand_sel != "— nessuno/non so —":
-                        fb_candidate_id = fb_cand_sel.split(" — ")[0]
-                else:
-                    st.caption(t("analizza.fb_no_candidate"))
-
-                # ── Anteprima segnaposto (prima del form) ───────────────────
-                _fb_annotations = db.get_map_annotations(fb_route_sel)
-                if _fb_annotations:
-                    _CAT_STYLE = {
-                        "problema":   ("🔴", "#d62728"),
-                        "bello":      ("🟢", "#2ca02c"),
-                        "attenzione": ("🟠", "#ff7f0e"),
-                        "generico":   ("🟣", "#9467bd"),
-                    }
-                    _n_prob = sum(1 for a in _fb_annotations if a.get("category") == "problema")
-                    _preview_header = t("analizza.fb_pins_preview").format(n=len(_fb_annotations))
-                    if _n_prob:
-                        _preview_header += t("analizza.fb_pins_problems").format(n=_n_prob)
-                    st.markdown(_preview_header)
-                    for _ann in _fb_annotations:
-                        _acat = _ann.get("category", "generico")
-                        _icon, _color = _CAT_STYLE.get(_acat, ("🟣", "#9467bd"))
-                        st.markdown(
-                            f"{_icon} "
-                            f"<span style='color:{_color};font-weight:600'>[{_acat}]</span> "
-                            f"{_ann['comment']} "
-                            f"<span style='color:#888;font-size:0.85em'>"
-                            f"({_ann['lat']:.5f}, {_ann['lon']:.5f}) · {_ann['created_at'][:16]}"
-                            f"</span>",
-                            unsafe_allow_html=True,
-                        )
-                else:
-                    st.caption(t("analizza.fb_no_pins"))
-
-                with st.form("analizza_fb_form"):
-                    fb_rating = st.slider(t("analizza.fb_rating"), 1, 5, 4)
-                    st.markdown(t("analizza.fb_char_header"))
-                    col_fa, col_fb_c = st.columns(2)
-                    with col_fa:
-                        fb_traffic = st.checkbox(t("analizza.fb_traffic"))
-                        fb_gravel  = st.checkbox(t("analizza.fb_gravel"))
-                        fb_hard    = st.checkbox(t("analizza.fb_hard"))
-                    with col_fb_c:
-                        fb_surface = st.checkbox(t("analizza.fb_surface"))
-                        fb_views   = st.checkbox(t("analizza.fb_views"))
-                        fb_repeat  = st.checkbox(t("analizza.fb_repeat"), value=True)
-                    fb_notes = st.text_area(t("analizza.fb_notes"), placeholder=t("analizza.fb_notes_placeholder"))
-                    fb_submitted = st.form_submit_button(t("analizza.btn_fb_save"))
-
-                if fb_submitted:
-                    try:
-
-                        route_gen_id = db.save_pipeline_run(req_fb, [], [], {})
-                        db.save_feedback(
-                            route_gen_id=route_gen_id,
-                            candidate_id=fb_candidate_id or "—",
-                            rating=fb_rating,
-                            too_traffic=fb_traffic,
-                            too_gravel=fb_gravel,
-                            too_hard=fb_hard,
-                            good_surface=fb_surface,
-                            nice_views=fb_views,
-                            would_repeat=fb_repeat,
-                            notes=fb_notes,
-                            annotations=_fb_annotations,
-                        )
-
-                        # Promuovi segnaposto "problema" → known_obstacles
-                        _problems = [a for a in _fb_annotations if a.get("category") == "problema"]
-                        for _p in _problems:
-                            db.save_known_obstacle(
-                                lat=_p["lat"],
-                                lon=_p["lon"],
-                                description=_p["comment"],
-                                route_name=fb_route_sel,
-                                annotation_id=_p["id"],
-                            )
-
-                        _msg = t("analizza.fb_saved")
-                        if _problems:
-                            _msg += t("analizza.fb_obstacles").format(n=len(_problems))
-                        st.success(_msg)
-                    except Exception as exc:
-                        st.error(f"Errore salvataggio feedback: {exc}")
-
-
-# ─── Tab: Debug ───────────────────────────────────────────────────────────────
-with tab_dbg:
-    st.info(t("debug.info"))
-
-    # ── Sezione 1: Route pianificate (Planner) ────────────────────────────────
-    with st.expander(t("debug.routes_expander"), expanded=True):
-        saved_routes = _load_saved_routes()
-        if not saved_routes:
-            st.caption(t("debug.no_routes"))
-        else:
-            route_names = list(saved_routes.keys())
-            dbg_sel = st.selectbox(
-                t("debug.select_route"), ["— seleziona —"] + route_names, key="dbg_route_sel"
-            )
-            if dbg_sel != "— seleziona —":
-                rd = saved_routes[dbg_sel]
-
-                sub1, sub2, sub3 = st.tabs([t("debug.sub_json"), t("debug.sub_prompt"), t("debug.sub_score")])
-
-                with sub1:
-                    wps = rd.get("ordered_waypoints", [])
-                    req_rd = rd.get("request", {})
-                    st.markdown(
-                        f"**{dbg_sel}** — {req_rd.get('target_km','?')} km · "
-                        f"{req_rd.get('route_type','?')} · creata {rd.get('created_at','—')}"
-                    )
-                    dbg_narrative = rd.get("route_narrative", "")
-                    if dbg_narrative:
-                        st.markdown(t("debug.narrative_label"))
-                        st.info(dbg_narrative)
-                    if rd.get("warnings"):
-                        for w in rd["warnings"]:
-                            st.warning(w)
-                    dbg_sq = rd.get("search_queries", [])
-                    if dbg_sq:
-                        with st.expander(f"{t('debug.web_searches')} ({len(dbg_sq)})", expanded=False):
-                            for _qi, _q in enumerate(dbg_sq, 1):
-                                st.markdown(f"**{_qi}.** `{_q}`")
-                    wp_rows = [
-                        {
-                            t("planner.col_ord"): wp.get("order", i),
-                            t("planner.col_role"): wp.get("role"),
-                            t("planner.col_name"): wp.get("name"),
-                            t("planner.col_source"): wp.get("source"),
-                            t("planner.col_lat"): wp.get("lat"),
-                            t("planner.col_lon"): wp.get("lon"),
-                            t("planner.col_rationale"): wp.get("rationale") or "",
-                        }
-                        for i, wp in enumerate(wps)
-                    ]
-                    st.dataframe(wp_rows, use_container_width=True, hide_index=True)
-                    with st.expander("JSON completo"):
-                        st.json(rd)
-
-                with sub2:
-                    sp = rd.get("system_prompt", "")
-                    up = rd.get("user_prompt", "")
-                    if sp or up:
-                        st.markdown(t("planner.result_system_prompt"))
-                        st.code(sp, language="text")
-                        st.markdown(t("planner.result_user_prompt"))
-                        st.code(up, language="text")
-                    else:
-                        st.caption(t("debug.no_prompt"))
-
-                with sub3:
-                    scores = rd.get("builder_scores", [])
-                    if scores:
-                        st.json(scores)
-                    else:
-                        st.caption(t("debug.no_scores"))
-
-    # ── Sezione 2: Debug solo BRouter ─────────────────────────────────────────
-    with st.expander(t("debug.brouter_expander"), expanded=False):
-        st.caption(t("debug.brouter_caption"))
-
-        col1, col2 = st.columns(2)
-        with col1:
-            dbr_start_lat = st.number_input(t("debug.lat_start"), value=43.7136520, format="%.7f", key="dbr_slat")
-        with col2:
-            dbr_start_lon = st.number_input(t("debug.lon_start"), value=13.2278056, format="%.7f", key="dbr_slon")
-
-        dbr_target_km  = st.selectbox(t("debug.target_km"), [50, 55, 60, 65, 70], index=2, key="dbr_km")
-        dbr_route_type = st.selectbox(t("debug.route_type"), ["loop", "out_and_back", "point_to_point"], key="dbr_rt")
-        dbr_profile    = st.selectbox(t("debug.profile"), ["trekking", "gravel", "fastbike"], key="dbr_prof")
-
-        dbr_end_lat = dbr_end_lon = None
-        if dbr_route_type == "point_to_point":
-            col3, col4 = st.columns(2)
-            with col3:
-                dbr_end_lat = st.number_input(t("debug.lat_end"), value=43.7200000, format="%.7f", key="dbr_elat")
-            with col4:
-                dbr_end_lon = st.number_input(t("debug.lon_end"), value=13.2400000, format="%.7f", key="dbr_elon")
-
-        if st.button(t("debug.btn_brouter"), key="btn_dbr"):
-            try:
-                if dbr_route_type == "point_to_point":
-                    waypoints = [(dbr_start_lon, dbr_start_lat), (dbr_end_lon, dbr_end_lat)]
-                else:
-                    waypoints = [
-                        (dbr_start_lon, dbr_start_lat),
-                        (dbr_start_lon + 0.05, dbr_start_lat + 0.05),
-                    ]
-                    if dbr_route_type == "loop":
-                        waypoints.append((dbr_start_lon, dbr_start_lat))
-
-                gpx_path = get_route(
-                    waypoints, profile=dbr_profile,
-                    output_path="routes/generated/dbr_test.gpx",
-                )
-                analysis = analyze_gpx(
-                    gpx_path,
-                    route_type=dbr_route_type,
-                    expected_end=(dbr_end_lon, dbr_end_lat)
-                    if dbr_route_type == "point_to_point" else None,
-                )
-                st.session_state["dbr_gpx_path"] = gpx_path
-                st.session_state["dbr_analysis"]  = analysis
-                st.session_state["dbr_slat_v"]    = dbr_start_lat
-                st.session_state["dbr_slon_v"]    = dbr_start_lon
-            except Exception as e:
-                st.error(f"Errore BRouter: {e}")
-
-        if "dbr_gpx_path" in st.session_state:
-            st.success(f"GPX: {st.session_state['dbr_gpx_path']}")
-            st.json(st.session_state["dbr_analysis"])
-            m = _build_map(
-                st.session_state["dbr_gpx_path"],
-                st.session_state["dbr_slat_v"],
-                st.session_state["dbr_slon_v"],
-            )
-            st_folium(m, width=750, height=450, key="dbr_map")
-
-    # ── Sezione 3: Debug solo Planner ─────────────────────────────────────────
-    with st.expander(t("debug.planner_expander"), expanded=False):
-        st.caption(t("debug.planner_caption"))
-
-        col1, col2, col3 = st.columns([2, 1, 1])
-        with col1:
-            dbp_start_name = st.text_input(t("debug.name_start"), value="Casa Senigallia", key="dbp_sname")
-        with col2:
-            dbp_start_lat = st.number_input(t("planner.form.lat"), value=43.7136520, format="%.7f", key="dbp_slat")
-        with col3:
-            dbp_start_lon = st.number_input(t("planner.form.lon"), value=13.2278056, format="%.7f", key="dbp_slon")
-
-        col4, col5 = st.columns(2)
-        with col4:
-            dbp_target_km  = st.selectbox(t("debug.distance_km"), [50, 55, 60, 65, 70], index=2, key="dbp_km")
-            dbp_route_type = st.selectbox(t("debug.route_type"), ["loop", "out_and_back", "point_to_point"], key="dbp_rt")
-        with col5:
-            dbp_max_elev  = st.number_input(t("debug.max_elev"), value=700, step=50, key="dbp_elev")
-            dbp_preferred = st.text_input(t("debug.preferred_dir"), value="colline, borghi", key="dbp_pref")
-
-        dbp_desired  = st.text_input(t("debug.desired_places"), value="", key="dbp_des")
-        dbp_avoid    = st.text_input(t("debug.avoid"), value="SS16", key="dbp_av")
-        dbp_free_txt = st.text_area(t("debug.free_text"), height=60, key="dbp_free")
-        dbp_geo_dir  = st.selectbox(
-            t("debug.geo_dir"), [t("planner.form.direction_free"), "Nord", "Sud", "Est", "Ovest"], key="dbp_gdir",
-        )
-
-        dbp_end_name = None
-        dbp_stages   = []
-        if dbp_route_type == "point_to_point":
-            col_e1, col_e2, col_e3 = st.columns([2, 1, 1])
-            with col_e1:
-                dbp_end_name = st.text_input(t("debug.end_name"), value="Corinaldo", key="dbp_ename")
-            with col_e2:
-                dbp_end_lat_raw = st.number_input(
-                    t("debug.end_lat_geo"), value=0.0, format="%.7f", key="dbp_elat"
-                )
-                dbp_end_lat = dbp_end_lat_raw if dbp_end_lat_raw != 0.0 else None
-            with col_e3:
-                dbp_end_lon_raw = st.number_input(
-                    t("debug.end_lon_geo"), value=0.0, format="%.7f", key="dbp_elon"
-                )
-                dbp_end_lon = dbp_end_lon_raw if dbp_end_lon_raw != 0.0 else None
-
-            dbp_stages_raw = st.text_input(t("debug.stages"), value="Ostra, Trecastelli", key="dbp_stages")
-            dbp_stages = [s.strip() for s in dbp_stages_raw.split(",") if s.strip()]
-
-        def _dbp_build_request() -> dict:
-            req = {
-                "start": {"name": dbp_start_name, "lat": dbp_start_lat, "lon": dbp_start_lon},
-                "target_km": dbp_target_km,
-                "distance_tolerance_km": 5,
-                "route_type": dbp_route_type,
-                "waypoints_stages": dbp_stages,
-                "preferred_direction": _parse_csv(dbp_preferred),
-                "desired_places": _parse_csv(dbp_desired),
-                "avoid_places": _parse_csv(dbp_avoid),
-                "max_elevation_gain_m": dbp_max_elev,
-                "candidate_count": 3,
-                "free_text": dbp_free_txt.strip(),
-                "geographic_direction": None if dbp_geo_dir == t("planner.form.direction_free") else dbp_geo_dir,
-            }
-            if dbp_route_type == "point_to_point" and dbp_end_name:
-                req["end"] = {
-                    "name": dbp_end_name,
-                    "lat": st.session_state.get("dbp_elat") or None,
-                    "lon": st.session_state.get("dbp_elon") or None,
-                }
-            return req
-
-        col_b1, col_b2, _ = st.columns([1, 1, 2])
-        with col_b1:
-            show_prompt_btn = st.button(t("debug.btn_show_prompt"), key="btn_dbp_prompt")
-        with col_b2:
-            generate_btn = st.button(t("debug.btn_generate"), key="btn_dbp_generate")
-
-        if show_prompt_btn or generate_btn:
-            dbp_req = _dbp_build_request()
-            memory = load_user_memory()
-            merged = merge_memory_with_request(dbp_req, memory)
-            sp, up = build_prompt(merged, user_memory=memory)
-            st.session_state["dbp_prompt"] = (sp, up)
-
-        if "dbp_prompt" in st.session_state:
-            sp, up = st.session_state["dbp_prompt"]
-            with st.expander(t("debug.prompt_expander"), expanded=True):
-                st.markdown(t("planner.result_system_prompt"))
-                st.code(sp, language="text")
-                st.markdown(t("planner.result_user_prompt"))
-                st.code(up, language="text")
-
-        if generate_btn:
-            dbp_req = _dbp_build_request()
-            with st.spinner("Claude sta pianificando le strategie..."):
-                try:
-                    strategies = generate_strategies(dbp_req)
-                    st.session_state["dbp_strategies"] = strategies
-                    st.session_state["dbp_geocoded"]   = False
-                    st.success(f"{len(strategies)} strategie generate.")
-                except Exception as e:
-                    st.error(f"Errore Planner Agent: {e}")
-
-        if st.button(
-            t("debug.geocode_btn"),
-            key="btn_dbp_geo",
-            disabled="dbp_strategies" not in st.session_state,
-        ):
-            with st.spinner(t("debug.geocode_spinner")):
-                try:
-                    geocoded = [geocode_candidate(s) for s in st.session_state["dbp_strategies"]]
-                    st.session_state["dbp_strategies"] = geocoded
-                    st.session_state["dbp_geocoded"]   = True
-                    st.success(t("debug.geocode_done"))
-                except Exception as e:
-                    st.error(f"Errore geocodifica: {e}")
-
-        if "dbp_strategies" in st.session_state:
-            strategies = st.session_state["dbp_strategies"]
-            geocoded_flag = st.session_state.get("dbp_geocoded", False)
-            status_label = t("debug.geocode_waypoints_label") if geocoded_flag else ""
-            st.subheader(f"{t('debug.strategies_header')} ({len(strategies)}){status_label}")
-            for i, s in enumerate(strategies, 1):
-                label = (
-                    f"Strategia {i}: {s.get('name', '—')}"
-                    f"  [{s.get('profile', '?')} · ~{s.get('estimated_km', '?')} km]"
-                )
-                with st.expander(label):
-                    st.write(
-                        f"**Tipo:** {s.get('route_type')} &nbsp;|&nbsp; "
-                        f"**Profilo:** {s.get('profile')} &nbsp;|&nbsp; "
-                        f"**~{s.get('estimated_km')} km**"
-                    )
-                    st.write(f"**Rationale:** {s.get('rationale', '—')}")
-                    wps = s.get("waypoints", [])
-                    if wps:
-                        wp_rows = [
-                            {
-                                t("debug.col_role"): wp.get("role", ""),
-                                t("debug.col_name"): wp.get("name", ""),
-                                t("debug.col_lat"): wp.get("lat"),
-                                t("debug.col_lon"): wp.get("lon"),
-                                t("debug.col_geocoding"): (
-                                    t("debug.geocoding_error") if wp.get("geocoding_error")
-                                    else (t("debug.geocoding_ok") if not wp.get("needs_geocoding") else t("debug.geocoding_todo"))
-                                ),
-                            }
-                            for wp in wps
-                        ]
-                        st.dataframe(wp_rows, use_container_width=True)
-                    st.json(s)
-
-    # ── Sezione 4: Known obstacles ────────────────────────────────────────────
-    with st.expander(t("debug.obstacles_expander"), expanded=False):
-        _obs_list = db.get_active_obstacles()
-        if not _obs_list:
-            st.caption(t("debug.no_obstacles"))
-        else:
-            st.caption(t("debug.obstacles_active").format(n=len(_obs_list)))
-            for _obs in _obs_list:
-                _ocol1, _ocol2 = st.columns([6, 1])
-                with _ocol1:
-                    maps_url_obs = f"https://www.google.com/maps?q={_obs['lat']:.6f},{_obs['lon']:.6f}"
-                    st.markdown(
-                        f"🔴 **{_obs['description']}** "
-                        f"<small>({_obs['lat']:.5f}, {_obs['lon']:.5f}) "
-                        f"· {_obs.get('route_name','—')} · {_obs['created_at'][:10]}</small> "
-                        f"[↗ Maps]({maps_url_obs})",
-                        unsafe_allow_html=True,
-                    )
-                with _ocol2:
-                    if st.button("🔕", key=f"deact_obs_{_obs['id']}", help=t("debug.obstacle_deactivate_help")):
-                        db.deactivate_obstacle(_obs["id"])
-                        st.rerun()
-
-    # ── Sezione 5: Gestione route (cancellazione con doppia conferma) ────────
-    st.divider()
-    st.subheader(t("debug.routes_mgmt_header"))
-
-    def _fmt_bytes(n: int) -> str:
-        if n >= 1_000_000:
-            return f"{n / 1_000_000:.1f} MB"
-        return f"{n / 1000:.1f} KB"
-
-    # ── 5a. Route pianificate (routes/planned/*.json) ────────────────────────
-    with st.expander(t("debug.routes_mgmt_planned_expander"), expanded=False):
-        _mgmt_routes = _load_saved_routes()
-        if not _mgmt_routes:
-            st.caption(t("debug.no_routes"))
-        else:
-            for _rname, _rdata in _mgmt_routes.items():
-                _confirm_key = f"dbg_confirm_del_route_{_rname}"
-                _rcol1, _rcol2 = st.columns([5, 1])
-                with _rcol1:
-                    st.markdown(
-                        f"**{_rname}** — {t('debug.routes_mgmt_created')} {_rdata.get('created_at', '—')}"
-                    )
-                with _rcol2:
-                    if st.button("🗑️", key=f"dbg_del_route_{_rname}", help=t("debug.routes_mgmt_delete_help")):
-                        st.session_state[_confirm_key] = True
-                        st.rerun()
-
-                if st.session_state.get(_confirm_key):
-                    st.warning(t("debug.routes_mgmt_confirm_msg").format(name=_rname))
-                    _rcc1, _rcc2 = st.columns(2)
-                    with _rcc1:
-                        if st.button(
-                            t("debug.confirm_delete_btn"), key=f"dbg_del_route_yes_{_rname}", type="primary"
-                        ):
-                            (_PLANNED_DIR / f"{_rname}.json").unlink(missing_ok=True)
-                            st.session_state.pop(_confirm_key, None)
-                            st.rerun()
-                    with _rcc2:
-                        if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_route_no_{_rname}"):
-                            st.session_state.pop(_confirm_key, None)
-                            st.rerun()
-
-    # ── 5b. Cartelle GPX generate (routes/generated/*/) ──────────────────────
-    with st.expander(t("debug.gpx_mgmt_expander"), expanded=False):
-        _gen_dir = Path("routes/generated")
-        _gen_folders = sorted(
-            (p for p in _gen_dir.iterdir() if p.is_dir()),
-            key=lambda p: p.name,
-            reverse=True,
-        ) if _gen_dir.exists() else []
-
-        if not _gen_folders:
-            st.caption(t("debug.gpx_mgmt_no_folders"))
-        else:
-            _gen_stats = []
-            for _folder in _gen_folders:
-                _gpx_files = list(_folder.glob("*.gpx"))
-                _gen_stats.append((len(_gpx_files), sum(f.stat().st_size for f in _gpx_files)))
-
-            st.caption(
-                t("debug.gpx_mgmt_total_size").format(size=_fmt_bytes(sum(b for _, b in _gen_stats)))
-            )
-
-            for _folder, (_n_files, _n_bytes) in zip(_gen_folders, _gen_stats):
-                _confirm_key = f"dbg_confirm_del_gpx_{_folder.name}"
-                _gcol1, _gcol2 = st.columns([5, 1])
-                with _gcol1:
-                    st.markdown(
-                        f"**{_folder.name}** — "
-                        f"{t('debug.gpx_mgmt_folder_info').format(n=_n_files, size=_fmt_bytes(_n_bytes))}"
-                    )
-                with _gcol2:
-                    if st.button("🗑️", key=f"dbg_del_gpx_{_folder.name}", help=t("debug.gpx_mgmt_delete_help")):
-                        st.session_state[_confirm_key] = True
-                        st.rerun()
-
-                if st.session_state.get(_confirm_key):
-                    st.warning(t("debug.gpx_mgmt_confirm_msg").format(name=_folder.name, n=_n_files))
-                    _gcc1, _gcc2 = st.columns(2)
-                    with _gcc1:
-                        if st.button(
-                            t("debug.confirm_delete_btn"), key=f"dbg_del_gpx_yes_{_folder.name}", type="primary"
-                        ):
-                            shutil.rmtree(_folder, ignore_errors=True)
-                            st.session_state.pop(_confirm_key, None)
-                            st.rerun()
-                    with _gcc2:
-                        if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_gpx_no_{_folder.name}"):
-                            st.session_state.pop(_confirm_key, None)
-                            st.rerun()
-
 # ─── Tab: 🔋 Analisi Giro ─────────────────────────────────────────────────────
-
 with tab_ride:
     st.subheader(t("ride_analysis.subheader"))
     st.caption(t("ride_analysis.caption"))
@@ -2466,3 +1469,1013 @@ with tab_ride:
                 mime="text/html",
                 key="ride_download_btn",
             )
+
+
+# ─── Tab: Utility ─────────────────────────────────────────────────────────────
+with tab_utility:
+    st.caption(t("utility.caption"))
+
+    _util_geo, _util_filemgmt, _util_viewgpx, _util_debug = st.tabs([
+        t("utility.sub_geo"),
+        t("utility.sub_filemgmt"),
+        t("utility.sub_viewgpx"),
+        t("utility.sub_debug"),
+    ])
+
+    # ── Sotto-tab: Geolocalizza ───────────────────────────────────────────────
+    with _util_geo:
+        st.subheader(t("geo.subheader"))
+        st.caption(t("geo.caption"))
+
+        def _geo_type_badge(r: dict) -> str:
+            rank = r["place_rank"]
+            cls  = r["class_"]
+            typ  = r["type_"]
+            if rank <= 16: return "🏙️ città"
+            if rank <= 18: return "🏘️ comune"
+            if rank <= 19: return "🏚️ villaggio"
+            if rank <= 25: return "🏠 frazione"
+            if cls == "highway":   return f"🛣️ {typ}"
+            if cls == "amenity":   return f"🏪 {typ}"
+            if cls == "natural":   return f"🌿 {typ}"
+            if cls == "tourism":   return f"🗺️ {typ}"
+            return f"📌 {typ or cls or '?'}"
+
+        def _geo_short(display: str, n: int = 3) -> str:
+            parts = [p.strip() for p in display.split(",")]
+            return ", ".join(parts[:n])
+
+        col_geo_l, col_geo_r = st.columns([1, 2], gap="large")
+
+        # ── Colonna sinistra: controlli + risultati + click output ─────────────────
+        with col_geo_l:
+            st.markdown(t("geo.search_header"))
+            geo_query = st.text_input(
+                "Nome",
+                placeholder=t("geo.search_placeholder"),
+                key="geo_q",
+                label_visibility="collapsed",
+            )
+            col_gs1, col_gs2 = st.columns([2, 1])
+            with col_gs1:
+                geo_search_btn = st.button(t("geo.btn_search"), key="btn_geo_s", type="primary",
+                                           use_container_width=True)
+            with col_gs2:
+                geo_only_it = st.checkbox(t("geo.only_italy"), value=True, key="geo_it")
+
+            if geo_search_btn:
+                if not geo_query.strip():
+                    st.warning(t("geo.warn_empty"))
+                else:
+                    with st.spinner(t("geo.spinner_nominatim")):
+                        cc = "it" if geo_only_it else None
+                        try:
+                            hits = geocode_search_raw(geo_query.strip(), limit=10, country_codes=cc)
+                            st.session_state["geo_results"] = hits
+                            st.session_state["geo_sel"]     = None
+                        except Exception as exc:
+                            st.error(f"Errore Nominatim: {exc}")
+                            st.session_state["geo_results"] = []
+
+            # ── Lista risultati ────────────────────────────────────────────────────
+            geo_results = st.session_state.get("geo_results", [])
+            if "geo_results" in st.session_state and not geo_results:
+                st.warning(t("geo.warn_no_results"))
+
+            for i, r in enumerate(geo_results):
+                badge  = _geo_type_badge(r)
+                short  = _geo_short(r["display_name"])
+                is_sel = st.session_state.get("geo_sel") == i
+                pfx    = "▶ " if is_sel else ""
+
+                rc1, rc2 = st.columns([5, 2])
+                with rc1:
+                    if st.button(
+                        f"{pfx}{badge}  {short}",
+                        key=f"geo_rb_{i}",
+                        help=r["display_name"],
+                        use_container_width=True,
+                    ):
+                        st.session_state["geo_sel"] = i
+                        st.rerun()
+                with rc2:
+                    st.caption(f"`{r['lat']:.4f}`  \n`{r['lon']:.4f}`")
+
+            # ── Output selezione ricerca ───────────────────────────────────────────
+            geo_sel = st.session_state.get("geo_sel")
+            if geo_sel is not None and geo_results:
+                r = geo_results[geo_sel]
+                coord_s = f"{r['lat']:.5f},{r['lon']:.5f}"
+                st.divider()
+                st.markdown(
+                    f"**{_geo_type_badge(r)}** — {_geo_short(r['display_name'], 2)}  \n"
+                    f"<small>{r['display_name']}</small>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown(t("geo.copy_planner"))
+                st.code(coord_s, language=None)
+
+            # ── Output click sulla mappa ───────────────────────────────────────────
+            geo_clicked = st.session_state.get("geo_clicked")
+            if geo_clicked:
+                lat_c, lon_c = geo_clicked
+                coord_s = f"{lat_c:.5f},{lon_c:.5f}"
+                rev = st.session_state.get("geo_rev", "")
+                st.divider()
+                st.markdown(t("geo.click_header"))
+                if rev:
+                    st.caption(rev)
+                st.markdown(t("geo.copy_planner"))
+                st.code(coord_s, language=None)
+
+        # ── Colonna destra: mappa interattiva ─────────────────────────────────────
+        with col_geo_r:
+            st.caption(t("geo.map_caption"))
+
+            geo_results   = st.session_state.get("geo_results", [])
+            geo_sel       = st.session_state.get("geo_sel")
+            geo_clicked   = st.session_state.get("geo_clicked")
+
+            # Centro e zoom iniziali
+            if geo_sel is not None and geo_results:
+                r_sel   = geo_results[geo_sel]
+                geo_ctr = [r_sel["lat"], r_sel["lon"]]
+                geo_z   = 13
+            elif geo_clicked:
+                geo_ctr = list(geo_clicked)
+                geo_z   = 13
+            elif geo_results:
+                geo_ctr = [geo_results[0]["lat"], geo_results[0]["lon"]]
+                geo_z   = 10
+            else:
+                geo_ctr = [43.55, 13.10]   # Centro Marche
+                geo_z   = 9
+
+            m_geo = folium.Map(location=geo_ctr, zoom_start=geo_z, scrollWheelZoom=False)
+
+            # Marcatori risultati ricerca
+            for i, r in enumerate(geo_results):
+                is_sel = i == geo_sel
+                folium.Marker(
+                    [r["lat"], r["lon"]],
+                    tooltip=(
+                        f"{'▶ ' if is_sel else ''}"
+                        f"[{_geo_type_badge(r)}] {_geo_short(r['display_name'], 2)}"
+                    ),
+                    popup=folium.Popup(
+                        f"<b>{_geo_short(r['display_name'], 2)}</b><br>"
+                        f"rank={r['place_rank']} · {r['class_']}/{r['type_']}<br>"
+                        f"<small>{r['display_name']}</small>",
+                        max_width=280,
+                    ),
+                    icon=folium.Icon(
+                        color="red"  if is_sel else "blue",
+                        icon="star"  if is_sel else "circle",
+                        prefix="fa",
+                    ),
+                ).add_to(m_geo)
+
+            # Marcatore punto cliccato
+            if geo_clicked:
+                rev = st.session_state.get("geo_rev", "")
+                folium.Marker(
+                    list(geo_clicked),
+                    tooltip=f"📍 {_geo_short(rev, 2) if rev else 'click'}",
+                    popup=folium.Popup(
+                        f"<b>{geo_clicked[0]:.5f}, {geo_clicked[1]:.5f}</b><br>"
+                        f"<small>{rev}</small>",
+                        max_width=280,
+                    ),
+                    icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
+                ).add_to(m_geo)
+
+            map_data_geo = st_folium(
+                m_geo,
+                width=None,
+                height=520,
+                returned_objects=["last_clicked"],
+                key="geo_map",
+                use_container_width=True,
+            )
+
+            # Gestisci click sulla mappa
+            if map_data_geo and map_data_geo.get("last_clicked"):
+                lc = map_data_geo["last_clicked"]
+                new_c = (round(float(lc["lat"]), 7), round(float(lc["lng"]), 7))
+                if st.session_state.get("geo_clicked") != new_c:
+                    st.session_state["geo_clicked"] = new_c
+                    with st.spinner(t("geo.reverse_spinner")):
+                        try:
+                            addr = reverse_geocode_address(new_c[0], new_c[1])
+                            st.session_state["geo_rev"] = addr or t("geo.no_address")
+                        except Exception as exc:
+                            st.session_state["geo_rev"] = f"Errore: {exc}"
+                    st.rerun()
+
+    # ── Sotto-tab: Gestione file ──────────────────────────────────────────────
+    with _util_filemgmt:
+        st.caption(t("utility.filemgmt_caption"))
+
+        st.subheader(t("debug.routes_mgmt_header"))
+
+        def _fmt_bytes(n: int) -> str:
+            if n >= 1_000_000:
+                return f"{n / 1_000_000:.1f} MB"
+            return f"{n / 1000:.1f} KB"
+
+        # ── Route pianificate (routes/planned/*.json) ────────────────────────
+        with st.expander(t("debug.routes_mgmt_planned_expander"), expanded=False):
+            _mgmt_routes = _load_saved_routes()
+            if not _mgmt_routes:
+                st.caption(t("debug.no_routes"))
+            else:
+                for _rname, _rdata in _mgmt_routes.items():
+                    _confirm_key = f"dbg_confirm_del_route_{_rname}"
+                    _rcol1, _rcol2 = st.columns([5, 1])
+                    with _rcol1:
+                        st.markdown(
+                            f"**{_rname}** — {t('debug.routes_mgmt_created')} {_rdata.get('created_at', '—')}"
+                        )
+                    with _rcol2:
+                        if st.button("🗑️", key=f"dbg_del_route_{_rname}", help=t("debug.routes_mgmt_delete_help")):
+                            st.session_state[_confirm_key] = True
+                            st.rerun()
+
+                    if st.session_state.get(_confirm_key):
+                        st.warning(t("debug.routes_mgmt_confirm_msg").format(name=_rname))
+                        _rcc1, _rcc2 = st.columns(2)
+                        with _rcc1:
+                            if st.button(
+                                t("debug.confirm_delete_btn"), key=f"dbg_del_route_yes_{_rname}", type="primary"
+                            ):
+                                (_PLANNED_DIR / f"{_rname}.json").unlink(missing_ok=True)
+                                st.session_state.pop(_confirm_key, None)
+                                st.rerun()
+                        with _rcc2:
+                            if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_route_no_{_rname}"):
+                                st.session_state.pop(_confirm_key, None)
+                                st.rerun()
+
+        # ── Cartelle GPX generate (routes/generated/*/) ──────────────────────
+        with st.expander(t("debug.gpx_mgmt_expander"), expanded=False):
+            _gen_dir = Path("routes/generated")
+            _gen_folders = sorted(
+                (p for p in _gen_dir.iterdir() if p.is_dir()),
+                key=lambda p: p.name,
+                reverse=True,
+            ) if _gen_dir.exists() else []
+
+            if not _gen_folders:
+                st.caption(t("debug.gpx_mgmt_no_folders"))
+            else:
+                _gen_stats = []
+                for _folder in _gen_folders:
+                    _gpx_files = list(_folder.glob("*.gpx"))
+                    _gen_stats.append((len(_gpx_files), sum(f.stat().st_size for f in _gpx_files)))
+
+                st.caption(
+                    t("debug.gpx_mgmt_total_size").format(size=_fmt_bytes(sum(b for _, b in _gen_stats)))
+                )
+
+                for _folder, (_n_files, _n_bytes) in zip(_gen_folders, _gen_stats):
+                    _confirm_key = f"dbg_confirm_del_gpx_{_folder.name}"
+                    _gcol1, _gcol2 = st.columns([5, 1])
+                    with _gcol1:
+                        st.markdown(
+                            f"**{_folder.name}** — "
+                            f"{t('debug.gpx_mgmt_folder_info').format(n=_n_files, size=_fmt_bytes(_n_bytes))}"
+                        )
+                    with _gcol2:
+                        if st.button("🗑️", key=f"dbg_del_gpx_{_folder.name}", help=t("debug.gpx_mgmt_delete_help")):
+                            st.session_state[_confirm_key] = True
+                            st.rerun()
+
+                    if st.session_state.get(_confirm_key):
+                        st.warning(t("debug.gpx_mgmt_confirm_msg").format(name=_folder.name, n=_n_files))
+                        _gcc1, _gcc2 = st.columns(2)
+                        with _gcc1:
+                            if st.button(
+                                t("debug.confirm_delete_btn"), key=f"dbg_del_gpx_yes_{_folder.name}", type="primary"
+                            ):
+                                shutil.rmtree(_folder, ignore_errors=True)
+                                st.session_state.pop(_confirm_key, None)
+                                st.rerun()
+                        with _gcc2:
+                            if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_gpx_no_{_folder.name}"):
+                                st.session_state.pop(_confirm_key, None)
+                                st.rerun()
+
+    # ── Sotto-tab: Visualizza GPX ─────────────────────────────────────────────
+    with _util_viewgpx:
+        st.caption(t("utility.viewgpx_caption"))
+        st.caption(t("analizza.viz_caption"))
+        uploaded_gpx = st.file_uploader(t("analizza.viz_uploader"), type=["gpx"], key="viz_uploader")
+
+        if uploaded_gpx is not None:
+            try:
+                raw_bytes = uploaded_gpx.getvalue()
+                pts_v, coords_v, analysis_v = _analyze_gpx_bytes(raw_bytes)
+                closure_m_v = geodesic(coords_v[0], coords_v[-1]).meters if len(coords_v) >= 2 else 0.0
+                auto_rt_v = "loop" if closure_m_v < 500 else "out_and_back"
+
+                if not pts_v:
+                    st.warning(t("analizza.viz_no_tracks"))
+                else:
+                    col_v1, col_v2, col_v3, col_v4 = st.columns(4)
+                    col_v1.metric(t("analizza.metric_distance"), f"{analysis_v['distance_km']:.1f} km")
+                    col_v2.metric(t("analizza.metric_elev_up"), f"{analysis_v['elevation_gain_m']:.0f} m")
+                    col_v3.metric(t("analizza.metric_elev_down"), f"{analysis_v['elevation_loss_m']:.0f} m")
+                    if auto_rt_v == "loop":
+                        loop_icon = "✅" if analysis_v.get("loop_closed") else "⚠️"
+                        col_v4.metric(t("analizza.metric_loop"), f"{loop_icon} ({analysis_v.get('closure_distance_m', 0):.0f} m)")
+                    else:
+                        col_v4.metric(t("analizza.metric_type"), t("analizza.metric_oadb"))
+
+                    st.caption(f"**{len(pts_v)} punti GPX** · {auto_rt_v} · chiusura {closure_m_v:.0f} m")
+
+                    m_v = folium.Map(location=list(coords_v[0]), zoom_start=12, scrollWheelZoom=False)
+                    folium.PolyLine(coords_v, color="#3a86ff", weight=4, opacity=0.85).add_to(m_v)
+                    folium.Marker(list(coords_v[0]), tooltip="Partenza", icon=folium.Icon(color="green", icon="play")).add_to(m_v)
+                    folium.Marker(list(coords_v[-1]), tooltip="Fine", icon=folium.Icon(color="red", icon="stop")).add_to(m_v)
+                    st_folium(m_v, width=None, height=520, key="viz_map", use_container_width=True)
+            except Exception as e:
+                st.error(f"Errore lettura GPX: {e}")
+
+    # ── Sotto-tab: Debug ──────────────────────────────────────────────────────
+    with _util_debug:
+        st.info(t("debug.info"))
+
+        # ── Sezione 1: Route pianificate (Planner) ────────────────────────────────
+        with st.expander(t("debug.routes_expander"), expanded=True):
+            saved_routes = _load_saved_routes()
+            if not saved_routes:
+                st.caption(t("debug.no_routes"))
+            else:
+                route_names = list(saved_routes.keys())
+                dbg_sel = st.selectbox(
+                    t("debug.select_route"), ["— seleziona —"] + route_names, key="dbg_route_sel"
+                )
+                if dbg_sel != "— seleziona —":
+                    rd = saved_routes[dbg_sel]
+
+                    sub1, sub2, sub3 = st.tabs([t("debug.sub_json"), t("debug.sub_prompt"), t("debug.sub_score")])
+
+                    with sub1:
+                        wps = rd.get("ordered_waypoints", [])
+                        req_rd = rd.get("request", {})
+                        st.markdown(
+                            f"**{dbg_sel}** — {req_rd.get('target_km','?')} km · "
+                            f"{req_rd.get('route_type','?')} · creata {rd.get('created_at','—')}"
+                        )
+                        dbg_narrative = rd.get("route_narrative", "")
+                        if dbg_narrative:
+                            st.markdown(t("debug.narrative_label"))
+                            st.info(dbg_narrative)
+                        if rd.get("warnings"):
+                            for w in rd["warnings"]:
+                                st.warning(w)
+                        dbg_sq = rd.get("search_queries", [])
+                        if dbg_sq:
+                            with st.expander(f"{t('debug.web_searches')} ({len(dbg_sq)})", expanded=False):
+                                for _qi, _q in enumerate(dbg_sq, 1):
+                                    st.markdown(f"**{_qi}.** `{_q}`")
+                        wp_rows = [
+                            {
+                                t("planner.col_ord"): wp.get("order", i),
+                                t("planner.col_role"): wp.get("role"),
+                                t("planner.col_name"): wp.get("name"),
+                                t("planner.col_source"): wp.get("source"),
+                                t("planner.col_lat"): wp.get("lat"),
+                                t("planner.col_lon"): wp.get("lon"),
+                                t("planner.col_rationale"): wp.get("rationale") or "",
+                            }
+                            for i, wp in enumerate(wps)
+                        ]
+                        st.dataframe(wp_rows, use_container_width=True, hide_index=True)
+                        with st.expander("JSON completo"):
+                            st.json(rd)
+
+                    with sub2:
+                        sp = rd.get("system_prompt", "")
+                        up = rd.get("user_prompt", "")
+                        if sp or up:
+                            st.markdown(t("planner.result_system_prompt"))
+                            st.code(sp, language="text")
+                            st.markdown(t("planner.result_user_prompt"))
+                            st.code(up, language="text")
+                        else:
+                            st.caption(t("debug.no_prompt"))
+
+                    with sub3:
+                        scores = rd.get("builder_scores", [])
+                        if scores:
+                            st.json(scores)
+                        else:
+                            st.caption(t("debug.no_scores"))
+
+        # ── Sezione 2: Debug solo BRouter ─────────────────────────────────────────
+        with st.expander(t("debug.brouter_expander"), expanded=False):
+            st.caption(t("debug.brouter_caption"))
+
+            col1, col2 = st.columns(2)
+            with col1:
+                dbr_start_lat = st.number_input(t("debug.lat_start"), value=43.7136520, format="%.7f", key="dbr_slat")
+            with col2:
+                dbr_start_lon = st.number_input(t("debug.lon_start"), value=13.2278056, format="%.7f", key="dbr_slon")
+
+            dbr_target_km  = st.selectbox(t("debug.target_km"), [50, 55, 60, 65, 70], index=2, key="dbr_km")
+            dbr_route_type = st.selectbox(t("debug.route_type"), ["loop", "out_and_back", "point_to_point"], key="dbr_rt")
+            dbr_profile    = st.selectbox(t("debug.profile"), ["trekking", "gravel", "fastbike"], key="dbr_prof")
+
+            dbr_end_lat = dbr_end_lon = None
+            if dbr_route_type == "point_to_point":
+                col3, col4 = st.columns(2)
+                with col3:
+                    dbr_end_lat = st.number_input(t("debug.lat_end"), value=43.7200000, format="%.7f", key="dbr_elat")
+                with col4:
+                    dbr_end_lon = st.number_input(t("debug.lon_end"), value=13.2400000, format="%.7f", key="dbr_elon")
+
+            if st.button(t("debug.btn_brouter"), key="btn_dbr"):
+                try:
+                    if dbr_route_type == "point_to_point":
+                        waypoints = [(dbr_start_lon, dbr_start_lat), (dbr_end_lon, dbr_end_lat)]
+                    else:
+                        waypoints = [
+                            (dbr_start_lon, dbr_start_lat),
+                            (dbr_start_lon + 0.05, dbr_start_lat + 0.05),
+                        ]
+                        if dbr_route_type == "loop":
+                            waypoints.append((dbr_start_lon, dbr_start_lat))
+
+                    gpx_path = get_route(
+                        waypoints, profile=dbr_profile,
+                        output_path="routes/generated/dbr_test.gpx",
+                    )
+                    analysis = analyze_gpx(
+                        gpx_path,
+                        route_type=dbr_route_type,
+                        expected_end=(dbr_end_lon, dbr_end_lat)
+                        if dbr_route_type == "point_to_point" else None,
+                    )
+                    st.session_state["dbr_gpx_path"] = gpx_path
+                    st.session_state["dbr_analysis"]  = analysis
+                    st.session_state["dbr_slat_v"]    = dbr_start_lat
+                    st.session_state["dbr_slon_v"]    = dbr_start_lon
+                except Exception as e:
+                    st.error(f"Errore BRouter: {e}")
+
+            if "dbr_gpx_path" in st.session_state:
+                st.success(f"GPX: {st.session_state['dbr_gpx_path']}")
+                st.json(st.session_state["dbr_analysis"])
+                m = _build_map(
+                    st.session_state["dbr_gpx_path"],
+                    st.session_state["dbr_slat_v"],
+                    st.session_state["dbr_slon_v"],
+                )
+                st_folium(m, width=750, height=450, key="dbr_map")
+
+        # ── Sezione 3: Debug solo Planner ─────────────────────────────────────────
+        with st.expander(t("debug.planner_expander"), expanded=False):
+            st.caption(t("debug.planner_caption"))
+
+            col1, col2, col3 = st.columns([2, 1, 1])
+            with col1:
+                dbp_start_name = st.text_input(t("debug.name_start"), value="Casa Senigallia", key="dbp_sname")
+            with col2:
+                dbp_start_lat = st.number_input(t("planner.form.lat"), value=43.7136520, format="%.7f", key="dbp_slat")
+            with col3:
+                dbp_start_lon = st.number_input(t("planner.form.lon"), value=13.2278056, format="%.7f", key="dbp_slon")
+
+            col4, col5 = st.columns(2)
+            with col4:
+                dbp_target_km  = st.selectbox(t("debug.distance_km"), [50, 55, 60, 65, 70], index=2, key="dbp_km")
+                dbp_route_type = st.selectbox(t("debug.route_type"), ["loop", "out_and_back", "point_to_point"], key="dbp_rt")
+            with col5:
+                dbp_max_elev  = st.number_input(t("debug.max_elev"), value=700, step=50, key="dbp_elev")
+                dbp_preferred = st.text_input(t("debug.preferred_dir"), value="colline, borghi", key="dbp_pref")
+
+            dbp_desired  = st.text_input(t("debug.desired_places"), value="", key="dbp_des")
+            dbp_avoid    = st.text_input(t("debug.avoid"), value="SS16", key="dbp_av")
+            dbp_free_txt = st.text_area(t("debug.free_text"), height=60, key="dbp_free")
+            dbp_geo_dir  = st.selectbox(
+                t("debug.geo_dir"), [t("planner.form.direction_free"), "Nord", "Sud", "Est", "Ovest"], key="dbp_gdir",
+            )
+
+            dbp_end_name = None
+            dbp_stages   = []
+            if dbp_route_type == "point_to_point":
+                col_e1, col_e2, col_e3 = st.columns([2, 1, 1])
+                with col_e1:
+                    dbp_end_name = st.text_input(t("debug.end_name"), value="Corinaldo", key="dbp_ename")
+                with col_e2:
+                    dbp_end_lat_raw = st.number_input(
+                        t("debug.end_lat_geo"), value=0.0, format="%.7f", key="dbp_elat"
+                    )
+                    dbp_end_lat = dbp_end_lat_raw if dbp_end_lat_raw != 0.0 else None
+                with col_e3:
+                    dbp_end_lon_raw = st.number_input(
+                        t("debug.end_lon_geo"), value=0.0, format="%.7f", key="dbp_elon"
+                    )
+                    dbp_end_lon = dbp_end_lon_raw if dbp_end_lon_raw != 0.0 else None
+
+                dbp_stages_raw = st.text_input(t("debug.stages"), value="Ostra, Trecastelli", key="dbp_stages")
+                dbp_stages = [s.strip() for s in dbp_stages_raw.split(",") if s.strip()]
+
+            def _dbp_build_request() -> dict:
+                req = {
+                    "start": {"name": dbp_start_name, "lat": dbp_start_lat, "lon": dbp_start_lon},
+                    "target_km": dbp_target_km,
+                    "distance_tolerance_km": 5,
+                    "route_type": dbp_route_type,
+                    "waypoints_stages": dbp_stages,
+                    "preferred_direction": _parse_csv(dbp_preferred),
+                    "desired_places": _parse_csv(dbp_desired),
+                    "avoid_places": _parse_csv(dbp_avoid),
+                    "max_elevation_gain_m": dbp_max_elev,
+                    "candidate_count": 3,
+                    "free_text": dbp_free_txt.strip(),
+                    "geographic_direction": None if dbp_geo_dir == t("planner.form.direction_free") else dbp_geo_dir,
+                }
+                if dbp_route_type == "point_to_point" and dbp_end_name:
+                    req["end"] = {
+                        "name": dbp_end_name,
+                        "lat": st.session_state.get("dbp_elat") or None,
+                        "lon": st.session_state.get("dbp_elon") or None,
+                    }
+                return req
+
+            col_b1, col_b2, _ = st.columns([1, 1, 2])
+            with col_b1:
+                show_prompt_btn = st.button(t("debug.btn_show_prompt"), key="btn_dbp_prompt")
+            with col_b2:
+                generate_btn = st.button(t("debug.btn_generate"), key="btn_dbp_generate")
+
+            if show_prompt_btn or generate_btn:
+                dbp_req = _dbp_build_request()
+                memory = load_user_memory()
+                merged = merge_memory_with_request(dbp_req, memory)
+                sp, up = build_prompt(merged, user_memory=memory)
+                st.session_state["dbp_prompt"] = (sp, up)
+
+            if "dbp_prompt" in st.session_state:
+                sp, up = st.session_state["dbp_prompt"]
+                with st.expander(t("debug.prompt_expander"), expanded=True):
+                    st.markdown(t("planner.result_system_prompt"))
+                    st.code(sp, language="text")
+                    st.markdown(t("planner.result_user_prompt"))
+                    st.code(up, language="text")
+
+            if generate_btn:
+                dbp_req = _dbp_build_request()
+                with st.spinner("Claude sta pianificando le strategie..."):
+                    try:
+                        strategies = generate_strategies(dbp_req)
+                        st.session_state["dbp_strategies"] = strategies
+                        st.session_state["dbp_geocoded"]   = False
+                        st.success(f"{len(strategies)} strategie generate.")
+                    except Exception as e:
+                        st.error(f"Errore Planner Agent: {e}")
+
+            if st.button(
+                t("debug.geocode_btn"),
+                key="btn_dbp_geo",
+                disabled="dbp_strategies" not in st.session_state,
+            ):
+                with st.spinner(t("debug.geocode_spinner")):
+                    try:
+                        geocoded = [geocode_candidate(s) for s in st.session_state["dbp_strategies"]]
+                        st.session_state["dbp_strategies"] = geocoded
+                        st.session_state["dbp_geocoded"]   = True
+                        st.success(t("debug.geocode_done"))
+                    except Exception as e:
+                        st.error(f"Errore geocodifica: {e}")
+
+            if "dbp_strategies" in st.session_state:
+                strategies = st.session_state["dbp_strategies"]
+                geocoded_flag = st.session_state.get("dbp_geocoded", False)
+                status_label = t("debug.geocode_waypoints_label") if geocoded_flag else ""
+                st.subheader(f"{t('debug.strategies_header')} ({len(strategies)}){status_label}")
+                for i, s in enumerate(strategies, 1):
+                    label = (
+                        f"Strategia {i}: {s.get('name', '—')}"
+                        f"  [{s.get('profile', '?')} · ~{s.get('estimated_km', '?')} km]"
+                    )
+                    with st.expander(label):
+                        st.write(
+                            f"**Tipo:** {s.get('route_type')} &nbsp;|&nbsp; "
+                            f"**Profilo:** {s.get('profile')} &nbsp;|&nbsp; "
+                            f"**~{s.get('estimated_km')} km**"
+                        )
+                        st.write(f"**Rationale:** {s.get('rationale', '—')}")
+                        wps = s.get("waypoints", [])
+                        if wps:
+                            wp_rows = [
+                                {
+                                    t("debug.col_role"): wp.get("role", ""),
+                                    t("debug.col_name"): wp.get("name", ""),
+                                    t("debug.col_lat"): wp.get("lat"),
+                                    t("debug.col_lon"): wp.get("lon"),
+                                    t("debug.col_geocoding"): (
+                                        t("debug.geocoding_error") if wp.get("geocoding_error")
+                                        else (t("debug.geocoding_ok") if not wp.get("needs_geocoding") else t("debug.geocoding_todo"))
+                                    ),
+                                }
+                                for wp in wps
+                            ]
+                            st.dataframe(wp_rows, use_container_width=True)
+                        st.json(s)
+
+        # ── Sezione 4: Known obstacles ────────────────────────────────────────────
+        with st.expander(t("debug.obstacles_expander"), expanded=False):
+            _obs_list = db.get_active_obstacles()
+            if not _obs_list:
+                st.caption(t("debug.no_obstacles"))
+            else:
+                st.caption(t("debug.obstacles_active").format(n=len(_obs_list)))
+                for _obs in _obs_list:
+                    _ocol1, _ocol2 = st.columns([6, 1])
+                    with _ocol1:
+                        maps_url_obs = f"https://www.google.com/maps?q={_obs['lat']:.6f},{_obs['lon']:.6f}"
+                        st.markdown(
+                            f"🔴 **{_obs['description']}** "
+                            f"<small>({_obs['lat']:.5f}, {_obs['lon']:.5f}) "
+                            f"· {_obs.get('route_name','—')} · {_obs['created_at'][:10]}</small> "
+                            f"[↗ Maps]({maps_url_obs})",
+                            unsafe_allow_html=True,
+                        )
+                    with _ocol2:
+                        if st.button("🔕", key=f"deact_obs_{_obs['id']}", help=t("debug.obstacle_deactivate_help")):
+                            db.deactivate_obstacle(_obs["id"])
+                            st.rerun()
+
+
+# ─── Tab: Post Ride ───────────────────────────────────────────────────────────
+with tab_post_ride:
+    st.caption(t("post_ride.caption"))
+
+    _pr_cmp, _pr_fb = st.tabs([
+        t("analizza.sub_compare"),
+        t("analizza.sub_feedback"),
+    ])
+
+    with _pr_cmp:
+        st.caption(t("analizza.compare_caption"))
+
+        _CATEGORY_ICONS = {
+            "problema":   ("red",    "exclamation-sign"),
+            "bello":      ("green",  "star"),
+            "attenzione": ("orange", "warning-sign"),
+            "generico":   ("purple", "map-marker"),
+        }
+        _CATEGORY_CSS = {
+            "problema": "#d62728", "bello": "#2ca02c",
+            "attenzione": "#ff7f0e", "generico": "#9467bd",
+        }
+
+        col_cmp1, col_cmp2 = st.columns(2)
+        with col_cmp1:
+            gpx_plan = st.file_uploader(t("analizza.gpx_plan_label"), type=["gpx"], key="cmp_plan")
+        with col_cmp2:
+            gpx_real = st.file_uploader(t("analizza.gpx_real_label"), type=["gpx"], key="cmp_real")
+
+        # ── Rilevamento automatico route_name dal GPX pianificato ──────────
+        _saved_r_cmp = _load_saved_routes()
+        _cmp_rname: str | None = None
+
+        if gpx_plan:
+            _detected, _detect_note = _detect_route_from_plan_gpx(gpx_plan, _saved_r_cmp)
+            if _detected:
+                st.success(t("analizza.route_detected").format(name=_detected, note=_detect_note))
+                _cmp_rname = _detected
+            else:
+                st.warning(_detect_note)
+
+        if not gpx_plan:
+            st.info(t("analizza.no_plan"))
+
+        if gpx_plan and gpx_real:
+            try:
+                pts_p, coords_p, analysis_p = _analyze_gpx_bytes(gpx_plan.getvalue())
+                pts_r, coords_r, analysis_r = _analyze_gpx_bytes(gpx_real.getvalue())
+
+                if not pts_p or not pts_r:
+                    st.warning(t("analizza.no_tracks"))
+                else:
+                    # Metriche a confronto
+                    st.markdown(t("analizza.compare_metrics_header"))
+                    hdr, c1, c2, c3 = st.columns([1.5, 1, 1, 1])
+                    hdr.markdown(t("analizza.col_metric"))
+                    c1.markdown(t("analizza.col_planned"))
+                    c2.markdown(t("analizza.col_real"))
+                    c3.markdown(t("analizza.col_diff"))
+
+                    def _row(label, v1, v2, fmt="{:+.1f}"):
+                        hdr.markdown(label)
+                        c1.markdown(f"{v1:.1f}")
+                        c2.markdown(f"{v2:.1f}")
+                        diff = v2 - v1
+                        color = "green" if abs(diff) < abs(v1) * 0.05 else "orange"
+                        c3.markdown(f":{color}[{fmt.format(diff)}]")
+
+                    _row(t("analizza.row_distance"), analysis_p["distance_km"], analysis_r["distance_km"])
+                    _row(t("analizza.row_elev_up"), analysis_p["elevation_gain_m"], analysis_r["elevation_gain_m"])
+                    _row(t("analizza.row_elev_down"), analysis_p["elevation_loss_m"], analysis_r["elevation_loss_m"])
+
+                    # Deviazione massima
+                    st.markdown(t("analizza.max_dev_header"))
+                    with st.spinner(t("analizza.calc_dev_spinner")):
+                        sample_p = coords_p[::max(1, len(coords_p) // 300)]
+                        sample_r = coords_r[::max(1, len(coords_r) // 300)]
+                        max_dev_m = 0.0
+                        max_dev_coord = None
+                        for pt_r in sample_r:
+                            min_dist = min(geodesic(pt_r, pt_p).meters for pt_p in sample_p)
+                            if min_dist > max_dev_m:
+                                max_dev_m = min_dist
+                                max_dev_coord = pt_r
+
+                    if max_dev_m < 100:
+                        dev_label = t("analizza.dev_identical").format(m=max_dev_m)
+                    elif max_dev_m < 500:
+                        dev_label = t("analizza.dev_moderate").format(m=max_dev_m)
+                    else:
+                        dev_label = t("analizza.dev_large").format(m=max_dev_m)
+
+                    st.metric(t("analizza.max_dev_label"), dev_label)
+
+                    if max_dev_coord:
+                        maps_url = f"https://www.google.com/maps?q={max_dev_coord[0]:.6f},{max_dev_coord[1]:.6f}"
+                        st.markdown(
+                            f"{t('analizza.max_dev_point')} `{max_dev_coord[0]:.5f}, {max_dev_coord[1]:.5f}` "
+                            f"— [{t('analizza.max_dev_gmaps')}]({maps_url})"
+                        )
+
+                    # Salva confronto nella route JSON (se route identificata)
+                    if _cmp_rname and not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
+                        _save_comparison_to_route(_cmp_rname, {
+                            "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "gpx_planned": gpx_plan.name,
+                            "gpx_real": gpx_real.name,
+                            "planned_km": round(analysis_p["distance_km"], 2),
+                            "real_km": round(analysis_r["distance_km"], 2),
+                            "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
+                            "real_elev_gain": round(analysis_r["elevation_gain_m"]),
+                            "max_deviation_m": round(max_dev_m),
+                        })
+                        st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
+
+                    # ── Mappa sovrapposta con click handler ─────────────────
+                    st.markdown(t("analizza.map_header"))
+                    st.caption(t("analizza.map_caption"))
+
+                    # Segnaposto esistenti da DB (solo se route identificata)
+                    _existing_annots = db.get_map_annotations(_cmp_rname) if _cmp_rname else []
+
+                    ctr = coords_p[0] if coords_p else coords_r[0]
+                    m_cmp = folium.Map(location=list(ctr), zoom_start=12, scrollWheelZoom=False)
+
+                    fg_p = folium.FeatureGroup(name="Pianificato (blu)", show=True)
+                    folium.PolyLine(coords_p, color="#3a86ff", weight=3, opacity=0.8, tooltip="Pianificato").add_to(fg_p)
+                    fg_p.add_to(m_cmp)
+                    fg_r = folium.FeatureGroup(name="Reale (arancio)", show=True)
+                    folium.PolyLine(coords_r, color="#f4831f", weight=3, opacity=0.8, tooltip="Reale").add_to(fg_r)
+                    fg_r.add_to(m_cmp)
+
+                    if max_dev_coord:
+                        folium.Marker(
+                            list(max_dev_coord),
+                            tooltip=f"Max deviazione: {max_dev_m:.0f} m",
+                            icon=folium.Icon(color="red", icon="exclamation-sign"),
+                        ).add_to(m_cmp)
+
+                    fg_ann = folium.FeatureGroup(name="Segnaposto", show=True)
+                    for _ann in _existing_annots:
+                        _acat = _ann.get("category", "generico")
+                        _acol, _aico = _CATEGORY_ICONS.get(_acat, ("purple", "map-marker"))
+                        folium.Marker(
+                            [_ann["lat"], _ann["lon"]],
+                            tooltip=f"[{_acat}] {_ann['comment'][:40]}",
+                            popup=folium.Popup(
+                                f"<b>{_acat.upper()}</b><br>{_ann['comment']}<br>"
+                                f"<small>{_ann['created_at'][:16]}</small>",
+                                max_width=220,
+                            ),
+                            icon=folium.Icon(color=_acol, icon=_aico, prefix="glyphicon"),
+                        ).add_to(fg_ann)
+                    fg_ann.add_to(m_cmp)
+                    folium.LayerControl(collapsed=False).add_to(m_cmp)
+
+                    _map_result = st_folium(
+                        m_cmp,
+                        width=None,
+                        height=540,
+                        key="cmp_map",
+                        use_container_width=True,
+                        returned_objects=["last_clicked"],
+                    )
+
+                    # ── Pannello aggiunta segnaposto ───────────────────────
+                    _clicked = _map_result.get("last_clicked") if _map_result else None
+                    if _clicked and _clicked != st.session_state.get("cmp_last_click_processed"):
+                        st.session_state["cmp_pending_click"] = {
+                            "lat": _clicked["lat"], "lng": _clicked["lng"],
+                        }
+
+                    _pending = st.session_state.get("cmp_pending_click")
+                    if _pending:
+                        st.divider()
+                        if not _cmp_rname:
+                            st.warning(t("analizza.pin_no_route"))
+                        else:
+                            st.markdown(t("analizza.pin_header").format(route=_cmp_rname))
+                            col_pin1, col_pin2, col_pin3 = st.columns([1, 1, 2])
+                            with col_pin1:
+                                _pin_lat = st.number_input(
+                                    t("analizza.pin_lat"), value=_pending["lat"], format="%.6f", key="pin_lat",
+                                )
+                            with col_pin2:
+                                _pin_lon = st.number_input(
+                                    t("analizza.pin_lon"), value=_pending["lng"], format="%.6f", key="pin_lon",
+                                )
+                            with col_pin3:
+                                _pin_cat = st.selectbox(
+                                    t("analizza.pin_type"), ["generico", "problema", "bello", "attenzione"], key="pin_cat",
+                                )
+                            _pin_comment = st.text_input(
+                                t("analizza.pin_comment"),
+                                key="pin_comment",
+                                placeholder=t("analizza.pin_comment_placeholder"),
+                            )
+                            col_pba, col_pbb = st.columns(2)
+                            with col_pba:
+                                if st.button(t("analizza.btn_pin_save"), type="primary", key="btn_pin_save"):
+                                    if _pin_comment.strip():
+                                        db.save_map_annotation(
+                                            route_name=_cmp_rname,
+                                            lat=_pin_lat,
+                                            lon=_pin_lon,
+                                            comment=_pin_comment.strip(),
+                                            category=_pin_cat,
+                                        )
+                                        st.session_state["cmp_last_click_processed"] = _clicked
+                                        st.session_state.pop("cmp_pending_click", None)
+                                        st.success(f"Salvato: [{_pin_cat}] {_pin_comment.strip()[:50]}")
+                                        st.rerun()
+                                    else:
+                                        st.warning(t("analizza.pin_no_comment"))
+                            with col_pbb:
+                                if st.button(t("analizza.btn_pin_cancel"), key="btn_pin_cancel"):
+                                    st.session_state["cmp_last_click_processed"] = _clicked
+                                    st.session_state.pop("cmp_pending_click", None)
+                                    st.rerun()
+
+                    # ── Lista segnaposto salvati ────────────────────────────
+                    if _existing_annots:
+                        st.divider()
+                        st.markdown(t("analizza.pins_header").format(n=len(_existing_annots)))
+                        for _ann in _existing_annots:
+                            _acat = _ann.get("category", "generico")
+                            col_al, col_ar = st.columns([5, 1])
+                            with col_al:
+                                st.markdown(
+                                    f"<span style='color:{_CATEGORY_CSS.get(_acat,'#9467bd')};font-weight:bold'>"
+                                    f"[{_acat}]</span> {_ann['comment']} "
+                                    f"<small style='color:gray'>({_ann['lat']:.5f}, {_ann['lon']:.5f}) "
+                                    f"· {_ann['created_at'][:16]}</small>",
+                                    unsafe_allow_html=True,
+                                )
+                            with col_ar:
+                                if st.button("🗑", key=f"del_ann_{_ann['id']}", help="Elimina"):
+                                    db.delete_map_annotation(_ann["id"])
+                                    st.rerun()
+
+            except Exception as e:
+                import traceback as _tb
+                st.error(f"Errore confronto GPX: {e}")
+                with st.expander("Traceback"):
+                    st.code(_tb.format_exc())
+
+        elif gpx_plan and not gpx_real:
+            st.info(t("analizza.load_real"))
+
+    with _pr_fb:
+        st.caption(t("analizza.fb_caption"))
+
+        saved_r_fb = _load_saved_routes()
+        if not saved_r_fb:
+            st.info(t("analizza.fb_no_routes"))
+        else:
+            fb_route_sel = st.selectbox(
+                t("analizza.fb_route_label"),
+                ["— seleziona —"] + list(saved_r_fb.keys()),
+                key="fb_route_sel",
+            )
+            if fb_route_sel != "— seleziona —":
+                rd_fb = saved_r_fb[fb_route_sel]
+                req_fb = rd_fb.get("request", {})
+                narrative_fb = rd_fb.get("route_narrative", "")
+
+                if narrative_fb:
+                    st.info(narrative_fb)
+                st.caption(
+                    f"Target: {req_fb.get('target_km','?')} km · "
+                    f"{req_fb.get('route_type','?')} · "
+                    f"Tema: {req_fb.get('scenery_theme','—')} / {req_fb.get('athletic_theme','—')}"
+                )
+
+                # Builder results — pick candidate
+                builder_res = rd_fb.get("builder_results", {})
+                builder_cands = builder_res.get("candidates", []) if builder_res else []
+                ok_cands_fb = [c for c in builder_cands if c.get("status") in ("ok", "retried")]
+
+                fb_candidate_id = None
+                if ok_cands_fb:
+                    cand_options = ["— nessuno/non so —"] + [
+                        f"{c['id']} — {c['strategy_name']} ({c['profile']})"
+                        for c in ok_cands_fb
+                    ]
+                    fb_cand_sel = st.selectbox(t("analizza.fb_candidate_label"), cand_options, key="fb_cand_sel")
+                    if fb_cand_sel != "— nessuno/non so —":
+                        fb_candidate_id = fb_cand_sel.split(" — ")[0]
+                else:
+                    st.caption(t("analizza.fb_no_candidate"))
+
+                # ── Anteprima segnaposto (prima del form) ───────────────────
+                _fb_annotations = db.get_map_annotations(fb_route_sel)
+                if _fb_annotations:
+                    _CAT_STYLE = {
+                        "problema":   ("🔴", "#d62728"),
+                        "bello":      ("🟢", "#2ca02c"),
+                        "attenzione": ("🟠", "#ff7f0e"),
+                        "generico":   ("🟣", "#9467bd"),
+                    }
+                    _n_prob = sum(1 for a in _fb_annotations if a.get("category") == "problema")
+                    _preview_header = t("analizza.fb_pins_preview").format(n=len(_fb_annotations))
+                    if _n_prob:
+                        _preview_header += t("analizza.fb_pins_problems").format(n=_n_prob)
+                    st.markdown(_preview_header)
+                    for _ann in _fb_annotations:
+                        _acat = _ann.get("category", "generico")
+                        _icon, _color = _CAT_STYLE.get(_acat, ("🟣", "#9467bd"))
+                        st.markdown(
+                            f"{_icon} "
+                            f"<span style='color:{_color};font-weight:600'>[{_acat}]</span> "
+                            f"{_ann['comment']} "
+                            f"<span style='color:#888;font-size:0.85em'>"
+                            f"({_ann['lat']:.5f}, {_ann['lon']:.5f}) · {_ann['created_at'][:16]}"
+                            f"</span>",
+                            unsafe_allow_html=True,
+                        )
+                else:
+                    st.caption(t("analizza.fb_no_pins"))
+
+                with st.form("analizza_fb_form"):
+                    fb_rating = st.slider(t("analizza.fb_rating"), 1, 5, 4)
+                    st.markdown(t("analizza.fb_char_header"))
+                    col_fa, col_fb_c = st.columns(2)
+                    with col_fa:
+                        fb_traffic = st.checkbox(t("analizza.fb_traffic"))
+                        fb_gravel  = st.checkbox(t("analizza.fb_gravel"))
+                        fb_hard    = st.checkbox(t("analizza.fb_hard"))
+                    with col_fb_c:
+                        fb_surface = st.checkbox(t("analizza.fb_surface"))
+                        fb_views   = st.checkbox(t("analizza.fb_views"))
+                        fb_repeat  = st.checkbox(t("analizza.fb_repeat"), value=True)
+                    fb_notes = st.text_area(t("analizza.fb_notes"), placeholder=t("analizza.fb_notes_placeholder"))
+                    fb_submitted = st.form_submit_button(t("analizza.btn_fb_save"))
+
+                if fb_submitted:
+                    try:
+
+                        route_gen_id = db.save_pipeline_run(req_fb, [], [], {})
+                        db.save_feedback(
+                            route_gen_id=route_gen_id,
+                            candidate_id=fb_candidate_id or "—",
+                            rating=fb_rating,
+                            too_traffic=fb_traffic,
+                            too_gravel=fb_gravel,
+                            too_hard=fb_hard,
+                            good_surface=fb_surface,
+                            nice_views=fb_views,
+                            would_repeat=fb_repeat,
+                            notes=fb_notes,
+                            annotations=_fb_annotations,
+                        )
+
+                        # Promuovi segnaposto "problema" → known_obstacles
+                        _problems = [a for a in _fb_annotations if a.get("category") == "problema"]
+                        for _p in _problems:
+                            db.save_known_obstacle(
+                                lat=_p["lat"],
+                                lon=_p["lon"],
+                                description=_p["comment"],
+                                route_name=fb_route_sel,
+                                annotation_id=_p["id"],
+                            )
+
+                        _msg = t("analizza.fb_saved")
+                        if _problems:
+                            _msg += t("analizza.fb_obstacles").format(n=len(_problems))
+                        st.success(_msg)
+                    except Exception as exc:
+                        st.error(f"Errore salvataggio feedback: {exc}")
