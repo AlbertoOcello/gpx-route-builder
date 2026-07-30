@@ -93,6 +93,18 @@ def _gpx_coords(gpx_path: str) -> list[tuple[float, float]]:
     ]
 
 
+def _gpx_bytes_with_name(gpx_path: str, name: str) -> bytes:
+    """Rilegge il GPX da disco e riscrive <name>/<trk><name> con il nome reale
+    della route prima di servirlo al download — il file su disco non cambia.
+    """
+    with open(gpx_path, "r", encoding="utf-8") as f:
+        gpx = gpxpy.parse(f)
+    gpx.name = name
+    for track in gpx.tracks:
+        track.name = name
+    return gpx.to_xml().encode("utf-8")
+
+
 def _build_map(gpx_path: str, start_lat: float, start_lon: float) -> folium.Map:
     m = folium.Map(location=[start_lat, start_lon], zoom_start=12, scrollWheelZoom=False)
     folium.Marker(
@@ -1041,8 +1053,7 @@ with tab_builder:
                                 st.warning(f"⚠ {s_b['distance_warning']}")
                         m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
                         st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
-                        with open(c_b["gpx_path"], "rb") as f:
-                            gpx_bytes_b = f.read()
+                        gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")
                         st.download_button(
                             label=f"{t('builder.btn_download')} {c_b['id']} {c_b['strategy_name']}",
                             data=gpx_bytes_b,
@@ -1071,8 +1082,9 @@ with tab_builder:
                             + (f"  ·  Score: {winner_s_b['total_score']:.1f}/100" if winner_s_b else "")
                         )
                         if winner_c_b.get("gpx_path"):
-                            with open(winner_c_b["gpx_path"], "rb") as f:
-                                winner_gpx = f.read()
+                            winner_gpx = _gpx_bytes_with_name(
+                                winner_c_b["gpx_path"], f"{bld_sel}_{winner_id_b}"
+                            )
                             st.download_button(
                                 label=f"{t('builder.winner_dl')} {winner_id_b} {winner_c_b['strategy_name']}",
                                 data=winner_gpx,

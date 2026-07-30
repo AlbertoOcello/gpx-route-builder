@@ -220,9 +220,10 @@ def optimize_gpx(
     orientation_wpts = _build_orientation_waypoints(gpx, route_name, waypoint_interval_km)
     gpx.waypoints = orientation_wpts
 
-    gpx.name = route_name
+    optimized_name = f"{route_name} - optimized"
+    gpx.name = optimized_name
     for track in gpx.tracks:
-        track.name = route_name
+        track.name = optimized_name
     gpx.keywords = OPTIMIZER_MARKER
 
     with open(output_path, "w", encoding="utf-8") as f:
