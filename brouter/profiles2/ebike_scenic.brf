@@ -252,7 +252,7 @@ assign priorityclassifier =
   else if ( highway=track ) then if tracktype=grade1 then 6 else 4
   else if ( highway=bridleway|road|path|footway ) then 4
   else if ( highway=steps     ) then  2
-  else if ( highway=pedestrian) then  2
+  else if ( highway=pedestrian ) then  2
   else 0
 
 assign isbadoneway = not equal onewaypenalty 0

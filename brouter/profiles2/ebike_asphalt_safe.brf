@@ -87,7 +87,7 @@ assign ispaved = or surface=paved|asphalt|concrete|paving_stones smoothness=exce
 assign isunpaved = not or ispaved or ( and surface= smoothness= ) or surface=fine_gravel smoothness=intermediate|bad
 assign probablyGood = or ispaved and ( or isbike highway=footway ) not isunpaved
 
-assign isbadsurf = or surface=cobblestone|sett or surface=mud|sand|clay or surface=ground|grass|dirt|earth
+assign isbadsurf = or surface=cobblestone|sett or surface=mud|sand|clay surface=ground|grass|dirt|earth
 
 assign turncost = if is_ldcr then 0
                   else if junction=roundabout then 0
@@ -217,7 +217,7 @@ assign priorityclassifier =
   else if ( highway=track ) then if tracktype=grade1 then 6 else 4
   else if ( highway=bridleway|road|path|footway ) then 4
   else if ( highway=steps     ) then  2
-  else if ( highway=pedestrian) then  2
+  else if ( highway=pedestrian ) then  2
   else 0
 
 assign isbadoneway = not equal onewaypenalty 0
