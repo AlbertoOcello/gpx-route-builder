@@ -16,6 +16,20 @@ class StartPoint(BaseModel):
     lon: float
 
 
+class UserWaypointInput(BaseModel):
+    """
+    Waypoint inserito dall'utente nel Planner, con flag di obbligatorietà.
+
+    mandatory=True (sintassi: nome seguito da "!", es. "Corinaldo!") → deve
+    comparire come via-point letterale nella chiamata BRouter.
+    mandatory=False (default, nessun "!") → waypoint "soft": usato solo come
+    riferimento di zona/tema per la scelta della sequenza del Planner AI,
+    non forzato come tappa esatta da BRouter.
+    """
+    name: str
+    mandatory: bool = False
+
+
 class RouteRequest(BaseModel):
     """
     Schema unificato della richiesta percorso.
@@ -37,9 +51,10 @@ class RouteRequest(BaseModel):
     candidate_count: int = 3
 
     # ── Waypoint espliciti dell'utente (Fase 1 — nuovi) ──────────────────────
-    # Ogni elemento è un nome libero ("Corinaldo") oppure "lat,lon" ("43.65,13.05").
+    # Ogni elemento ha un nome libero ("Corinaldo") oppure "lat,lon" ("43.65,13.05")
+    # più il flag mandatory (sintassi UI: "!" finale → mandatory=True).
     # Ordine non vincolante: il Planner li riordina geograficamente.
-    user_waypoints: list[str] = []
+    user_waypoints: list[UserWaypointInput] = []
 
     # ── Temi indipendenti (Fase 1 — nuovi) ───────────────────────────────────
     scenery_theme: Literal[
@@ -93,6 +108,7 @@ class WaypointOrdered(BaseModel):
     source: Literal["user", "planner"]
     order: int = 0
     rationale: str | None = None  # motivazione e fonte (solo waypoint "planner")
+    mandatory: bool = False  # solo per source="user" — vedi UserWaypointInput
 
     model_config = {"extra": "allow"}
 

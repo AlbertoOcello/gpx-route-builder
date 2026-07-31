@@ -121,10 +121,18 @@ def _apply_loop_fix(strategy: dict) -> dict:
 def _waypoints_to_lonlat(strategy: dict) -> list[tuple[float, float]]:
     """
     Converte i waypoint (già in ordine start→via…→end) in lista (lon, lat) per BRouter.
-    Solleva ValueError se un waypoint non ha coordinate (geocoding incompleto).
+    Solleva ValueError se un waypoint incluso non ha coordinate (geocoding incompleto).
+
+    Start ed end sono sempre inclusi. Un waypoint "via" è escluso dalla lista
+    letterale se source == "user" e mandatory non è True: è un riferimento
+    soft già incorporato a monte nella scelta della sequenza da parte del
+    Planner AI, non un punto che BRouter deve toccare esattamente — evita le
+    mini-route andata/ritorno per punti tangenti al percorso principale.
     """
     result = []
     for wp in strategy["waypoints"]:
+        if wp.get("role") == "via" and wp.get("source") == "user" and not wp.get("mandatory"):
+            continue
         if wp.get("lat") is None or wp.get("lon") is None:
             raise ValueError(
                 f"Waypoint '{wp.get('name')}' ({wp.get('role')}) manca di coordinate — "

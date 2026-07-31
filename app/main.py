@@ -25,7 +25,7 @@ from gpx_optimizer import is_already_optimized, optimize_gpx
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
 from learning_agent import update_user_memory_from_feedback
-from models import RouteRequest, StartPoint
+from models import RouteRequest, StartPoint, UserWaypointInput
 from planner_agent import (
     build_prompt,
     build_raw_route_prompt,
@@ -58,6 +58,17 @@ _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
 def _parse_csv(text: str) -> list[str]:
     return [s.strip() for s in text.split(",") if s.strip()]
+
+
+def _wp_is_forced(wp: dict) -> bool:
+    """
+    Vero se il waypoint compare come via-point letterale nella chiamata BRouter
+    (stessa regola di candidate_generator._waypoints_to_lonlat): start/end sempre,
+    via "planner" sempre, via "user" solo se mandatory=True.
+    """
+    if wp.get("role") in ("start", "end"):
+        return True
+    return wp.get("source") == "planner" or bool(wp.get("mandatory"))
 
 
 def _generate_route_slug(narrative: str) -> str:
@@ -451,6 +462,7 @@ with tab_planner:
             placeholder=t("planner.form.waypoints_placeholder"),
             height=120,
             key="pl_wps",
+            help=t("planner.form.waypoints_help"),
         )
 
         col_r1, col_r2 = st.columns(2)
@@ -475,8 +487,16 @@ with tab_planner:
             key="pl_free",
         )
 
+        def _parse_pl_waypoint_line(raw: str) -> UserWaypointInput:
+            """'!' finale (anche con spazi prima) marca il waypoint come obbligatorio."""
+            s = raw.strip()
+            mandatory = s.endswith("!")
+            if mandatory:
+                s = s[:-1].rstrip()
+            return UserWaypointInput(name=s, mandatory=mandatory)
+
         def _pl_build_request() -> RouteRequest:
-            raw_wps = [w.strip() for w in pl_user_wps.splitlines() if w.strip()]
+            raw_wps = [_parse_pl_waypoint_line(w) for w in pl_user_wps.splitlines() if w.strip()]
             end_val = None
             if pl_route_type == "point_to_point" and pl_end_name and pl_end_lat and pl_end_lon:
                 end_val = {"name": pl_end_name, "lat": pl_end_lat, "lon": pl_end_lon}
@@ -679,6 +699,9 @@ with tab_planner:
                     t("planner.col_role"): wp["role"],
                     t("planner.col_name"): wp["name"],
                     t("planner.col_source"): wp["source"],
+                    t("planner.col_constraint"): (
+                        t("planner.badge_mandatory") if _wp_is_forced(wp) else t("planner.badge_soft")
+                    ),
                     t("planner.col_lat"): f"{wp['lat']:.5f}" if wp.get("lat") else "—",
                     t("planner.col_lon"): f"{wp['lon']:.5f}" if wp.get("lon") else "—",
                     t("planner.col_rationale"): wp.get("rationale") or "",
@@ -861,6 +884,8 @@ with tab_builder:
                                 "lon": wp.get("lon"),
                                 "needs_geocoding": False,
                                 "traversal": False,
+                                "source": wp.get("source", "user"),
+                                "mandatory": wp.get("mandatory", False),
                             }
                             for wp in wps_b
                         ]
@@ -2229,6 +2254,9 @@ with tab_utility:
                                 t("planner.col_role"): wp.get("role"),
                                 t("planner.col_name"): wp.get("name"),
                                 t("planner.col_source"): wp.get("source"),
+                                t("planner.col_constraint"): (
+                                    t("planner.badge_mandatory") if _wp_is_forced(wp) else t("planner.badge_soft")
+                                ),
                                 t("planner.col_lat"): wp.get("lat"),
                                 t("planner.col_lon"): wp.get("lon"),
                                 t("planner.col_rationale"): wp.get("rationale") or "",

@@ -23,7 +23,7 @@ import ai_client
 from geopy.distance import geodesic
 from pydantic import BaseModel, model_validator
 
-from models import PlannerOutput, RouteRequest, WaypointOrdered
+from models import PlannerOutput, RouteRequest, UserWaypointInput, WaypointOrdered
 
 log = logging.getLogger(__name__)
 
@@ -191,6 +191,18 @@ WAYPOINT UTENTE vs. PLANNER:
     "rationale": "Trecastelli — borgo medievale Valle del Misa, segnalato su
                   ciclovia-marche.it come tappa storica caratteristica"
   Se non hai trovato una fonte esplicita, descrivi perché lo hai scelto.
+  I waypoint "planner" hanno sempre mandatory:false.
+
+WAYPOINT UTENTE — OBBLIGATORIO vs. SOFT (campo "mandatory"):
+- mandatory:true → tappa fissa: DEVE comparire in "ordered_waypoints" con
+  mandatory:true invariato, esattamente come ricevuto. Non declassarlo mai.
+- mandatory:false → riferimento soft: usalo per orientare la zona/il tema
+  della sequenza che scegli, ma NON è un vincolo di passaggio letterale —
+  se non si inserisce bene nella sequenza puoi anche ometterlo. Se decidi
+  di includerlo, riporta mandatory:false invariato: non promuoverlo mai a
+  true di tua iniziativa, anche se ti sembra un punto importante.
+  In ogni caso preserva fedelmente il valore ricevuto in input — non
+  reinterpretarlo in base a quanto ti sembra "importante" il luogo.
 
 SEQUENZA OTTIMALE:
 Ordina i waypoint nella sequenza che minimizza la distanza totale in linea d'aria.
@@ -310,7 +322,7 @@ _PROXIMITY_WARN_KM = 2.0
 
 
 def _geocode_user_waypoints(
-    user_wps: list[str],
+    user_wps: list[UserWaypointInput],
     region: str = "Italia",
     start_coords: tuple[float, float] | None = None,
 ) -> list[dict]:
@@ -325,8 +337,12 @@ def _geocode_user_waypoints(
     Sanity check: se il risultato è < PROXIMITY_WARN_KM dalla partenza, imposta
     proximity_warning=True nel dict restituito (visibile in UI come warning).
 
+    Il flag mandatory di ciascun UserWaypointInput viene riportato invariato
+    nel dict risultante (vedi UserWaypointInput per la semantica).
+
     Restituisce list[dict] con chiavi:
-      name, lat, lon, source, geocoding_failed, proximity_warning (opt.), dist_from_start_km (opt.)
+      name, lat, lon, source, mandatory, geocoding_failed,
+      proximity_warning (opt.), dist_from_start_km (opt.)
     """
     from geocoding_agent import geocode_place  # import locale per evitare dipendenze circolari
 
@@ -343,11 +359,12 @@ def _geocode_user_waypoints(
         return None, None
 
     result = []
-    for wp_str in user_wps:
-        name, lat, lon = _parse_user_waypoint(wp_str)
+    for wp_input in user_wps:
+        mandatory = wp_input.mandatory
+        name, lat, lon = _parse_user_waypoint(wp_input.name)
         if lat is not None:
             entry = {"name": name, "lat": lat, "lon": lon,
-                     "source": "user", "geocoding_failed": False}
+                     "source": "user", "mandatory": mandatory, "geocoding_failed": False}
             if start_coords:
                 dist_km = geodesic((lat, lon), start_coords).km
                 if dist_km < _PROXIMITY_WARN_KM:
@@ -376,7 +393,7 @@ def _geocode_user_waypoints(
             if used_region != region:
                 log.info("Geocoding '%s': trovato con fallback '%s'", query_name, used_region)
             entry = {"name": name, "lat": coords[0], "lon": coords[1],
-                     "source": "user", "geocoding_failed": False}
+                     "source": "user", "mandatory": mandatory, "geocoding_failed": False}
             if start_coords:
                 dist_km = geodesic(coords, start_coords).km
                 if dist_km < _PROXIMITY_WARN_KM:
@@ -391,7 +408,7 @@ def _geocode_user_waypoints(
         else:
             log.warning("Geocoding fallito per '%s' — waypoint escluso", name)
             result.append({"name": name, "lat": None, "lon": None,
-                           "source": "user", "geocoding_failed": True})
+                           "source": "user", "mandatory": mandatory, "geocoding_failed": True})
     return result
 
 
@@ -527,13 +544,14 @@ def build_raw_route_prompt(
             "ordered_waypoints": [
                 {"role": "start", "name": start.name, "lat": start.lat,
                  "lon": start.lon, "source": "user", "order": 0,
-                 "rationale": None},
+                 "rationale": None, "mandatory": False},
                 {"role": "via", "name": "...", "lat": 0.0, "lon": 0.0,
                  "source": "planner", "order": 1,
-                 "rationale": "motivo della scelta — fonte web o personale"},
+                 "rationale": "motivo della scelta — fonte web o personale",
+                 "mandatory": False},
                 {"role": "end", "name": end_name, "lat": end_lat,
                  "lon": end_lon, "source": "user", "order": n_order,
-                 "rationale": None},
+                 "rationale": None, "mandatory": False},
             ],
         },
         ensure_ascii=False,
@@ -542,7 +560,13 @@ def build_raw_route_prompt(
 
     user_prompt = (
         "\n".join(lines)
-        + f"\n\nWAYPOINT UTENTE (già geocodificati, non modificare le coordinate):\n{wps_json}"
+        + "\n\nWAYPOINT UTENTE (già geocodificati, non modificare le coordinate):\n"
+        + "Ogni waypoint ha un campo \"mandatory\": true = OBBLIGATORIO, deve comparire "
+        + "esattamente in \"ordered_waypoints\" con lo stesso mandatory:true — è una tappa fissa. "
+        + "false = SOFT/riferimento: usalo solo per orientare la zona/il tema della sequenza, "
+        + "non è vincolante includerlo letteralmente se non si inserisce bene nel percorso; "
+        + "se lo includi, riporta mandatory:false invariato (non promuoverlo a true).\n"
+        + wps_json
         + f"\n\nSchema JSON atteso:\n{schema}"
     )
 
