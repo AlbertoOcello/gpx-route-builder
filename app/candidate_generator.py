@@ -15,10 +15,11 @@ from datetime import datetime
 from pathlib import Path
 
 import gpxpy
+from geopy.distance import geodesic
 
 from brouter_client import get_route
 from gpx_analyzer import analyze_gpx
-from area_resolver import resolve_area_traversal
+from area_resolver import resolve_area_traversal, snap_to_nearest_road
 
 log = logging.getLogger(__name__)
 
@@ -123,15 +124,37 @@ def _waypoints_to_lonlat(strategy: dict) -> list[tuple[float, float]]:
     Converte i waypoint (già in ordine start→via…→end) in lista (lon, lat) per BRouter.
     Solleva ValueError se un waypoint incluso non ha coordinate (geocoding incompleto).
 
-    Start ed end sono sempre inclusi. Un waypoint "via" è escluso dalla lista
-    letterale se source == "user" e mandatory non è True: è un riferimento
-    soft già incorporato a monte nella scelta della sequenza da parte del
-    Planner AI, non un punto che BRouter deve toccare esattamente — evita le
-    mini-route andata/ritorno per punti tangenti al percorso principale.
+    Start ed end sono sempre inclusi. Un waypoint "via" con source == "user" e
+    mandatory non True è "soft": è un riferimento di zona già incorporato a
+    monte nella scelta della sequenza da parte del Planner AI, non un punto che
+    BRouter deve toccare esattamente. Invece di escluderlo dalla chiamata (il
+    che spesso lo lascia a km di distanza dal tracciato reale), viene agganciato
+    alla strada carrabile più vicina via snap_to_nearest_road — mantiene
+    un'influenza reale sul routing senza forzare mini-route andata/ritorno per
+    punti tangenti al percorso principale. Se non si trova nessuna strada nel
+    raggio, il waypoint viene escluso (fallback al comportamento precedente).
     """
     result = []
     for wp in strategy["waypoints"]:
         if wp.get("role") == "via" and wp.get("source") == "user" and not wp.get("mandatory"):
+            lat, lon = wp.get("lat"), wp.get("lon")
+            if lat is None or lon is None:
+                log.warning("Waypoint soft '%s' senza coordinate — escluso.", wp.get("name"))
+                continue
+            snapped = snap_to_nearest_road(float(lat), float(lon))
+            if snapped is None:
+                log.warning(
+                    "Waypoint soft '%s' — nessuna strada trovata nel raggio, escluso "
+                    "dalla chiamata BRouter.", wp.get("name"),
+                )
+                continue
+            snap_lat, snap_lon = snapped
+            snap_dist_m = geodesic((lat, lon), (snap_lat, snap_lon)).meters
+            log.info(
+                "Waypoint soft '%s' agganciato a strada: (%.6f,%.6f) → (%.6f,%.6f)  [%.0f m dall'originale]",
+                wp.get("name"), lat, lon, snap_lat, snap_lon, snap_dist_m,
+            )
+            result.append((snap_lon, snap_lat))
             continue
         if wp.get("lat") is None or wp.get("lon") is None:
             raise ValueError(

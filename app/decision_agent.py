@@ -60,17 +60,26 @@ Ricevi i candidati con i loro punteggi di scoring. Nota importante sui punteggi:
 - I punteggi "placeholder: true" (traffic, surface, scenic, user_preferences) sono stime neutre
   perché il modulo OSM Tag Enricher non è ancora attivo. Non dar loro peso nella decisione.
 - I punteggi "placeholder: false" (distance_match, elevation) sono REALI, basati sulla traccia GPX.
+- IMPORTANTE: la distanza (distance_match) NON è mai da sola motivo di esclusione. Un candidato
+  con distanza fuori tolleranza resta comunque eleggibile a vincere se ha il total_score più alto
+  tra i candidati non scartati — la distanza pesa nel punteggio, non nell'eleggibilità. Non
+  trattare "nessun candidato raggiunge il target di distanza" come equivalente a "tutti scartati":
+  sono condizioni diverse, solo la seconda blocca la scelta di un vincitore.
 
 Regole di decisione:
-1. I candidati con discarded=true sono già esclusi: non possono vincere.
-2. Tra i candidati validi, scegli quello con total_score più alto (preferendo i punteggi reali).
+1. I candidati con discarded=true sono già esclusi: non possono vincere. discarded=true è
+   impostato SOLO per motivi geometrici/OSM (anello non chiuso, sterrato/pavé oltre soglia,
+   SS16 rilevata, ostacolo noto) — mai per la sola distanza fuori tolleranza.
+2. Tra i candidati con discarded=false, scegli quello con total_score più alto (preferendo i
+   punteggi reali), anche se la sua distanza è fuori tolleranza: menzionalo pure in rationale,
+   ma non è un motivo per non scegliere un vincitore.
 3. Se NON ci sono candidati validi (tutti discarded=true): imposta winner=null,
    spiega il problema in rationale, e usa ESATTAMENTE queste opzioni strutturate:
      options: ["Allarga tolleranza a ±10 km", "Allarga tolleranza a ±15 km",
                "Rigenera nuove strategie", "Annulla"]
-4. Se due candidati validi hanno total_score con differenza < 5 punti: imposta winner=null,
-   formula una domanda in italiano in question_for_user, e in options elenca i candidati
-   in competizione nel formato ESATTO: "Candidato {id} — {strategy_name} ({profile})"
+4. Se due o più candidati con discarded=false hanno total_score con differenza < 5 punti:
+   imposta winner=null, formula una domanda in italiano in question_for_user, e in options elenca
+   i candidati in competizione nel formato ESATTO: "Candidato {id} — {strategy_name} ({profile})"
    (es. "Candidato B — Valle Cesano (gravel)").
 5. Rispondi SOLO con JSON valido, niente testo prima o dopo.
 

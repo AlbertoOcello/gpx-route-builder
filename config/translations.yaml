@@ -23,6 +23,11 @@ it:
       lat: "Lat"
       lon: "Lon"
       target_km: "Distanza target (km)"
+      km_unconstrained: "Non vincolare alla distanza target"
+      km_unconstrained_help: >-
+        Il percorso viene costruito solo in base a waypoint, temi e note libere,
+        senza allungare o accorciare artificialmente per avvicinarsi a un target
+        di chilometraggio. Il campo distanza target viene ignorato.
       route_type: "Tipo giro"
       scenery: "Tema paesaggistico"
       athletic: "Tema atletico"
@@ -68,6 +73,7 @@ it:
       potrà discostarsi per vincoli di routing e disponibilità strade._
     result_web_expander: "🌐 Ricerche web effettuate"
     result_est_km: "📏 **Distanza stimata: ~{est} km** (linea d'aria ×1.6) — target richiesto: {target:.0f} km"
+    result_est_km_free: "📏 **Distanza stimata: ~{est} km** (linea d'aria ×1.6) — nessun vincolo di distanza"
     result_est_warning: >-
       La stima ({est:.0f} km) si discosta parecchio dal target
       ({target:.0f} km ± {tol:.0f} km).
@@ -124,6 +130,7 @@ it:
     select_placeholder: "— seleziona —"
     expander_summary: "📋 Riepilogo route"
     metric_target: "Target"
+    metric_target_free: "Nessun vincolo"
     metric_type: "Tipo"
     metric_waypoints: "Waypoint"
     est_km: "📏 Stima distanza: ~{est:.0f} km (linea d'aria ×1.6)"
@@ -162,6 +169,7 @@ it:
     col_status: "Stato"
     status_valid: "valido"
     status_discarded: "SCARTATO"
+    out_and_back_warning: "Il {pct:.0f}% del percorso ripercorre lo stesso tratto andata/ritorno"
     status_error_brouter: "ERRORE BRouter —"
     btn_download: "⬇ Scarica GPX —"
     decision_motivation: "**Motivazione Decision Agent:**"
@@ -452,6 +460,11 @@ en:
       lat: "Lat"
       lon: "Lon"
       target_km: "Target distance (km)"
+      km_unconstrained: "Don't constrain to target distance"
+      km_unconstrained_help: >-
+        The route is built only from waypoints, themes and free notes, without
+        artificially lengthening or shortening it to approach a target distance.
+        The target distance field is ignored.
       route_type: "Route type"
       scenery: "Scenery theme"
       athletic: "Athletic theme"
@@ -497,6 +510,7 @@ en:
       may differ due to routing constraints and road availability._
     result_web_expander: "🌐 Web searches performed"
     result_est_km: "📏 **Estimated distance: ~{est} km** (straight-line ×1.6) — requested target: {target:.0f} km"
+    result_est_km_free: "📏 **Estimated distance: ~{est} km** (straight-line ×1.6) — no distance constraint"
     result_est_warning: >-
       The estimate ({est:.0f} km) differs considerably from the target
       ({target:.0f} km ± {tol:.0f} km).
@@ -553,6 +567,7 @@ en:
     select_placeholder: "— select —"
     expander_summary: "📋 Route summary"
     metric_target: "Target"
+    metric_target_free: "Unconstrained"
     metric_type: "Type"
     metric_waypoints: "Waypoints"
     est_km: "📏 Estimated distance: ~{est:.0f} km (straight-line ×1.6)"
@@ -591,6 +606,7 @@ en:
     col_status: "Status"
     status_valid: "valid"
     status_discarded: "DISCARDED"
+    out_and_back_warning: "{pct:.0f}% of the route retraces the same out-and-back stretch"
     status_error_brouter: "BROUTER ERROR —"
     btn_download: "⬇ Download GPX —"
     decision_motivation: "**Decision Agent rationale:**"

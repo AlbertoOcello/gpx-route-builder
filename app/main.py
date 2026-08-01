@@ -51,6 +51,7 @@ tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = 
 ])
 
 _PLANNED_DIR = Path("routes/planned")
+_OUT_AND_BACK_WARN_THRESHOLD = 20.0  # % — sopra questa soglia mostra warning nel Builder
 _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -418,9 +419,15 @@ with tab_planner:
 
         col_d1, col_d2 = st.columns(2)
         with col_d1:
+            pl_km_unconstrained = st.checkbox(
+                t("planner.form.km_unconstrained"),
+                key="pl_km_unconstrained",
+                help=t("planner.form.km_unconstrained_help"),
+            )
             pl_target_km = st.selectbox(
                 t("planner.form.target_km"), [40, 50, 55, 60, 65, 70, 80, 100],
                 index=3, key="pl_km",
+                disabled=pl_km_unconstrained,
             )
             pl_route_type = st.selectbox(
                 t("planner.form.route_type"), ["loop", "out_and_back", "point_to_point"],
@@ -504,7 +511,7 @@ with tab_planner:
                 start=StartPoint(name=pl_start_name, lat=pl_start_lat, lon=pl_start_lon),
                 end=end_val,
                 route_type=pl_route_type,
-                target_km=float(pl_target_km),
+                target_km=-1.0 if pl_km_unconstrained else float(pl_target_km),
                 distance_tolerance_km=5.0,
                 user_waypoints=raw_wps,
                 scenery_theme=pl_scenery,
@@ -715,15 +722,18 @@ with tab_planner:
             target_km = res["request"].target_km
             tol_km = res["request"].distance_tolerance_km
             if est_km > 0:
-                st.markdown(
-                    t("planner.result_est_km").format(est=est_km, target=target_km)
-                )
-                if abs(est_km - target_km) > 2 * tol_km:
-                    st.warning(
-                        t("planner.result_est_warning").format(
-                            est=est_km, target=target_km, tol=tol_km
-                        )
+                if target_km <= 0:
+                    st.markdown(t("planner.result_est_km_free").format(est=est_km))
+                else:
+                    st.markdown(
+                        t("planner.result_est_km").format(est=est_km, target=target_km)
                     )
+                    if abs(est_km - target_km) > 2 * tol_km:
+                        st.warning(
+                            t("planner.result_est_warning").format(
+                                est=est_km, target=target_km, tol=tol_km
+                            )
+                        )
 
             # Mappa anteprima
             start = res["request"].start
@@ -778,7 +788,12 @@ with tab_builder:
                 if narrative_b:
                     st.info(narrative_b)
                 col_rb1, col_rb2, col_rb3 = st.columns(3)
-                col_rb1.metric(t("builder.metric_target"), f"{req_b.get('target_km','?')} km")
+                _target_km_b_disp = req_b.get("target_km", "?")
+                col_rb1.metric(
+                    t("builder.metric_target"),
+                    t("builder.metric_target_free") if _target_km_b_disp in (-1, -1.0)
+                    else f"{_target_km_b_disp} km",
+                )
                 col_rb2.metric(t("builder.metric_type"), req_b.get("route_type", "—"))
                 col_rb3.metric(t("builder.metric_waypoints"), len(wps_b))
                 st.caption(
@@ -1005,25 +1020,37 @@ with tab_builder:
                 ordered_b = valid_b + invalid_b
                 failed_cands_b = [c for c in all_cands_b if c["status"] == "failed"]
 
+                target_unconstrained_b = target_km_b is None or float(target_km_b) <= 0
+
                 rows_b = []
                 for c, s in ordered_b:
                     dist = c["analysis"]["distance_km"]
-                    diff = dist - target_km_b
                     is_w = c["id"] == winner_id_b
                     indicator = "★" if is_w else ("✗" if s["discarded"] else "·")
+                    warn_parts_b = []
+                    if s.get("distance_warning"):
+                        warn_parts_b.append(s["distance_warning"])
+                    oab_pct_b = c["analysis"].get("out_and_back_percent")
+                    if oab_pct_b is not None and oab_pct_b >= _OUT_AND_BACK_WARN_THRESHOLD:
+                        warn_parts_b.append(t("builder.out_and_back_warning").format(pct=oab_pct_b))
                     if s["discarded"]:
                         stato = f"{t('builder.status_discarded')} — {s['discard_reason']}"
-                    elif s.get("distance_warning"):
-                        stato = f"⚠ {s['distance_warning']}"
+                    elif warn_parts_b:
+                        stato = "⚠ " + " · ".join(warn_parts_b)
                     else:
                         stato = t("builder.status_valid")
+                    if target_unconstrained_b:
+                        vs_target_disp = "—"
+                    else:
+                        diff = dist - target_km_b
+                        vs_target_disp = f"{'+' if diff >= 0 else ''}{diff:.1f}"
                     rows_b.append({
                         "  ": indicator,
                         t("builder.col_id"): c["id"],
                         t("builder.col_name"): c["strategy_name"],
                         t("builder.col_profile"): c["profile"],
                         t("builder.col_km"): f"{dist:.1f}",
-                        t("builder.col_vs_target"): f"{'+' if diff >= 0 else ''}{diff:.1f}",
+                        t("builder.col_vs_target"): vs_target_disp,
                         t("builder.col_elev"): f"{c['analysis']['elevation_gain_m']:.0f}",
                         t("builder.col_score"): f"{s['total_score']:.1f}",
                         t("builder.col_status"): stato,

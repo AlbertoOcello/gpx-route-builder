@@ -165,6 +165,7 @@ def score_candidate(
     penalties: dict = cfg["hard_penalties"]
 
     target_km    = float(request["target_km"])
+    distance_unconstrained = target_km <= 0  # sentinel: -1 = "non vincolare alla distanza"
     tolerance_km = float(request.get("distance_tolerance_km", 5))
     max_elev     = float(request.get("max_elevation_gain_m", 800))
     route_type   = request.get("route_type", "loop")
@@ -178,17 +179,23 @@ def score_candidate(
     osm_unresolved = float((enrichment or {}).get("unresolved_percent", 100.0))
 
     # ── Penalità hard geometriche (SRS §8.2) ─────────────────────────────────
+    # NOTA: la distanza non è mai motivo di discarded=True, qui o altrove — un
+    # candidato fuori target resta comunque eleggibile a vincere. Il suo unico
+    # effetto è: (a) un testo di avviso informativo, (b) il punteggio component
+    # distance_match più basso.
     discarded = False
     discard_reason: str | None = None
     distance_warning: str | None = None
 
-    diff_km = abs(distance_km - target_km)
-    factor  = float(penalties.get("distance_factor_discard", 2.0))
-    if diff_km > factor * tolerance_km:
-        distance_warning = (
-            f"Supera il target di {diff_km:.1f} km "
-            f"(oltre {factor:.0f}× la tolleranza ±{tolerance_km:.0f} km)"
-        )
+    if not distance_unconstrained:
+        diff_km = abs(distance_km - target_km)
+        factor  = float(penalties.get("distance_factor_warning", 2.0))
+        if diff_km > factor * tolerance_km:
+            verb = "Supera il target di" if distance_km > target_km else "È sotto il target di"
+            distance_warning = (
+                f"{verb} {diff_km:.1f} km "
+                f"(oltre {factor:.0f}× la tolleranza ±{tolerance_km:.0f} km)"
+            )
 
     if penalties.get("loop_open_discard", True):
         if route_type in ("loop", "out_and_back") and loop_closed is False:
@@ -232,16 +239,17 @@ def score_candidate(
         return {"score": _PLACEHOLDER, "placeholder": True, "source": label}
 
     comp: dict[str, dict] = {
-        "distance_match": {
-            "score": round(_distance_match_score(distance_km, target_km, tolerance_km), 1),
-            "placeholder": False, "source": "gpx",
-        },
         "elevation": {
             "score": round(_elevation_score(elevation_gain_m, max_elev), 1),
             "placeholder": False, "source": "gpx",
         },
         "user_preferences": _ph("fase_futura"),  # richiede analisi POI + storico
     }
+    if not distance_unconstrained:
+        comp["distance_match"] = {
+            "score": round(_distance_match_score(distance_km, target_km, tolerance_km), 1),
+            "placeholder": False, "source": "gpx",
+        }
 
     if osm_ok:
         comp["surface"] = {
@@ -306,11 +314,23 @@ def score_candidate(
         }
 
     # ── Punteggio totale pesato ───────────────────────────────────────────────
-    total = sum(
-        comp[k]["score"] * w
-        for k, w in weights.items()
-        if w > 0.0 and k in comp
+    # Ridistribuzione proporzionale: se un componente pesato è assente da comp
+    # (es. distance_match escluso perché target_km=-1), il suo peso si redistribuisce
+    # sugli altri componenti presenti invece di andare perso (equivalente al
+    # comportamento precedente quando tutti i componenti pesati erano sempre presenti).
+    weights_used = {k: w for k, w in weights.items() if w > 0.0 and k in comp}
+    weight_sum = sum(weights_used.values())
+    total = (
+        sum(comp[k]["score"] * (w / weight_sum) for k, w in weights_used.items())
+        if weight_sum > 0
+        else 0.0
     )
+
+    # ── Penalità soft "a lecca-lecca" (andata/ritorno sovrapposti) ───────────
+    # Proporzionale, non è mai motivo di discarded — coerente con la distanza (Parte A).
+    out_and_back_percent = float(analysis.get("out_and_back_percent", 0.0))
+    oab_factor = float(cfg.get("soft_penalties", {}).get("out_and_back_percent_factor", 0.5))
+    total = max(0.0, total - out_and_back_percent * oab_factor)
 
     return {
         "component_scores":       comp,
@@ -318,6 +338,7 @@ def score_candidate(
         "discarded":              discarded,
         "discard_reason":         discard_reason,
         "distance_warning":       distance_warning,
+        "out_and_back_percent":   out_and_back_percent,
         "osm_unresolved_percent": osm_unresolved,
         "osm_source":             "real" if osm_ok else ("partial" if enrichment else "missing"),
     }

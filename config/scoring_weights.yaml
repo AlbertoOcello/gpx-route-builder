@@ -12,4 +12,12 @@ weights:
 # Penalità hard (SRS §8.2)
 hard_penalties:
   loop_open_discard:       true   # loop_closed=false → scartato automaticamente
-  distance_factor_discard: 2.0   # |diff| > factor × tolerance_km → scartato
+  # La distanza non scarta MAI da sola un candidato — pesa solo su distance_match
+  # nello score. Questa soglia controlla solo il testo di avviso (distance_warning).
+  distance_factor_warning: 2.0   # |diff| > factor × tolerance_km → mostra avviso
+
+# Penalità soft (proporzionali, non scartano mai un candidato)
+soft_penalties:
+  # Punti totali persi per ogni punto percentuale di tracciato "a lecca-lecca"
+  # (loop_closed=true ma va e torna sullo stesso asse — vedi gpx_analyzer).
+  out_and_back_percent_factor: 0.5

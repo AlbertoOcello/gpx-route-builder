@@ -471,7 +471,8 @@ def build_raw_route_prompt(
     failed_wps = [w["name"] for w in geocoded_user_wps if w.get("geocoding_failed")]
     proximity_wps = [w for w in valid_wps if w.get("proximity_warning")]
 
-    straight_total = round(target_km / 1.4)
+    distance_unconstrained = target_km <= 0  # sentinel: -1 = "non vincolare alla distanza"
+    straight_total = round(target_km / 1.4) if not distance_unconstrained else None
 
     geo_dir = (request.geographic_direction or "").strip() or "Libera"
     _SECTOR_LABEL = {
@@ -486,8 +487,17 @@ def build_raw_route_prompt(
     lines = [
         f"route_type:      {route_type}",
         f"partenza:        {start.name} (lat={start.lat}, lon={start.lon})",
-        f"target:          {target_km} km (±{request.distance_tolerance_km} km)",
-        f"linea d'aria:    ≈ {straight_total} km totali",
+        (
+            "target:          nessun vincolo di distanza — organizza il percorso "
+            "in base alla geografia dei waypoint e alle note utente, non forzare "
+            "deviazioni per allungare o accorciare il giro"
+            if distance_unconstrained else
+            f"target:          {target_km} km (±{request.distance_tolerance_km} km)"
+        ),
+    ]
+    if straight_total is not None:
+        lines.append(f"linea d'aria:    ≈ {straight_total} km totali")
+    lines += [
         f"tema_paesaggio:  {request.scenery_theme}",
         f"tema_atletico:   {request.athletic_theme}",
         f"geographic_direction: {dir_hint}",
