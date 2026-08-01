@@ -14,6 +14,7 @@ import re
 from dotenv import load_dotenv
 
 import ai_client
+from gpx_analyzer import OUT_AND_BACK_WARN_THRESHOLD_PCT
 from pydantic import BaseModel, model_validator
 
 load_dotenv()
@@ -54,6 +55,16 @@ class DecisionReport(BaseModel):
 
 # ── Prompt di sistema ─────────────────────────────────────────────────────────
 
+_OAB_PROMPT_NOTE = (
+    f"- IMPORTANTE: se analysis.out_and_back_percent di un candidato supera "
+    f"{OUT_AND_BACK_WARN_THRESHOLD_PCT:.0f}%, quel percorso ripercorre parzialmente sé stesso "
+    f"(un tratto di andata/ritorno sulla stessa strada, non un anello pulito) — è già penalizzato "
+    f"nel total_score, ma se questo è un fattore rilevante nella differenza di punteggio tra i "
+    f"candidati DEVI menzionarlo esplicitamente in rationale (es. \"ripercorre parzialmente sé "
+    f"stesso per un tratto di andata/ritorno\"), così come già fai per dislivello e distanza. "
+    f"Come per la distanza, non è mai da solo motivo di esclusione (discarded).\n"
+)
+
 _SYSTEM_PROMPT = """Sei un esperto cicloturistico che aiuta a scegliere il percorso migliore tra tre candidati.
 
 Ricevi i candidati con i loro punteggi di scoring. Nota importante sui punteggi:
@@ -65,7 +76,7 @@ Ricevi i candidati con i loro punteggi di scoring. Nota importante sui punteggi:
   tra i candidati non scartati — la distanza pesa nel punteggio, non nell'eleggibilità. Non
   trattare "nessun candidato raggiunge il target di distanza" come equivalente a "tutti scartati":
   sono condizioni diverse, solo la seconda blocca la scelta di un vincitore.
-
+""" + _OAB_PROMPT_NOTE + """
 Regole di decisione:
 1. I candidati con discarded=true sono già esclusi: non possono vincere. discarded=true è
    impostato SOLO per motivi geometrici/OSM (anello non chiuso, sterrato/pavé oltre soglia,
@@ -125,6 +136,7 @@ def run_decision(candidates: list[dict], scored: list[dict], request: dict) -> D
                 "distance_km": c["analysis"]["distance_km"],
                 "elevation_gain_m": c["analysis"]["elevation_gain_m"],
                 "loop_closed": c["analysis"].get("loop_closed"),
+                "out_and_back_percent": c["analysis"].get("out_and_back_percent"),
             },
             "scoring": {
                 "total_score": s["total_score"],

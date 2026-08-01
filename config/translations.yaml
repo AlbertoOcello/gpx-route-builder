@@ -152,6 +152,10 @@ it:
     status_done: "✅ Generati {n}/3 percorsi"
     status_all_failed: "❌ Tutti i candidati falliti"
     warn_candidate_failed: "⚠️ Candidato **{id}** ({profile}) fallito:"
+    snap_service_unavailable: >-
+      ⚠ {n} waypoint non è stato possibile agganciare alla strada per un problema
+      temporaneo del servizio di geocoding ({names}) — riprova a rigenerare se il
+      percorso non ti soddisfa.
     err_all_failed: "❌ Nessun candidato generato con successo. Controlla i messaggi di warning sopra per i dettagli."
     err_builder: "❌ Errore Builder"
     result_subheader: "Risultati"
@@ -612,6 +616,9 @@ en:
     status_done: "✅ Generated {n}/3 routes"
     status_all_failed: "❌ All candidates failed"
     warn_candidate_failed: "⚠️ Candidate **{id}** ({profile}) failed:"
+    snap_service_unavailable: >-
+      ⚠ {n} waypoint could not be snapped to a road due to a temporary geocoding
+      service issue ({names}) — try regenerating if the route doesn't satisfy you.
     err_all_failed: "❌ No candidates generated successfully. Check the warning messages above for details."
     err_builder: "❌ Builder error"
     result_subheader: "Results"

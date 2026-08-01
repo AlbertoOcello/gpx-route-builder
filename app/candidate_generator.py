@@ -19,7 +19,7 @@ from geopy.distance import geodesic
 
 from brouter_client import get_route
 from gpx_analyzer import analyze_gpx
-from area_resolver import resolve_area_traversal, snap_to_nearest_road
+from area_resolver import OverpassUnavailable, resolve_area_traversal, snap_to_nearest_road
 
 log = logging.getLogger(__name__)
 
@@ -119,7 +119,77 @@ def _apply_loop_fix(strategy: dict) -> dict:
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
-def _waypoints_to_lonlat(strategy: dict) -> list[tuple[float, float]]:
+def _is_soft_via(wp: dict) -> bool:
+    return wp.get("role") == "via" and wp.get("source") == "user" and not wp.get("mandatory")
+
+
+def _snap_key(wp: dict) -> tuple:
+    """Chiave stabile per un waypoint soft, indipendente dalla posizione nella
+    lista — robusta anche se un'altra strategia espande un waypoint traversal
+    altrove nella sequenza (shiftando gli indici)."""
+    return (wp.get("name"), wp.get("lat"), wp.get("lon"))
+
+
+def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
+    """
+    Risolve UNA SOLA VOLTA, per l'intera generazione (condivisa tra i 3
+    candidati A/B/C), lo snap-to-road di ogni waypoint "via" soft.
+
+    Prima di questo fix, _waypoints_to_lonlat chiamava snap_to_nearest_road
+    separatamente per ciascuno dei 3 candidati — 3 query Overpass indipendenti
+    per la STESSA coordinata. Sotto stress del servizio (429/504, osservato in
+    produzione su "Polverigi_5"), una chiamata poteva riuscire e un'altra no in
+    modo non deterministico, producendo liste di via-point diverse tra A/B/C
+    per lo stesso waypoint e percorsi imprevedibili. Risolvendo una volta sola
+    e condividendo il risultato, i 3 candidati usano sempre lo stesso set.
+
+    Ritorna un dict {chiave(_snap_key) → {"lat","lon"} se agganciato, oppure
+    {"excluded": "no_road" | "service_unavailable" | "no_coords"}}.
+    """
+    snaps: dict[tuple, dict] = {}
+    for wp in waypoints:
+        if not _is_soft_via(wp):
+            continue
+        key = _snap_key(wp)
+        if key in snaps:
+            continue  # stesso waypoint (nome+coordinate) già risolto
+
+        lat, lon = wp.get("lat"), wp.get("lon")
+        if lat is None or lon is None:
+            log.warning("Waypoint soft '%s' senza coordinate — escluso.", wp.get("name"))
+            snaps[key] = {"excluded": "no_coords"}
+            continue
+
+        try:
+            snapped = snap_to_nearest_road(float(lat), float(lon))
+        except OverpassUnavailable as exc:
+            log.warning(
+                "Waypoint soft '%s' — servizio Overpass non ha risposto dopo i tentativi "
+                "previsti (%s), escluso dalla chiamata BRouter.", wp.get("name"), exc,
+            )
+            snaps[key] = {"excluded": "service_unavailable"}
+            continue
+
+        if snapped is None:
+            log.warning(
+                "Waypoint soft '%s' — nessuna strada trovata nel raggio, escluso "
+                "dalla chiamata BRouter.", wp.get("name"),
+            )
+            snaps[key] = {"excluded": "no_road"}
+            continue
+
+        snap_lat, snap_lon = snapped
+        snap_dist_m = geodesic((lat, lon), (snap_lat, snap_lon)).meters
+        log.info(
+            "Waypoint soft '%s' agganciato a strada: (%.6f,%.6f) → (%.6f,%.6f)  [%.0f m dall'originale]",
+            wp.get("name"), lat, lon, snap_lat, snap_lon, snap_dist_m,
+        )
+        snaps[key] = {"lat": snap_lat, "lon": snap_lon}
+
+    return snaps
+
+
+def _waypoints_to_lonlat(strategy: dict, snaps: dict[tuple, dict]) -> list[tuple[float, float]]:
     """
     Converte i waypoint (già in ordine start→via…→end) in lista (lon, lat) per BRouter.
     Solleva ValueError se un waypoint incluso non ha coordinate (geocoding incompleto).
@@ -127,34 +197,17 @@ def _waypoints_to_lonlat(strategy: dict) -> list[tuple[float, float]]:
     Start ed end sono sempre inclusi. Un waypoint "via" con source == "user" e
     mandatory non True è "soft": è un riferimento di zona già incorporato a
     monte nella scelta della sequenza da parte del Planner AI, non un punto che
-    BRouter deve toccare esattamente. Invece di escluderlo dalla chiamata (il
-    che spesso lo lascia a km di distanza dal tracciato reale), viene agganciato
-    alla strada carrabile più vicina via snap_to_nearest_road — mantiene
-    un'influenza reale sul routing senza forzare mini-route andata/ritorno per
-    punti tangenti al percorso principale. Se non si trova nessuna strada nel
-    raggio, il waypoint viene escluso (fallback al comportamento precedente).
+    BRouter deve toccare esattamente. Lo snap alla strada più vicina è già stato
+    risolto una volta sola per l'intera generazione da _resolve_soft_snaps
+    (condiviso tra i 3 candidati) — qui si legge solo il risultato precomputato.
     """
     result = []
     for wp in strategy["waypoints"]:
-        if wp.get("role") == "via" and wp.get("source") == "user" and not wp.get("mandatory"):
-            lat, lon = wp.get("lat"), wp.get("lon")
-            if lat is None or lon is None:
-                log.warning("Waypoint soft '%s' senza coordinate — escluso.", wp.get("name"))
+        if _is_soft_via(wp):
+            snap = snaps.get(_snap_key(wp))
+            if not snap or "excluded" in snap:
                 continue
-            snapped = snap_to_nearest_road(float(lat), float(lon))
-            if snapped is None:
-                log.warning(
-                    "Waypoint soft '%s' — nessuna strada trovata nel raggio, escluso "
-                    "dalla chiamata BRouter.", wp.get("name"),
-                )
-                continue
-            snap_lat, snap_lon = snapped
-            snap_dist_m = geodesic((lat, lon), (snap_lat, snap_lon)).meters
-            log.info(
-                "Waypoint soft '%s' agganciato a strada: (%.6f,%.6f) → (%.6f,%.6f)  [%.0f m dall'originale]",
-                wp.get("name"), lat, lon, snap_lat, snap_lon, snap_dist_m,
-            )
-            result.append((snap_lon, snap_lat))
+            result.append((snap["lon"], snap["lat"]))
             continue
         if wp.get("lat") is None or wp.get("lon") is None:
             raise ValueError(
@@ -236,6 +289,8 @@ def _generate_one(
     run_dir: Path,
     request: dict | None,
     attempt: int,
+    snaps: dict[tuple, dict],
+    snap_exclusions_summary: dict,
 ) -> dict:
     # 1a. Espandi waypoint traversal con sentieri OSM reali (se presenti)
     if any(w.get("traversal") for w in strategy.get("waypoints", [])):
@@ -244,7 +299,7 @@ def _generate_one(
     # 1b. Applica loop fix (fonte di verità finale prima di BRouter)
     strategy = _apply_loop_fix(strategy)
 
-    lonlat   = _waypoints_to_lonlat(strategy)
+    lonlat   = _waypoints_to_lonlat(strategy, snaps)
     gpx_path = run_dir / f"candidate_{label}.gpx"
 
     _log_brouter_call(strategy, lonlat)
@@ -271,6 +326,7 @@ def _generate_one(
             "gpx_path": str(gpx_path),
             "status": "retried" if attempt == 2 else "ok",
             "analysis": analysis,
+            "soft_waypoint_exclusions": snap_exclusions_summary,
         }
 
     except Exception as exc:
@@ -280,7 +336,10 @@ def _generate_one(
         if attempt == 1 and request is not None:
             alt = _get_alternative(strategy, request)
             if alt is not None:
-                return _generate_one(alt, label, run_dir, request=None, attempt=2)
+                return _generate_one(
+                    alt, label, run_dir, request=None, attempt=2,
+                    snaps=snaps, snap_exclusions_summary=snap_exclusions_summary,
+                )
 
         return {
             "id": label,
@@ -291,6 +350,7 @@ def _generate_one(
             "status": "failed",
             "failure_reason": failure_reason,
             "analysis": None,
+            "soft_waypoint_exclusions": snap_exclusions_summary,
         }
 
 
@@ -309,10 +369,30 @@ def generate_candidates(
     run_dir.mkdir(parents=True, exist_ok=True)
     log.info("Output GPX in: %s", run_dir)
 
+    # Fix 1: risolvi lo snap dei waypoint soft UNA VOLTA per l'intera generazione,
+    # condiviso tra i 3 candidati — tutte le strategie condividono la stessa
+    # sequenza di waypoint base (stesso Planner output, solo profilo diverso).
+    base_waypoints = strategies[0]["waypoints"] if strategies else []
+    snaps = _resolve_soft_snaps(base_waypoints)
+
+    snap_exclusions_summary = {
+        "no_road": sorted({
+            wp["name"] for wp in base_waypoints
+            if _is_soft_via(wp) and snaps.get(_snap_key(wp), {}).get("excluded") == "no_road"
+        }),
+        "service_unavailable": sorted({
+            wp["name"] for wp in base_waypoints
+            if _is_soft_via(wp) and snaps.get(_snap_key(wp), {}).get("excluded") == "service_unavailable"
+        }),
+    }
+
     results = []
     for i, strategy in enumerate(strategies):
         label = _SLOT_LABELS[i] if i < len(_SLOT_LABELS) else str(i)
-        result = _generate_one(strategy, label, run_dir, request=request, attempt=1)
+        result = _generate_one(
+            strategy, label, run_dir, request=request, attempt=1,
+            snaps=snaps, snap_exclusions_summary=snap_exclusions_summary,
+        )
         results.append(result)
 
     return results

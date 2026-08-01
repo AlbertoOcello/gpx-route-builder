@@ -4,11 +4,22 @@ Tabs: 📐 Planner · 🏗️ Builder · 🧭 GPX Optimizer · 🔋 Analisi Giro
 """
 import datetime
 import json
+import logging
 import os
 import re
 import shutil
 import tempfile
 from pathlib import Path
+
+# Configurazione logging applicativa — deve avvenire prima che qualunque modulo
+# sottostante (brouter_client, candidate_generator, planner_agent, ecc.) emetta
+# log, altrimenti restano invisibili (nessun handler = solo WARNING+ silenzioso
+# su stderr). basicConfig() è no-op se già chiamato altrove — sicuro anche nei
+# rerun ripetuti di Streamlit.
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
 
 import folium
 import gpxpy
@@ -20,7 +31,7 @@ from brouter_client import ensure_tile, get_route
 from candidate_generator import generate_candidates
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
-from gpx_analyzer import analyze_gpx
+from gpx_analyzer import OUT_AND_BACK_WARN_THRESHOLD_PCT, analyze_gpx
 from gpx_optimizer import is_already_optimized, optimize_gpx
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
@@ -51,7 +62,6 @@ tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = 
 ])
 
 _PLANNED_DIR = Path("routes/planned")
-_OUT_AND_BACK_WARN_THRESHOLD = 20.0  # % — sopra questa soglia mostra warning nel Builder
 _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
 
@@ -1088,6 +1098,18 @@ with tab_builder:
 
                 winner_id_b = decision_b.get("winner")
 
+                # Fix 4: nota aggregata se uno o più waypoint soft sono stati esclusi per
+                # un problema temporaneo del servizio di geocoding (non per assenza
+                # geografica di strade) — stessa per tutti i candidati (snap condiviso, Fix 1).
+                _svc_unavail_b = (all_cands_b[0].get("soft_waypoint_exclusions", {}).get("service_unavailable")
+                                   if all_cands_b else [])
+                if _svc_unavail_b:
+                    st.warning(
+                        t("builder.snap_service_unavailable").format(
+                            n=len(_svc_unavail_b), names=", ".join(_svc_unavail_b)
+                        )
+                    )
+
                 st.divider()
                 st.subheader(t("builder.result_subheader"))
 
@@ -1110,7 +1132,7 @@ with tab_builder:
                     if s.get("distance_warning"):
                         warn_parts_b.append(s["distance_warning"])
                     oab_pct_b = c["analysis"].get("out_and_back_percent")
-                    if oab_pct_b is not None and oab_pct_b >= _OUT_AND_BACK_WARN_THRESHOLD:
+                    if oab_pct_b is not None and oab_pct_b >= OUT_AND_BACK_WARN_THRESHOLD_PCT:
                         warn_parts_b.append(t("builder.out_and_back_warning").format(pct=oab_pct_b))
                     if s["discarded"]:
                         stato = f"{t('builder.status_discarded')} — {s['discard_reason']}"

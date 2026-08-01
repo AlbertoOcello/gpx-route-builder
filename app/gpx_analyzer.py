@@ -16,6 +16,11 @@ _OAB_PROXIMITY_M = 30.0   # sotto questa distanza euclidea due punti sono "sullo
 _OAB_MIN_RUN_M = 100.0    # lunghezza minima di un tratto sovrapposto consecutivo per contarlo
                           # (esclude incroci puntuali tipo percorso a otto)
 
+# Soglia di comunicazione (non di rilevamento): sopra questa percentuale il
+# problema va segnalato all'utente/AI in modo esplicito — condivisa da Builder
+# (main.py) e Decision Agent (decision_agent.py), non duplicare il numero altrove.
+OUT_AND_BACK_WARN_THRESHOLD_PCT = 20.0
+
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     R = 6371000.0
