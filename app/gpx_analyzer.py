@@ -84,6 +84,224 @@ def _out_and_back_percent(
     return round(min(100.0, 100.0 * overlapped_m / total_m), 1)
 
 
+# ── Rilevamento salite ──────────────────────────────────────────────────────
+# Costanti condivise tra rilevamento/classificazione salite (qui) e colorazione
+# del profilo altimetrico punto-per-punto (Builder/Ride Analysis) — non
+# duplicare queste soglie altrove, importarle da qui.
+_CLIMB_RESAMPLE_STEP_M = 20.0     # passo di ricampionamento uniforme lungo il tracciato
+_CLIMB_SMOOTH_WINDOW_M = 75.0     # media mobile elevazione prima del calcolo gradiente (50-100m)
+_CLIMB_MAX_GRAD_WINDOW_M = 100.0  # finestra corta per max_gradient_percent (cattura uno strappo isolato)
+_CLIMB_MERGE_GAP_M = 100.0        # gap breve tra due tratti in salita → uniti in una sola salita
+
+_CLIMB_MIN_GRADIENT_PCT = 2.0     # sotto questa soglia non è una salita rilevante
+_CLIMB_MIN_LENGTH_M = 200.0       # sotto questa lunghezza non è una salita rilevante (rumore/saliscendi)
+_CLIMB_SHORT_LENGTH_M = 300.0     # sotto questa lunghezza, con pendenza ≥8%, è "strappo_breve" non "impegnativa"
+
+# Fasce di pendenza — condivise da classificazione salite E colore istantaneo nel grafico.
+_GRAD_DOLCE_MAX_PCT = 4.0     # < 4%  → dolce / verde
+_GRAD_MODERATA_MAX_PCT = 8.0  # 4-8%  → moderata / giallo-arancio ; ≥8% → impegnativa (o rosso)
+
+_GRADIENT_COLOR_GREEN = "#27ae60"
+_GRADIENT_COLOR_YELLOW = "#f39c12"
+_GRADIENT_COLOR_RED = "#e74c3c"
+
+_CLIMB_CLASS_EMOJI = {
+    "dolce": "🟢",
+    "moderata": "🟡",
+    "impegnativa": "🔴",
+    "strappo_breve": "⚡",
+}
+
+
+def gradient_color(gradient_percent: float) -> str:
+    """
+    Colore per fascia di pendenza istantanea, condiviso con la classificazione
+    salite: <4% verde, 4-8% giallo/arancio, ≥8% rosso. Le discese (gradiente
+    negativo) contano come "verde" — non è uno sforzo in salita.
+    """
+    if gradient_percent < _GRAD_DOLCE_MAX_PCT:
+        return _GRADIENT_COLOR_GREEN
+    if gradient_percent < _GRAD_MODERATA_MAX_PCT:
+        return _GRADIENT_COLOR_YELLOW
+    return _GRADIENT_COLOR_RED
+
+
+def _classify_climb(avg_gradient_percent: float, length_m: float) -> str:
+    if avg_gradient_percent < _GRAD_DOLCE_MAX_PCT:
+        return "dolce"
+    if avg_gradient_percent < _GRAD_MODERATA_MAX_PCT:
+        return "moderata"
+    return "impegnativa" if length_m >= _CLIMB_SHORT_LENGTH_M else "strappo_breve"
+
+
+def _resample_elevation_profile(
+    distances_cumulative_m: list[float],
+    elevations_m: list[float | None],
+    step_m: float,
+) -> tuple[list[float], list[float]]:
+    """
+    Ricampiona (distanza, elevazione) a passo uniforme step_m via interpolazione
+    lineare, dopo aver scartato i punti senza elevazione. Ritorna liste vuote
+    se i dati validi sono insufficienti.
+    """
+    pairs = [(d, e) for d, e in zip(distances_cumulative_m, elevations_m) if e is not None]
+    if len(pairs) < 4:
+        return [], []
+
+    xs = [p[0] for p in pairs]
+    ys = [p[1] for p in pairs]
+    total = xs[-1]
+    if total <= 0:
+        return [], []
+
+    n_steps = max(1, int(total // step_m))
+    resampled_d = [i * step_m for i in range(n_steps + 1)]
+
+    resampled_e = []
+    j = 0
+    for d in resampled_d:
+        while j < len(xs) - 2 and xs[j + 1] < d:
+            j += 1
+        x0, x1 = xs[j], xs[j + 1]
+        y0, y1 = ys[j], ys[j + 1]
+        t = 0.0 if x1 == x0 else (d - x0) / (x1 - x0)
+        t = min(1.0, max(0.0, t))
+        resampled_e.append(y0 + t * (y1 - y0))
+
+    return resampled_d, resampled_e
+
+
+def _moving_average(values: list[float], window_pts: int) -> list[float]:
+    """Media mobile centrata, window_pts espresso in numero di punti (serie uniforme)."""
+    n = len(values)
+    if n == 0 or window_pts <= 1:
+        return list(values)
+    half = window_pts // 2
+    out = []
+    for i in range(n):
+        lo, hi = max(0, i - half), min(n, i + half + 1)
+        out.append(sum(values[lo:hi]) / (hi - lo))
+    return out
+
+
+def detect_climbs(
+    distances_cumulative_m: list[float],
+    elevations_m: list[float | None],
+) -> dict:
+    """
+    Rileva le salite lungo un tracciato a partire da distanza cumulativa (m) ed
+    elevazione (m) per punto (stesso ordine/lunghezza di points).
+
+    Ritorna:
+      "climbs": list[dict] — una per salita rilevata, con start_km, length_m,
+        elevation_gain_m, avg_gradient_percent, max_gradient_percent,
+        classification (dolce/moderata/impegnativa/strappo_breve),
+        has_steep_section (bool), note (str|None).
+      "profile_distances_km": list[float] — profilo ricampionato/smoothed, per grafico.
+      "profile_elevations_m": list[float] — elevazione smoothed corrispondente.
+      "profile_colors": list[str] — colore per fascia di pendenza istantanea,
+        stesso index di profile_distances_km/profile_elevations_m.
+    """
+    empty = {
+        "climbs": [],
+        "profile_distances_km": [],
+        "profile_elevations_m": [],
+        "profile_colors": [],
+    }
+
+    rd, re_ = _resample_elevation_profile(
+        distances_cumulative_m, elevations_m, _CLIMB_RESAMPLE_STEP_M
+    )
+    n = len(rd)
+    if n < 4:
+        return empty
+
+    smooth_window_pts = max(1, round(_CLIMB_SMOOTH_WINDOW_M / _CLIMB_RESAMPLE_STEP_M))
+    smoothed = _moving_average(re_, smooth_window_pts)
+
+    # Gradiente istantaneo punto-per-punto sulla serie smoothed (per detection + colore grafico)
+    grad = [0.0] * n
+    for i in range(1, n):
+        dd = rd[i] - rd[i - 1]
+        grad[i] = (smoothed[i] - smoothed[i - 1]) / dd * 100.0 if dd > 0 else 0.0
+    if n > 1:
+        grad[0] = grad[1]
+
+    profile_colors = [gradient_color(g) for g in grad]
+
+    # ── Individua run contigui sopra soglia, poi unisce quelli separati da gap brevi ──
+    raw_runs: list[tuple[int, int]] = []
+    run_start = None
+    for i in range(n):
+        if grad[i] >= _CLIMB_MIN_GRADIENT_PCT:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None:
+                raw_runs.append((run_start, i - 1))
+                run_start = None
+    if run_start is not None:
+        raw_runs.append((run_start, n - 1))
+
+    merged_runs: list[tuple[int, int]] = []
+    for run in raw_runs:
+        if merged_runs and (rd[run[0]] - rd[merged_runs[-1][1]]) <= _CLIMB_MERGE_GAP_M:
+            merged_runs[-1] = (merged_runs[-1][0], run[1])
+        else:
+            merged_runs.append(run)
+
+    max_grad_offset_pts = max(1, round(_CLIMB_MAX_GRAD_WINDOW_M / _CLIMB_RESAMPLE_STEP_M))
+
+    climbs = []
+    for start_idx, end_idx in merged_runs:
+        length_m = rd[end_idx] - rd[start_idx]
+        if length_m < _CLIMB_MIN_LENGTH_M:
+            continue
+
+        elevation_gain_m = smoothed[end_idx] - smoothed[start_idx]
+        if elevation_gain_m <= 0:
+            continue
+        avg_gradient_percent = elevation_gain_m / length_m * 100.0
+
+        max_gradient_percent = 0.0
+        for i in range(start_idx, end_idx):
+            j = min(end_idx, i + max_grad_offset_pts)
+            dd = rd[j] - rd[i]
+            if dd <= 0:
+                continue
+            g = (smoothed[j] - smoothed[i]) / dd * 100.0
+            max_gradient_percent = max(max_gradient_percent, g)
+        max_gradient_percent = max(max_gradient_percent, avg_gradient_percent)
+
+        classification = _classify_climb(avg_gradient_percent, length_m)
+        has_steep_section = (
+            max_gradient_percent >= _GRAD_MODERATA_MAX_PCT
+            and avg_gradient_percent < _GRAD_MODERATA_MAX_PCT
+        )
+
+        climbs.append({
+            "start_km": round(rd[start_idx] / 1000, 2),
+            "length_m": round(length_m, 0),
+            "elevation_gain_m": round(elevation_gain_m, 1),
+            "avg_gradient_percent": round(avg_gradient_percent, 1),
+            "max_gradient_percent": round(max_gradient_percent, 1),
+            "classification": classification,
+            "classification_emoji": _CLIMB_CLASS_EMOJI[classification],
+            "has_steep_section": has_steep_section,
+            "note": (
+                f"contiene un tratto al {max_gradient_percent:.0f}%"
+                if has_steep_section else None
+            ),
+        })
+
+    return {
+        "climbs": climbs,
+        "profile_distances_km": [round(d / 1000, 3) for d in rd],
+        "profile_elevations_m": [round(e, 1) for e in smoothed],
+        "profile_colors": profile_colors,
+    }
+
+
 def analyze_gpx(gpx_path: str,
                  route_type: str = "loop",
                  expected_end: tuple[float, float] | None = None) -> dict:
@@ -122,6 +340,14 @@ def analyze_gpx(gpx_path: str,
         [(p.latitude, p.longitude) for p in points]
     )
 
+    cum_m = [0.0] * len(points)
+    for i in range(1, len(points)):
+        cum_m[i] = cum_m[i - 1] + _haversine_m(
+            points[i - 1].latitude, points[i - 1].longitude,
+            points[i].latitude, points[i].longitude,
+        )
+    climb_data = detect_climbs(cum_m, [p.elevation for p in points])
+
     result = {
         "distance_km": distance_km,
         "elevation_gain_m": elevation_gain_m,
@@ -129,6 +355,12 @@ def analyze_gpx(gpx_path: str,
         "loop_closed": None,
         "endpoint_match_m": None,
         "out_and_back_percent": out_and_back_percent,
+        "climbs": climb_data["climbs"],
+        "elevation_profile": {
+            "distances_km": climb_data["profile_distances_km"],
+            "elevations_m": climb_data["profile_elevations_m"],
+            "colors": climb_data["profile_colors"],
+        },
         "violations": [],
     }
 

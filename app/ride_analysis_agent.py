@@ -17,8 +17,10 @@ import math
 from datetime import datetime
 
 import gpxpy
+from geopy.distance import geodesic
 
 import ai_client
+from gpx_analyzer import detect_climbs
 
 _log = logging.getLogger(__name__)
 
@@ -81,6 +83,15 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
     if sampled[-1] != last:
         sampled.append(last)
 
+    # Rilevamento salite (stessa logica condivisa del Builder — gpx_analyzer.detect_climbs)
+    cum_m = [0.0] * len(points)
+    for i in range(1, len(points)):
+        cum_m[i] = cum_m[i - 1] + geodesic(
+            (points[i - 1].latitude, points[i - 1].longitude),
+            (points[i].latitude, points[i].longitude),
+        ).meters
+    climb_data = detect_climbs(cum_m, [pt.elevation for pt in points])
+
     return {
         "distance_km": round(distance_m / 1000, 2),
         "elevation_gain_m": round(uphill, 0),
@@ -89,6 +100,12 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
         "min_elevation_m": round(min(elevations), 0) if elevations else None,
         "gpx_name": gpx_name,
         "track_points": sampled,
+        "climbs": climb_data["climbs"],
+        "elevation_profile": {
+            "distances_km": climb_data["profile_distances_km"],
+            "elevations_m": climb_data["profile_elevations_m"],
+            "colors": climb_data["profile_colors"],
+        },
     }
 
 
@@ -150,17 +167,45 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
       battery_pct_consumed, range_remaining_km, estimated_assistance_level
         (all null if not ebike),
       calories_kcal, time_estimate_min, avg_hr_bpm (null if no fcmax),
-      fatigue_index (1-10), advice (list[str]), disclaimer (str)
+      fatigue_index (1-10), advice (list[str]), disclaimer (str),
+      climbs_analysis (list[dict], one per detected climb — empty if none),
+      hardest_climb_index (int|null), hardest_climb_reason (str|null)
     """
     is_ebike = (profile.get("bike_type") or "").lower() == "ebike"
     lang_instr = "Rispondi in italiano." if lang == "it" else "Reply in English."
     style_map = _STYLE_DESC_IT if lang == "it" else _STYLE_DESC_EN
+    climbs = gpx_stats.get("climbs") or []
+
+    battery_field = (
+        '  "battery_pct_consumed": <float, quota di battery_pct_consumed totale attribuibile '
+        'a questa salita>,\n' if is_ebike else ""
+    )
+
+    climbs_schema = (
+        "\n"
+        '  "climbs_analysis": [\n'
+        "    {\n"
+        '      "climb_index": <integer — indice della salita, 0-based, stesso ordine della lista sopra>,\n'
+        '      "kcal": <integer — calorie stimate per QUESTA salita>,\n'
+        '      "avg_hr_bpm": <integer oppure null se FC max non disponibile>,\n'
+        '      "fatigue_contribution": <integer 1-10 — quanto pesa QUESTA salita sulla fatica totale, '
+        "per QUESTO profilo bici+ciclista>,\n"
+        f"{battery_field}"
+        "    }\n"
+        "    // un oggetto per ogni salita elencata sopra, stesso ordine\n"
+        "  ],\n"
+        '  "hardest_climb_index": <integer — climb_index della salita soggettivamente più dura per '
+        "QUESTO profilo, oppure null se non ci sono salite>,\n"
+        '  "hardest_climb_reason": "<breve motivazione testuale, oppure null se non ci sono salite>"\n'
+    )
 
     system = (
         "Sei un esperto di ciclismo, biomeccanica e fisiologia dello sport.\n"
         "Analizza il giro ciclabile descritto e fornisci stime personalizzate realistiche.\n"
         f"{lang_instr}\n"
-        "Rispondi ESCLUSIVAMENTE con JSON valido, senza testo aggiuntivo, senza markdown, senza code fence.\n"
+        "Rispondi ESCLUSIVAMENTE con JSON valido, senza testo aggiuntivo, senza markdown, senza code fence, "
+        "senza commenti (i commenti // nello schema sotto sono solo per spiegarti la struttura, NON vanno "
+        "riprodotti nella risposta).\n"
         "Schema JSON da rispettare ESATTAMENTE (non aggiungere né rimuovere chiavi):\n"
         "{\n"
         '  "battery_pct_consumed": <float 0-100 oppure null se non ebike>,\n'
@@ -171,7 +216,8 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
         '  "avg_hr_bpm": <integer oppure null se FC max non disponibile>,\n'
         '  "fatigue_index": <integer 1-10>,\n'
         '  "advice": [<string>, <string>, <string>],\n'
-        '  "disclaimer": "<testo disclaimer medico nella lingua richiesta>"\n'
+        '  "disclaimer": "<testo disclaimer medico nella lingua richiesta>",\n'
+        f"{climbs_schema}"
         "}\n"
         "Il campo estimated_assistance_level rappresenta il livello medio di assistenza (scala 1-5) "
         "che stimi questo ciclista utilizzerà su questo specifico percorso, tenendo conto dello stile "
@@ -179,7 +225,19 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
         "Il disclaimer deve essere: \"Questa analisi è puramente indicativa e non costituisce diagnosi "
         "medica. Consulta un medico per valutazioni sulla tua salute.\" in italiano oppure "
         "\"This analysis is indicative only and does not constitute medical advice. Consult a doctor "
-        "for health assessments.\" in inglese."
+        "for health assessments.\" in inglese.\n\n"
+        "Sulle salite (climbs_analysis):\n"
+        "- climbs_analysis DEVE avere esattamente un elemento per ogni salita elencata nei dati GPX "
+        "sotto, nello stesso ordine (se non ci sono salite elencate, climbs_analysis è un array vuoto "
+        "[] e hardest_climb_index/hardest_climb_reason sono null).\n"
+        "- La somma approssimativa di kcal/battery_pct_consumed su tutte le salite deve essere "
+        "ragionevolmente coerente con calories_kcal/battery_pct_consumed totali sull'intero percorso "
+        "(non serve quadratura esatta, ma non può superarli né essere trascurabile rispetto ad essi se "
+        "le salite coprono una parte significativa del dislivello totale).\n"
+        "- hardest_climb_index NON deve essere automaticamente la salita con pendenza media o massima "
+        "più alta in assoluto: valuta l'impatto REALE su QUESTO ciclista con QUESTO mezzo — una salita "
+        "lunga ma dolce può pesare di più su un ciclista poco allenato di uno strappo breve, ed "
+        "eventualmente assistito dal motore se ebike. Spiega il perché in hardest_climb_reason."
     )
 
     lines = [
@@ -229,18 +287,57 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
     if profile.get("driver_health_notes"):
         lines.append(f"- Note salute: {profile['driver_health_notes']}")
 
+    if climbs:
+        lines += ["", "## Salite rilevate lungo il percorso (ordine = climb_index)"]
+        for i, c in enumerate(climbs):
+            lines.append(
+                f"- [{i}] km {c['start_km']:.1f}, lunghezza {c['length_m']:.0f} m, "
+                f"dislivello {c['elevation_gain_m']:.0f} m, pendenza media "
+                f"{c['avg_gradient_percent']:.1f}% (max {c['max_gradient_percent']:.1f}%), "
+                f"classificazione: {c['classification']}"
+                + (f" — {c['note']}" if c.get("note") else "")
+            )
+    else:
+        lines += ["", "## Salite rilevate lungo il percorso", "Nessuna salita rilevante rilevata."]
+
     if not is_ebike:
         lines += [
             "",
             "Nota: NON è una ebike → battery_pct_consumed, range_remaining_km e "
-            "estimated_assistance_level DEVONO essere null.",
+            "estimated_assistance_level DEVONO essere null, e gli oggetti in climbs_analysis "
+            "NON devono contenere la chiave battery_pct_consumed.",
         ]
     if not profile.get("driver_fcmax"):
-        lines += ["", "Nota: FC max non disponibile → avg_hr_bpm DEVE essere null."]
+        lines += [
+            "", "Nota: FC max non disponibile → avg_hr_bpm DEVE essere null, sia il campo "
+            "totale sia quello in ciascun elemento di climbs_analysis.",
+        ]
 
     prompt = "\n".join(lines)
-    raw = ai_client.generate_json(system, prompt, max_tokens=1200)
+    raw = ai_client.generate_json(system, prompt, max_tokens=1200 + 150 * len(climbs))
     return json.loads(raw)
+
+
+def merge_climbs_analysis(gpx_climbs: list[dict], climbs_analysis: list[dict] | None) -> list[dict]:
+    """
+    Unisce i dati oggettivi delle salite (gpx_analyzer.detect_climbs, via
+    analyze_gpx_bytes) con quelli soggettivi restituiti dall'AI (run_analysis
+    → climbs_analysis), abbinati per climb_index. Stesso ordine di gpx_climbs;
+    i campi soggettivi sono None se l'AI non ha fornito un elemento per quell'indice.
+    """
+    by_index = {c.get("climb_index"): c for c in (climbs_analysis or [])}
+    merged = []
+    for i, obj in enumerate(gpx_climbs or []):
+        subj = by_index.get(i, {})
+        merged.append({
+            **obj,
+            "climb_index": i,
+            "kcal": subj.get("kcal"),
+            "avg_hr_bpm": subj.get("avg_hr_bpm"),
+            "fatigue_contribution": subj.get("fatigue_contribution"),
+            "battery_pct_consumed": subj.get("battery_pct_consumed"),
+        })
+    return merged
 
 
 # ── HTML report ────────────────────────────────────────────────────────────────
@@ -314,6 +411,19 @@ def render_html_report(
         l_generated = "Generated on"
         l_start = "Start"
         l_end = "End"
+        s_climbs = "Climbs on this ride"
+        l_c_start = "Start km"
+        l_c_length = "Length"
+        l_c_gain = "Elevation gain"
+        l_c_avg_grad = "Avg gradient"
+        l_c_max_grad = "Max gradient"
+        l_c_class = "Class"
+        l_c_kcal = "Kcal"
+        l_c_hr = "Avg HR"
+        l_c_fatigue = "Fatigue"
+        l_c_battery = "Battery"
+        l_c_hardest = "💪 The hardest for you"
+        l_c_no_climbs = "No significant climb detected on this route."
     else:
         title = "🔋 Report Analisi Giro"
         subtitle = "GPX Route Builder — Analisi ciclistica personalizzata"
@@ -353,6 +463,19 @@ def render_html_report(
         l_generated = "Generato il"
         l_start = "Partenza"
         l_end = "Arrivo"
+        s_climbs = "Salite di questo giro"
+        l_c_start = "km inizio"
+        l_c_length = "Lunghezza"
+        l_c_gain = "Dislivello"
+        l_c_avg_grad = "Pend. media"
+        l_c_max_grad = "Pend. max"
+        l_c_class = "Classe"
+        l_c_kcal = "Kcal"
+        l_c_hr = "FC media"
+        l_c_fatigue = "Fatica"
+        l_c_battery = "Batteria"
+        l_c_hardest = "💪 La più dura per te"
+        l_c_no_climbs = "Nessuna salita rilevante rilevata su questo percorso."
 
     # ── Map section ───────────────────────────────────────────────────────────
     track_points = gpx_stats.get("track_points") or []
@@ -461,6 +584,69 @@ def render_html_report(
     )
     disclaimer_text = _html_mod.escape(analysis.get("disclaimer", ""))
 
+    # ── Climbs table ──────────────────────────────────────────────────────────
+    merged_climbs = merge_climbs_analysis(gpx_stats.get("climbs"), analysis.get("climbs_analysis"))
+    hardest_idx = analysis.get("hardest_climb_index")
+    hardest_reason = analysis.get("hardest_climb_reason") or ""
+
+    climbs_section = ""
+    if merged_climbs:
+        headers = [l_c_start, l_c_length, l_c_gain, l_c_avg_grad, l_c_max_grad, l_c_class,
+                   l_c_kcal, l_c_hr]
+        if is_ebike:
+            headers.append(l_c_battery)
+        headers.append(l_c_fatigue)
+        head_html = "".join(f"<th>{h}</th>" for h in headers)
+
+        colspan = len(headers)
+        rows_html = ""
+        for c in merged_climbs:
+            is_hardest = c["climb_index"] == hardest_idx
+            row_style = ' style="background:#fff3d6"' if is_hardest else ""
+            cells = [
+                f"{c['start_km']:.1f} km",
+                f"{c['length_m']:.0f} m",
+                f"{c['elevation_gain_m']:.0f} m",
+                f"{c['avg_gradient_percent']:.1f}%",
+                f"{c['max_gradient_percent']:.1f}%",
+                f"{c['classification_emoji']} {c['classification']}",
+                f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
+                f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
+            ]
+            if is_ebike:
+                cells.append(
+                    f"{c['battery_pct_consumed']:.1f}%" if c.get("battery_pct_consumed") is not None else "—"
+                )
+            cells.append(
+                f"{c['fatigue_contribution']}/10" if c.get("fatigue_contribution") is not None else "—"
+            )
+            cells_html = "".join(f"<td>{cell}</td>" for cell in cells)
+            rows_html += f"<tr{row_style}>{cells_html}</tr>\n"
+            if is_hardest:
+                rows_html += (
+                    f'<tr{row_style}><td colspan="{colspan}" style="font-size:.78rem;color:#8a6d3b">'
+                    f'{l_c_hardest} — {_html_mod.escape(hardest_reason)}</td></tr>\n'
+                )
+
+        climbs_section = f"""
+<div class="card">
+  <h2>⛰️ {s_climbs}</h2>
+  <div style="overflow-x:auto">
+  <table class="climbs-table">
+    <thead><tr>{head_html}</tr></thead>
+    <tbody>
+    {rows_html}
+    </tbody>
+  </table>
+  </div>
+</div>"""
+    else:
+        climbs_section = f"""
+<div class="card">
+  <h2>⛰️ {s_climbs}</h2>
+  <p style="color:#888;font-size:.85rem">{l_c_no_climbs}</p>
+</div>"""
+
     # ── Full HTML ─────────────────────────────────────────────────────────────
     return f"""<!DOCTYPE html>
 <html lang="{'en' if is_en else 'it'}">
@@ -500,6 +686,9 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 .disclaimer{{background:#fffbe6;border-left:4px solid #f0b429;border-radius:0 8px 8px 0;padding:14px 18px}}
 .disclaimer h2{{color:#b7791f;border:none;margin-bottom:6px;font-size:.95rem}}
 .disclaimer p{{font-size:.87rem;color:#555;line-height:1.6}}
+.climbs-table{{width:100%;border-collapse:collapse;font-size:.82rem}}
+.climbs-table th{{text-align:left;padding:6px 10px;color:#777;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;border-bottom:2px solid #e8eef6}}
+.climbs-table td{{padding:6px 10px;border-bottom:1px solid #f0f0f0}}
 @media(max-width:520px){{
   .route-grid{{grid-template-columns:1fr 1fr}}
   .profile-cols{{grid-template-columns:1fr}}
@@ -557,6 +746,8 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
     <div class="metric"><div class="lbl">{l_fatigue}</div><div class="val"><span class="fatigue-badge">{fatigue}/10</span></div></div>
   </div>
 </div>
+
+{climbs_section}
 
 <div class="card advice">
   <h2>💡 {s_advice}</h2>

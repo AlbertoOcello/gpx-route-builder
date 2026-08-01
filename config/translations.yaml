@@ -178,6 +178,27 @@ it:
     decision_choice: "**Scelta richiesta:**"
     decision_option: "Seleziona un'opzione:"
 
+  # ── Analisi salite (condivisa Builder + Ride Analysis) ─────────────────────────
+  climbs:
+    header: "⛰️ Profilo altimetrico e salite"
+    main_climbs_caption: "{n} salite rilevate — le 5 principali per dislivello:"
+    no_climbs: "Nessuna salita rilevante rilevata su questo percorso."
+    col_start: "km inizio"
+    col_length: "Lunghezza"
+    col_gain: "Dislivello"
+    col_avg_grad: "Pend. media"
+    col_max_grad: "Pend. max"
+    col_class: "Classificazione"
+    col_kcal: "Kcal"
+    col_hr: "FC media"
+    col_fatigue: "Fatica"
+    col_battery: "Batteria"
+    class:
+      dolce: "Dolce"
+      moderata: "Moderata"
+      impegnativa: "Impegnativa"
+      strappo_breve: "Strappo breve"
+
   # ── GPX Optimizer ─────────────────────────────────────────────────────────────
   optimizer:
     subheader: "Ottimizza GPX per navigazione Garmin"
@@ -425,6 +446,8 @@ it:
     avg_hr: "FC media stimata"
     fatigue: "Indice di fatica"
     est_assist: "Livello assist. stimato"
+    climbs_header: "⛰️ Salite di questo giro"
+    hardest_climb_badge: "💪 La più dura per te"
     advice_header: "💡 Consigli personalizzati"
     download_btn: "⬇️ Scarica report HTML"
     download_name: "analisi_giro.html"
@@ -614,6 +637,27 @@ en:
     winner_dl: "⬇ Download chosen GPX —"
     decision_choice: "**Choice required:**"
     decision_option: "Select an option:"
+
+  # ── Climb analysis (shared Builder + Ride Analysis) ────────────────────────────
+  climbs:
+    header: "⛰️ Elevation profile and climbs"
+    main_climbs_caption: "{n} climbs detected — top 5 by elevation gain:"
+    no_climbs: "No significant climb detected on this route."
+    col_start: "Start km"
+    col_length: "Length"
+    col_gain: "Elevation gain"
+    col_avg_grad: "Avg gradient"
+    col_max_grad: "Max gradient"
+    col_class: "Classification"
+    col_kcal: "Kcal"
+    col_hr: "Avg HR"
+    col_fatigue: "Fatigue"
+    col_battery: "Battery"
+    class:
+      dolce: "Gentle"
+      moderata: "Moderate"
+      impegnativa: "Challenging"
+      strappo_breve: "Short kicker"
 
   # ── GPX Optimizer ─────────────────────────────────────────────────────────────
   optimizer:
@@ -861,6 +905,8 @@ en:
     avg_hr: "Est. avg heart rate"
     fatigue: "Fatigue index"
     est_assist: "Est. assist. level"
+    climbs_header: "⛰️ Climbs on this ride"
+    hardest_climb_badge: "💪 The hardest for you"
     advice_header: "💡 Personalised advice"
     download_btn: "⬇️ Download HTML report"
     download_name: "ride_analysis.html"

@@ -173,6 +173,85 @@ def _build_multi_map(
     return m
 
 
+def _render_climb_profile_chart(elevation_profile: dict):
+    """
+    Grafico altimetrico (km vs elevazione) colorato per fascia di pendenza
+    istantanea — stesse soglie/colori di gpx_analyzer.gradient_color, nessuna
+    soglia duplicata qui. Ritorna None se il profilo non ha punti sufficienti.
+    """
+    dists = elevation_profile.get("distances_km") or []
+    elevs = elevation_profile.get("elevations_m") or []
+    colors = elevation_profile.get("colors") or []
+    if len(dists) < 2:
+        return None
+
+    from matplotlib.collections import LineCollection
+    from matplotlib.figure import Figure
+
+    segments = [
+        [(dists[i], elevs[i]), (dists[i + 1], elevs[i + 1])]
+        for i in range(len(dists) - 1)
+    ]
+    seg_colors = colors[1:]
+
+    fig = Figure(figsize=(9, 2.8), dpi=100)
+    ax = fig.add_subplot(111)
+    ax.fill_between(dists, elevs, min(elevs), color="#eef1f6", zorder=0)
+    ax.add_collection(LineCollection(segments, colors=seg_colors, linewidths=2.2, zorder=2))
+    ax.set_xlim(min(dists), max(dists))
+    ax.set_ylim(min(elevs) - 15, max(elevs) + 15)
+    ax.set_xlabel("km")
+    ax.set_ylabel("m")
+    ax.grid(True, alpha=0.25)
+    fig.tight_layout()
+    return fig
+
+
+def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
+    """Righe tabella 'Salite principali', ordinate per dislivello decrescente."""
+    ranked = sorted(climbs, key=lambda c: c["elevation_gain_m"], reverse=True)
+    if top_n is not None:
+        ranked = ranked[:top_n]
+    rows = []
+    for c in ranked:
+        class_label = t(f"climbs.class.{c['classification']}")
+        rows.append({
+            t("climbs.col_start"): f"{c['start_km']:.1f} km",
+            t("climbs.col_length"): f"{c['length_m']:.0f} m",
+            t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
+            t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
+            t("climbs.col_max_grad"): f"{c['max_gradient_percent']:.1f}%",
+            t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
+        })
+    return rows
+
+
+def _climbs_analysis_table_rows(merged_climbs: list[dict], is_ebike: bool) -> list[dict]:
+    """Righe tabella 'Salite di questo giro' (Ride Analysis) — oggettive + soggettive AI."""
+    rows = []
+    for c in merged_climbs:
+        class_label = t(f"climbs.class.{c['classification']}")
+        row = {
+            t("climbs.col_start"): f"{c['start_km']:.1f} km",
+            t("climbs.col_length"): f"{c['length_m']:.0f} m",
+            t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
+            t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
+            t("climbs.col_max_grad"): f"{c['max_gradient_percent']:.1f}%",
+            t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
+            t("climbs.col_kcal"): f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
+            t("climbs.col_hr"): f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
+        }
+        if is_ebike:
+            row[t("climbs.col_battery")] = (
+                f"{c['battery_pct_consumed']:.1f}%" if c.get("battery_pct_consumed") is not None else "—"
+            )
+        row[t("climbs.col_fatigue")] = (
+            f"{c['fatigue_contribution']}/10" if c.get("fatigue_contribution") is not None else "—"
+        )
+        rows.append(row)
+    return rows
+
+
 def _estimate_route_km(ordered_wps: list[dict]) -> float:
     """Geodesic sum of consecutive waypoints × 1.6 calibration factor."""
     pts = [(wp["lat"], wp["lon"]) for wp in ordered_wps if wp.get("lat") is not None]
@@ -1114,6 +1193,22 @@ with tab_builder:
                             key=f"bld_dl_{c_b['id']}",
                         )
 
+                        # ── Analisi salite (Parte 2 — oggettiva) ────────────────
+                        climbs_b = c_b["analysis"].get("climbs") or []
+                        profile_b = c_b["analysis"].get("elevation_profile") or {}
+                        st.markdown(f"**{t('climbs.header')}**")
+                        fig_climb_b = _render_climb_profile_chart(profile_b)
+                        if fig_climb_b is not None:
+                            st.pyplot(fig_climb_b, use_container_width=True)
+                        if climbs_b:
+                            st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_b)))
+                            st.dataframe(
+                                _climbs_table_rows(climbs_b, top_n=5),
+                                use_container_width=True, hide_index=True,
+                            )
+                        else:
+                            st.caption(t("climbs.no_climbs"))
+
                 # Decision Agent
                 st.divider()
                 if winner_id_b:
@@ -1507,6 +1602,25 @@ with tab_ride:
                 f"{_avg_hr} bpm" if _avg_hr else t("ride_analysis.hr_na"),
             )
             _rm4.metric(t("ride_analysis.fatigue"), f"{_r.get('fatigue_index', '—')}/10")
+
+            # Salite di questo giro (Parte 3 — oggettivo + soggettivo per profilo bici+ciclista)
+            _climbs_obj = _rg.get("climbs") or []
+            _merged_climbs = ride_analysis.merge_climbs_analysis(_climbs_obj, _r.get("climbs_analysis"))
+            if _merged_climbs:
+                st.subheader(t("ride_analysis.climbs_header"))
+                _hardest_idx = _r.get("hardest_climb_index")
+                _hardest_reason = _r.get("hardest_climb_reason") or ""
+                _hc = next((c for c in _merged_climbs if c["climb_index"] == _hardest_idx), None)
+                if _hc:
+                    _hc_class_label = t(f"climbs.class.{_hc['classification']}")
+                    st.info(
+                        f"{t('ride_analysis.hardest_climb_badge')} — km {_hc['start_km']:.1f} "
+                        f"({_hc['classification_emoji']} {_hc_class_label})  \n_{_hardest_reason}_"
+                    )
+                st.dataframe(
+                    _climbs_analysis_table_rows(_merged_climbs, _r_is_ebike),
+                    use_container_width=True, hide_index=True,
+                )
 
             # Advice
             _advice = _r.get("advice") or []
