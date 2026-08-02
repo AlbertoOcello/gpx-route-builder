@@ -18,7 +18,7 @@ import gpxpy
 from geopy.distance import geodesic
 
 from brouter_client import get_route
-from gpx_analyzer import analyze_gpx
+from gpx_analyzer import analyze_gpx, cut_out_and_back_in_gpx
 from area_resolver import OverpassUnavailable, resolve_area_traversal, snap_to_nearest_road
 
 log = logging.getLogger(__name__)
@@ -233,6 +233,97 @@ def _waypoints_to_lonlat(strategy: dict, snaps: dict[tuple, dict]) -> list[tuple
     return result
 
 
+# Tolleranza per abbinare l'apice di uno spuntone andata/ritorno (vedi
+# gpx_analyzer._detect_out_and_back) al via-point che lo ha causato — l'apice
+# di uno spuntone è quasi sempre il punto stesso che BRouter doveva toccare
+# (diagnosi "Polverigi_9": Agugliano e Polverigi trovati a 0-27m dall'apice).
+_OAB_ATTRIBUTION_TOLERANCE_M = 150.0
+
+
+def _named_via_points(strategy: dict, snaps: dict[tuple, dict]) -> list[tuple[str, float, float, bool]]:
+    """
+    Stessa logica di inclusione/esclusione di _waypoints_to_lonlat (coordinata
+    post-snap per i soft, esatta per i mandatory/start/end), ma conserva anche
+    nome e "protezione" (mandatory=True per tutto ciò che non è un via soft:
+    start, end, via mandatory, nodi da traversal — l'utente li ha chiesti
+    esplicitamente, mai da tagliare in Fix A). Usata per l'attribuzione
+    spuntone→waypoint (Fix 2) e per decidere cosa proteggere dal taglio
+    automatico (Fix A) — non per la chiamata BRouter.
+    """
+    result = []
+    for wp in strategy["waypoints"]:
+        if _is_soft_via(wp):
+            snap = snaps.get(_snap_key(wp))
+            if not snap or "excluded" in snap:
+                continue
+            result.append((wp.get("name"), snap["lat"], snap["lon"], False))
+            continue
+        if wp.get("lat") is None or wp.get("lon") is None:
+            continue
+        result.append((wp.get("name"), float(wp["lat"]), float(wp["lon"]), True))
+    return result
+
+
+def _attribute_out_and_back(
+    apexes: list[dict],
+    named_via_points: list[tuple[str, float, float, bool]],
+) -> list[dict]:
+    """
+    Per ciascun apice di spuntone (gpx_analyzer._detect_out_and_back) trova il
+    via-point post-snap più vicino entro _OAB_ATTRIBUTION_TOLERANCE_M. Se nessun
+    via-point è abbastanza vicino, l'apice resta senza attribuzione (probabilmente
+    non causato da un singolo waypoint isolato, es. un vincolo della rete stradale
+    tra due punti lontani da qualunque via-point).
+
+    Ritorna una lista di {"waypoint_name", "overlap_km"}.
+    """
+    attributions = []
+    for apex in apexes:
+        best_name, best_dist = None, float("inf")
+        for name, lat, lon, _mandatory in named_via_points:
+            d = geodesic((apex["apex_lat"], apex["apex_lon"]), (lat, lon)).meters
+            if d < best_dist:
+                best_dist = d
+                best_name = name
+        if best_name is not None and best_dist <= _OAB_ATTRIBUTION_TOLERANCE_M:
+            attributions.append({"waypoint_name": best_name, "overlap_km": apex["overlap_km"]})
+    return attributions
+
+
+def _protected_points(named_via_points: list[tuple[str, float, float, bool]]) -> list[tuple[float, float]]:
+    """Coordinate dei via-point mandatory/start/end — mai tagliabili da Fix A."""
+    return [(lat, lon) for _name, lat, lon, mandatory in named_via_points if mandatory]
+
+
+def _attribute_cuts(
+    cuts: list[dict],
+    named_via_points: list[tuple[str, float, float, bool]],
+) -> list[dict]:
+    """
+    Come _attribute_out_and_back, ma per i tagli EFFETTIVAMENTE rimossi da Fix A
+    (cut_out_and_back_in_gpx) — usata solo per capire, a scopo di notifica UI,
+    se un waypoint soft è stato "perso" (la sua unica via d'accesso era proprio
+    la deviazione tagliata). Se un taglio non è abbastanza vicino a nessun
+    via-point (es. causa esterna, non un singolo waypoint) resta senza nome:
+    la nota informativa in quel caso resta generica.
+    """
+    attributions = []
+    for cut in cuts:
+        best_name, best_dist = None, float("inf")
+        for name, lat, lon, mandatory in named_via_points:
+            if mandatory:
+                continue  # i mandatory non vengono mai tagliati, non possono essere "persi"
+            d = geodesic((cut["apex_lat"], cut["apex_lon"]), (lat, lon)).meters
+            if d < best_dist:
+                best_dist = d
+                best_name = name
+        attributions.append({
+            "waypoint_name": best_name if best_dist <= _OAB_ATTRIBUTION_TOLERANCE_M else None,
+            "overlap_km": cut["overlap_km"],
+        })
+    return attributions
+
+
 def _expected_end(strategy: dict) -> tuple[float, float] | None:
     """Ritorna (lon, lat) dell'end atteso — solo per gpx_analyzer in point_to_point."""
     if strategy["route_type"] != "point_to_point":
@@ -326,11 +417,32 @@ def _generate_one(
         # 2b. Imposta il nome della route nel GPX (BRouter scrive un default fisso)
         _set_gpx_name(gpx_path, strategy, label)
 
-        # 3. Analizza GPX
+        # 2c. Fix A: taglia le deviazioni andata/ritorno non protette PRIMA di
+        # analizzare — il candidato va valutato sul percorso già tagliato, non
+        # su quello grezzo di BRouter. I via-point mandatory/start/end restano
+        # sempre intoccati (l'utente li ha chiesti esplicitamente).
+        named_via_points = _named_via_points(strategy, snaps)
+        cuts = cut_out_and_back_in_gpx(str(gpx_path), _protected_points(named_via_points))
+        cut_attributions = _attribute_cuts(cuts, named_via_points)
+        removed_waypoints = [c["waypoint_name"] for c in cut_attributions if c["waypoint_name"]]
+
+        # 3. Analizza GPX — rilegge il file già tagliato: le metriche (distanza,
+        # dislivello, salite, out_and_back_percent residuo) riflettono il
+        # percorso finale, non quello grezzo.
         analysis = analyze_gpx(
             str(gpx_path),
             route_type=strategy["route_type"],
             expected_end=_expected_end(strategy),
+        )
+        analysis["out_and_back_cuts"] = cut_attributions
+        analysis["removed_waypoints"] = removed_waypoints
+
+        # 3b. Attribuisci ogni spuntone andata/ritorno RESIDUO (quelli protetti,
+        # non tagliati da Fix A) al via-point più vicino al suo apice (diagnosi
+        # "Polverigi_9") — solo informativo, non altera lo scoring né esclude nulla.
+        analysis["out_and_back_attributions"] = _attribute_out_and_back(
+            analysis.get("out_and_back_apexes", []),
+            named_via_points,
         )
 
         return {

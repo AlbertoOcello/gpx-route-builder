@@ -353,7 +353,7 @@ def _geocode_user_waypoints(
     def _try_geocode(query: str) -> tuple[tuple[float, float] | None, str | None]:
         """Prova il geocoding su tutti i fallback; restituisce (coords, used_region)."""
         for fb in fallback_regions:
-            c = geocode_place(query, region=fb)
+            c = geocode_place(query, region=fb, bias_coords=start_coords)
             if c:
                 return c, fb
         return None, None

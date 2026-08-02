@@ -178,6 +178,12 @@ it:
     status_valid: "valido"
     status_discarded: "SCARTATO"
     out_and_back_warning: "Il {pct:.0f}% del percorso ripercorre lo stesso tratto andata/ritorno"
+    out_and_back_attribution: >-
+      ℹ️ Il percorso ripercorre un tratto di {km:.1f} km per raggiungere
+      '{name}' — probabile accesso stradale limitato in quella zona.
+    out_and_back_removed: >-
+      ℹ️ Il waypoint '{name}' è stato escluso dal percorso: raggiungibile solo
+      con una deviazione andata/ritorno, rimossa automaticamente.
     status_error_brouter: "ERRORE BRouter —"
     btn_download: "⬇ Scarica GPX —"
     decision_motivation: "**Motivazione Decision Agent:**"
@@ -650,6 +656,12 @@ en:
     status_valid: "valid"
     status_discarded: "DISCARDED"
     out_and_back_warning: "{pct:.0f}% of the route retraces the same out-and-back stretch"
+    out_and_back_attribution: >-
+      ℹ️ The route retraces a {km:.1f} km stretch to reach '{name}' — likely
+      limited road access in that area.
+    out_and_back_removed: >-
+      ℹ️ Waypoint '{name}' was excluded from the route: only reachable via an
+      out-and-back detour, which was automatically removed.
     status_error_brouter: "BROUTER ERROR —"
     btn_download: "⬇ Download GPX —"
     decision_motivation: "**Decision Agent rationale:**"

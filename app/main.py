@@ -64,6 +64,11 @@ tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = 
 _PLANNED_DIR = Path("routes/planned")
 _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
+# Soglia (bassa, informativa) per mostrare quale waypoint ha causato uno spuntone
+# andata/ritorno — più bassa di OUT_AND_BACK_WARN_THRESHOLD_PCT (20%, warning
+# vero e proprio): qui vogliamo informare anche su casi minori, tono neutro.
+_OUT_AND_BACK_INFO_THRESHOLD_PCT = 5.0
+
 # Preferenza dislivello — 3 livelli qualitativi condivisi tra Planner e Builder
 # (sostituisce il vecchio input numerico max_elevation_gain_m, vedi scoring_engine.py).
 _ELEV_PREF_CODES = ["none", "prefer_avoid", "avoid_max"]
@@ -1204,6 +1209,16 @@ with tab_builder:
                             )
                             if s_b.get("distance_warning"):
                                 st.warning(f"⚠ {s_b['distance_warning']}")
+                            for _removed_name in c_b["analysis"].get("removed_waypoints", []):
+                                st.info(t("builder.out_and_back_removed").format(name=_removed_name))
+                            _oab_pct_single = c_b["analysis"].get("out_and_back_percent") or 0.0
+                            if _oab_pct_single >= _OUT_AND_BACK_INFO_THRESHOLD_PCT:
+                                for _attr in c_b["analysis"].get("out_and_back_attributions", []):
+                                    st.info(
+                                        t("builder.out_and_back_attribution").format(
+                                            name=_attr["waypoint_name"], km=_attr["overlap_km"]
+                                        )
+                                    )
                         m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
                         st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
                         gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")

@@ -31,32 +31,40 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R * math.asin(math.sqrt(a))
 
 
-def _out_and_back_percent(
+def _find_out_and_back_runs(
     points: list[tuple[float, float]],
-    min_gap_m: float = _OAB_MIN_GAP_M,
-    proximity_m: float = _OAB_PROXIMITY_M,
-    min_run_m: float = _OAB_MIN_RUN_M,
-) -> float:
+    min_gap_m: float,
+    proximity_m: float,
+    min_run_m: float,
+) -> tuple[float, list[float], list[tuple[tuple[int, int, float], tuple[int, int, float]]]]:
     """
-    Percentuale di tracciato che ripercorre sé stesso (andata == ritorno sullo
-    stesso asse). Per ogni punto cerca il più vicino tra i punti che sono
-    lontani almeno min_gap_m *lungo il tracciato* (non in linea d'aria): un
-    tornante stretto ha punti vicini anche in cumulativa, quindi resta escluso;
-    un vero tratto di ritorno ha punti vicini in spazio ma lontani in cumulativa.
-    Conta solo run consecutivi di sovrapposizione lunghi almeno min_run_m, per
-    escludere incroci puntuali (percorso a otto, breve tratto in comune tra
-    due anse).
+    Rilevamento di base, condiviso da _detect_out_and_back (sola diagnosi) e
+    cut_out_and_back_deviations (Fix A, taglio fisico). Per ogni punto cerca il
+    più vicino tra i punti che sono lontani almeno min_gap_m *lungo il
+    tracciato* (non in linea d'aria): un tornante stretto ha punti vicini anche
+    in cumulativa, quindi resta escluso; un vero tratto di ritorno ha punti
+    vicini in spazio ma lontani in cumulativa. Conta solo run consecutivi di
+    sovrapposizione lunghi almeno min_run_m, per escludere incroci puntuali
+    (percorso a otto, breve tratto in comune tra due anse).
+
+    Ogni "spuntone" andata/ritorno produce DUE run speculari (la gamba di andata
+    e quella di ritorno). Li accoppia (ordinati per posizione, esclusa
+    l'eventuale coppia di chiusura anello start≈end).
+
+    Ritorna (percent, cum, paired) dove paired è una lista di (leg_a, leg_b)
+    con leg_a/leg_b = (start_idx, end_idx, run_len_m); leg_a è la gamba di
+    andata (indici minori), leg_b quella di ritorno (indici maggiori).
     """
     n = len(points)
     if n < 4:
-        return 0.0
+        return 0.0, [], []
 
     cum = [0.0] * n
     for i in range(1, n):
         cum[i] = cum[i - 1] + _haversine_m(*points[i - 1], *points[i])
     total_m = cum[-1]
     if total_m <= 0:
-        return 0.0
+        return 0.0, cum, []
 
     overlap = [False] * n
     for i in range(n):
@@ -69,7 +77,7 @@ def _out_and_back_percent(
                 overlap[i] = True
                 break
 
-    overlapped_m = 0.0
+    runs: list[tuple[int, int, float]] = []  # (start_idx, end_idx, run_len_m)
     run_start = None
     for i in range(n):
         if overlap[i]:
@@ -79,14 +87,198 @@ def _out_and_back_percent(
             if run_start is not None:
                 run_len = cum[i - 1] - cum[run_start]
                 if run_len >= min_run_m:
-                    overlapped_m += run_len
+                    runs.append((run_start, i - 1, run_len))
                 run_start = None
     if run_start is not None:
         run_len = cum[n - 1] - cum[run_start]
         if run_len >= min_run_m:
-            overlapped_m += run_len
+            runs.append((run_start, n - 1, run_len))
 
-    return round(min(100.0, 100.0 * overlapped_m / total_m), 1)
+    overlapped_m = sum(r[2] for r in runs)
+    percent = round(min(100.0, 100.0 * overlapped_m / total_m), 1)
+
+    # Esclude la coppia di chiusura anello (start≈end, non è uno spuntone su
+    # un waypoint) e accoppia i run rimanenti in ordine di posizione.
+    closure = [r for r in runs if r[0] == 0 or r[1] == n - 1]
+    others = sorted((r for r in runs if r not in closure), key=lambda r: r[0])
+    paired = [(others[i], others[i + 1]) for i in range(0, len(others) - 1, 2)]
+
+    return percent, cum, paired
+
+
+def _detect_out_and_back(
+    points: list[tuple[float, float]],
+    min_gap_m: float = _OAB_MIN_GAP_M,
+    proximity_m: float = _OAB_PROXIMITY_M,
+    min_run_m: float = _OAB_MIN_RUN_M,
+) -> dict:
+    """
+    Per ciascuna coppia di run speculari calcola l'apice — il punto di
+    inversione reale, a metà tra la fine della gamba di andata e l'inizio di
+    quella di ritorno — utile per risalire al via-point che lo ha causato
+    (vedi candidate_generator, che abbina l'apice al via-point più vicino).
+
+    Ritorna {"percent": float, "apexes": [{"apex_lat","apex_lon","overlap_km"}]}.
+    """
+    percent, cum, paired = _find_out_and_back_runs(points, min_gap_m, proximity_m, min_run_m)
+
+    apexes = []
+    for leg_a, leg_b in paired:
+        apex_cum = (cum[leg_a[1]] + cum[leg_b[0]]) / 2
+        apex_idx = min(range(len(points)), key=lambda k: abs(cum[k] - apex_cum))
+        apexes.append({
+            "apex_lat": points[apex_idx][0],
+            "apex_lon": points[apex_idx][1],
+            "overlap_km": round((leg_a[2] + leg_b[2]) / 1000, 2),
+        })
+
+    return {"percent": percent, "apexes": apexes}
+
+
+def _out_and_back_percent(
+    points: list[tuple[float, float]],
+    min_gap_m: float = _OAB_MIN_GAP_M,
+    proximity_m: float = _OAB_PROXIMITY_M,
+    min_run_m: float = _OAB_MIN_RUN_M,
+) -> float:
+    """Compatibilità: solo la percentuale, senza gli apici. Vedi _detect_out_and_back."""
+    return _detect_out_and_back(points, min_gap_m, proximity_m, min_run_m)["percent"]
+
+
+# ── Fix A: taglio automatico delle deviazioni andata/ritorno ──────────────────
+# Se BRouter passa due volte per lo stesso punto (bivio) con una deviazione
+# significativa in mezzo, quella deviazione è sempre geometricamente "sbagliata"
+# (un vero anello non ripercorre sé stesso) — va rimossa dal GPX finale, a meno
+# che l'apice non coincida con un via-point mandatory (l'utente lo ha chiesto
+# esplicitamente, va rispettato). Non tenta di spiegare la causa (waypoint
+# soft mal posizionato, geocoding sbagliato, vicolo cieco reale): la taglia e
+# basta, per definizione geometrica.
+_OAB_CUT_MIN_DEVIATION_M = 300.0   # sotto questa percorrenza totale (andata+ritorno) non si taglia
+_OAB_CUT_PROTECT_TOLERANCE_M = 150.0  # stessa tolleranza di attribuzione di Fix 2
+
+
+def cut_out_and_back_deviations(
+    points: list[tuple[float, float]],
+    elevations: list[float | None],
+    protected_points: list[tuple[float, float]],
+    min_gap_m: float = _OAB_MIN_GAP_M,
+    proximity_m: float = _OAB_PROXIMITY_M,
+    min_run_m: float = _OAB_MIN_RUN_M,
+    min_deviation_m: float = _OAB_CUT_MIN_DEVIATION_M,
+    protect_tolerance_m: float = _OAB_CUT_PROTECT_TOLERANCE_M,
+) -> dict:
+    """
+    Rimuove iterativamente le deviazioni andata/ritorno da (points, elevations),
+    ricucendo il tracciato direttamente al punto di bivio. Un apice è
+    "protetto" (mai tagliato) se entro protect_tolerance_m da uno dei
+    protected_points (via-point mandatory, start, end) — l'utente ha chiesto
+    esplicitamente quel punto. Una deviazione è tagliata solo se la percorrenza
+    totale (andata + ritorno) è almeno min_deviation_m, per non intaccare
+    overlap minori già esclusi dal rilevamento di base (tornanti, incroci).
+
+    Dopo ogni taglio il rilevamento riparte da capo sul tracciato aggiornato
+    (gli indici cambiano), per gestire correttamente deviazioni multiple o
+    annidate senza lasciare residui.
+
+    Ritorna {"points", "elevations", "kept_indices", "cuts"}:
+      - kept_indices: indici nell'array points/elevations ORIGINALE dei punti
+        sopravvissuti (stesso ordine) — utile a chi deve ritagliare una lista
+        parallela di oggetti (es. i GPXTrackPoint originali) senza doverli
+        ricostruire da lat/lon.
+      - cuts: [{"apex_lat","apex_lon","overlap_km"}], nell'ordine in cui sono
+        stati effettivamente rimossi.
+    """
+    pts = list(points)
+    eles = list(elevations)
+    kept_indices = list(range(len(points)))
+    cuts = []
+
+    while True:
+        _, cum, paired = _find_out_and_back_runs(pts, min_gap_m, proximity_m, min_run_m)
+        if not paired:
+            break
+
+        cut_made = False
+        for leg_a, leg_b in paired:
+            deviation_m = leg_a[2] + leg_b[2]
+            if deviation_m < min_deviation_m:
+                continue
+
+            apex_cum = (cum[leg_a[1]] + cum[leg_b[0]]) / 2
+            apex_idx = min(range(len(pts)), key=lambda k: abs(cum[k] - apex_cum))
+            apex_lat, apex_lon = pts[apex_idx]
+
+            protected = any(
+                _haversine_m(apex_lat, apex_lon, p_lat, p_lon) <= protect_tolerance_m
+                for p_lat, p_lon in protected_points
+            )
+            if protected:
+                continue
+
+            cut_start, cut_end = leg_a[0], leg_b[1]
+            cuts.append({
+                "apex_lat": apex_lat,
+                "apex_lon": apex_lon,
+                "overlap_km": round(deviation_m / 1000, 2),
+            })
+            pts = pts[:cut_start] + pts[cut_end + 1:]
+            eles = eles[:cut_start] + eles[cut_end + 1:]
+            kept_indices = kept_indices[:cut_start] + kept_indices[cut_end + 1:]
+            cut_made = True
+            break  # tracciato cambiato: ricomincia il rilevamento da capo
+
+        if not cut_made:
+            break
+
+    return {"points": pts, "elevations": eles, "kept_indices": kept_indices, "cuts": cuts}
+
+
+def cut_out_and_back_in_gpx(gpx_path: str, protected_points: list[tuple[float, float]]) -> list[dict]:
+    """
+    Applica cut_out_and_back_deviations al file GPX su disco, sovrascrivendolo
+    con il tracciato tagliato (i GPXTrackPoint originali sopravvissuti sono
+    riusati as-is, via kept_indices — nessuna ricostruzione da lat/lon, quindi
+    elevazione/eventuali extension restano intatte sui punti mantenuti).
+
+    Va chiamata PRIMA di analyze_gpx: quest'ultima rilegge il file già tagliato
+    e ricalcola tutte le metriche (distanza, dislivello, salite,
+    out_and_back_percent) sul percorso finale, non su quello originale.
+
+    Ritorna la lista dei tagli effettuati (vedi cut_out_and_back_deviations) —
+    lista vuota se non c'era nulla da tagliare (nessuna riscrittura in quel caso).
+    """
+    with open(gpx_path, "r") as f:
+        gpx = gpxpy.parse(f)
+
+    track_points = []
+    for track in gpx.tracks:
+        for segment in track.segments:
+            track_points.extend(segment.points)
+
+    if len(track_points) < 4:
+        return []
+
+    latlon = [(p.latitude, p.longitude) for p in track_points]
+    eles = [p.elevation for p in track_points]
+
+    result = cut_out_and_back_deviations(latlon, eles, protected_points)
+    if not result["cuts"]:
+        return []
+
+    kept = set(result["kept_indices"])
+    offset = 0
+    for track in gpx.tracks:
+        for segment in track.segments:
+            n = len(segment.points)
+            segment.points = [
+                p for i, p in enumerate(segment.points) if (offset + i) in kept
+            ]
+            offset += n
+
+    with open(gpx_path, "w", encoding="utf-8") as f:
+        f.write(gpx.to_xml())
+
+    return result["cuts"]
 
 
 # ── Rilevamento salite ──────────────────────────────────────────────────────
@@ -341,9 +533,8 @@ def analyze_gpx(gpx_path: str,
     start = points[0]
     end = points[-1]
 
-    out_and_back_percent = _out_and_back_percent(
-        [(p.latitude, p.longitude) for p in points]
-    )
+    oab = _detect_out_and_back([(p.latitude, p.longitude) for p in points])
+    out_and_back_percent = oab["percent"]
 
     cum_m = [0.0] * len(points)
     for i in range(1, len(points)):
@@ -360,6 +551,7 @@ def analyze_gpx(gpx_path: str,
         "loop_closed": None,
         "endpoint_match_m": None,
         "out_and_back_percent": out_and_back_percent,
+        "out_and_back_apexes": oab["apexes"],
         "climbs": climb_data["climbs"],
         "elevation_profile": {
             "distances_km": climb_data["profile_distances_km"],
