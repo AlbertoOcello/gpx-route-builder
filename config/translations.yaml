@@ -29,6 +29,10 @@ it:
         senza allungare o accorciare artificialmente per avvicinarsi a un target
         di chilometraggio. Il campo distanza target viene ignorato.
       route_type: "Tipo giro"
+      elevation_pref: "Preferenza dislivello"
+      elevation_pref_none: "Nessuna preferenza"
+      elevation_pref_prefer_avoid: "Preferirei evitare troppo dislivello"
+      elevation_pref_avoid_max: "Evita il dislivello il più possibile"
       scenery: "Tema paesaggistico"
       athletic: "Tema atletico"
       direction: "Direzione geografica"
@@ -238,6 +242,10 @@ it:
     viz_no_tracks: "Il file GPX non contiene tracce."
     metric_distance: "Distanza"
     metric_elev_up: "Dislivello +"
+    metric_elev_up_help: >-
+      Dislivello positivo cumulato: somma di ogni singolo tratto in salita
+      lungo tutto il percorso (es. due salite di 100 m separate da una discesa
+      contano 200 m totali) — non la differenza tra quota massima e minima.
     metric_elev_down: "Dislivello −"
     metric_loop: "Loop chiuso"
     metric_type: "Tipo rilevato"
@@ -493,6 +501,10 @@ en:
         artificially lengthening or shortening it to approach a target distance.
         The target distance field is ignored.
       route_type: "Route type"
+      elevation_pref: "Elevation preference"
+      elevation_pref_none: "No preference"
+      elevation_pref_prefer_avoid: "I'd rather avoid too much elevation"
+      elevation_pref_avoid_max: "Avoid elevation as much as possible"
       scenery: "Scenery theme"
       athletic: "Athletic theme"
       direction: "Geographic direction"
@@ -701,6 +713,10 @@ en:
     viz_no_tracks: "The GPX file contains no tracks."
     metric_distance: "Distance"
     metric_elev_up: "Elevation +"
+    metric_elev_up_help: >-
+      Cumulative elevation gain: sum of every uphill stretch along the whole
+      route (e.g. two 100 m climbs separated by a descent count as 200 m
+      total) — not the difference between max and min altitude.
     metric_elev_down: "Elevation −"
     metric_loop: "Closed loop"
     metric_type: "Detected type"

@@ -67,19 +67,30 @@ class RouteRequest(BaseModel):
 
     # ── Regole stradali graduali (Fase 2 — nuove) ────────────────────────────
     # motorway è sempre escluso a prescindere; non serve un campo.
+    # NOTA: max_ss_percent/max_sp_percent dipendono da osm_enricher.enrich_gpx(),
+    # mai collegato a score_candidate() nella pipeline live (chiamato sempre senza
+    # enrichment → osm_ok=False → questi valori non hanno alcun effetto oggi).
+    # Campi mantenuti per quando l'enrichment verrà collegato (task futuro
+    # dedicato) — nascosti dalla UI nel frattempo, vedi main.py.
     max_ss_percent: float = Field(
         default=8.0,
-        description="% massima di tratto sostenuto (>1 km) su SS (highway=trunk/primary).",
+        description="% massima di tratto sostenuto (>1 km) su SS (highway=trunk/primary). Non ancora applicato — vedi nota sopra.",
     )
     max_sp_percent: float = Field(
         default=20.0,
-        description="% massima di tratto sostenuto (>1 km) su SP (highway=secondary).",
+        description="% massima di tratto sostenuto (>1 km) su SP (highway=secondary). Non ancora applicato — vedi nota sopra.",
     )
     # Eccezioni puntuali per nome (es. ["SS16", "SP7"]) — sempre hard-escluse.
     avoid_named_roads: list[str] = []
 
+    # ── Dislivello: preferenza qualitativa (Fase 1 — nuovo) ──────────────────
+    # Sostituisce il vecchio max_elevation_gain_m numerico: l'utente non conosce
+    # il dislivello reale finché il Builder non lo scopre, quindi non ha senso
+    # chiedergli un tetto esatto in anticipo. La preferenza pesa sullo scoring
+    # (vedi scoring_engine.py) senza mai scartare un candidato.
+    elevation_preference: Literal["none", "prefer_avoid", "avoid_max"] = "none"
+
     # ── Campi backward-compat (vecchio dict informale) ────────────────────────
-    max_elevation_gain_m: int = 700
     free_text: str = ""
     geographic_direction: str | None = None
     waypoints_stages: list[str] = []           # legacy: tappe intermedie per nome

@@ -64,6 +64,18 @@ tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = 
 _PLANNED_DIR = Path("routes/planned")
 _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
+# Preferenza dislivello — 3 livelli qualitativi condivisi tra Planner e Builder
+# (sostituisce il vecchio input numerico max_elevation_gain_m, vedi scoring_engine.py).
+_ELEV_PREF_CODES = ["none", "prefer_avoid", "avoid_max"]
+
+
+def _elev_pref_selectbox(default_code: str, key: str) -> str:
+    """Selectbox condivisa Planner/Builder per la preferenza dislivello. Ritorna il codice scelto."""
+    labels = [t(f"planner.form.elevation_pref_{c}") for c in _ELEV_PREF_CODES]
+    default_idx = _ELEV_PREF_CODES.index(default_code) if default_code in _ELEV_PREF_CODES else 0
+    chosen_label = st.selectbox(t("planner.form.elevation_pref"), labels, index=default_idx, key=key)
+    return _ELEV_PREF_CODES[labels.index(chosen_label)]
+
 
 # ─── Helpers condivisi ────────────────────────────────────────────────────────
 
@@ -460,8 +472,7 @@ with tab_planner:
         st.session_state["pl_elat"] = 43.6158
         st.session_state["pl_elon"] = 13.5189
         st.session_state["pl_wps"] = ""
-        st.session_state["pl_maxss"] = 8.0
-        st.session_state["pl_maxsp"] = 20.0
+        st.session_state["pl_elevpref"] = t("planner.form.elevation_pref_none")
         st.session_state["pl_avoid"] = ""
         st.session_state["pl_free"] = ""
 
@@ -561,17 +572,10 @@ with tab_planner:
             help=t("planner.form.waypoints_help"),
         )
 
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            pl_max_ss = st.number_input(
-                t("planner.form.max_ss"), value=8.0, min_value=0.0, max_value=100.0,
-                step=1.0, key="pl_maxss",
-            )
-        with col_r2:
-            pl_max_sp = st.number_input(
-                t("planner.form.max_sp"), value=20.0, min_value=0.0, max_value=100.0,
-                step=1.0, key="pl_maxsp",
-            )
+        # SS%/SP% rimossi dalla UI: dipendono da osm_enricher.py, mai collegato
+        # alla pipeline live (vedi models.py) — mostrare un controllo che non ha
+        # alcun effetto sarebbe fuorviante. Restano come default nel modello dati.
+        pl_elevation_pref = _elev_pref_selectbox("none", key="pl_elevpref")
 
         pl_avoid_roads = st.text_input(
             t("planner.form.avoid_roads"), value="", key="pl_avoid",
@@ -606,8 +610,7 @@ with tab_planner:
                 scenery_theme=pl_scenery,
                 athletic_theme=pl_athletic,
                 geographic_direction=None if pl_direction == t("planner.form.direction_free") else pl_direction,
-                max_ss_percent=pl_max_ss,
-                max_sp_percent=pl_max_sp,
+                elevation_preference=pl_elevation_pref,
                 avoid_named_roads=_parse_csv(pl_avoid_roads),
                 free_text=pl_free_text.strip(),
             )
@@ -905,18 +908,12 @@ with tab_builder:
                     key="bld_profiles",
                     help=t("builder.profiles_help"),
                 )
-                bld_max_elev = st.number_input(
-                    t("builder.max_elev_label"), value=req_b.get("max_elevation_gain_m", 700),
-                    min_value=100, max_value=3000, step=50, key="bld_elev",
-                )
             with col_bld2:
-                bld_max_ss = st.number_input(
-                    t("builder.max_ss_label"), value=float(req_b.get("max_ss_percent", 8.0)),
-                    min_value=0.0, max_value=100.0, step=1.0, key="bld_maxss",
-                )
-                bld_max_sp = st.number_input(
-                    t("builder.max_sp_label"), value=float(req_b.get("max_sp_percent", 20.0)),
-                    min_value=0.0, max_value=100.0, step=1.0, key="bld_maxsp",
+                # SS%/SP% rimossi: non hanno alcun effetto oggi (vedi models.py).
+                # Il dislivello non è più un tetto esatto — la preferenza qui
+                # riprende quella già scelta nel Planner, modificabile anche qui.
+                bld_elevation_pref = _elev_pref_selectbox(
+                    req_b.get("elevation_preference", "none"), key="bld_elevpref",
                 )
 
             profiles_valid = len(bld_profiles) == 3
@@ -972,9 +969,7 @@ with tab_builder:
 
                     merged_req_b = {
                         **req_b,
-                        "max_elevation_gain_m": bld_max_elev,
-                        "max_ss_percent": bld_max_ss,
-                        "max_sp_percent": bld_max_sp,
+                        "elevation_preference": bld_elevation_pref,
                     }
                     # Build 3 strategy dicts from Planner waypoints (already geocoded)
                     strategies_b = []
@@ -1203,7 +1198,10 @@ with tab_builder:
                             col_bm1, col_bm2, col_bm3 = st.columns(3)
                             col_bm1.metric(t("builder.col_score"), f"{s_b['total_score']:.1f}/100")
                             col_bm2.metric(t("analizza.metric_distance"), f"{c_b['analysis']['distance_km']:.1f} km")
-                            col_bm3.metric(t("analizza.metric_elev_up"), f"{c_b['analysis']['elevation_gain_m']:.0f} m")
+                            col_bm3.metric(
+                                t("analizza.metric_elev_up"), f"{c_b['analysis']['elevation_gain_m']:.0f} m",
+                                help=t("analizza.metric_elev_up_help"),
+                            )
                             if s_b.get("distance_warning"):
                                 st.warning(f"⚠ {s_b['distance_warning']}")
                         m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
@@ -2357,7 +2355,10 @@ with tab_utility:
                 else:
                     col_v1, col_v2, col_v3, col_v4 = st.columns(4)
                     col_v1.metric(t("analizza.metric_distance"), f"{analysis_v['distance_km']:.1f} km")
-                    col_v2.metric(t("analizza.metric_elev_up"), f"{analysis_v['elevation_gain_m']:.0f} m")
+                    col_v2.metric(
+                        t("analizza.metric_elev_up"), f"{analysis_v['elevation_gain_m']:.0f} m",
+                        help=t("analizza.metric_elev_up_help"),
+                    )
                     col_v3.metric(t("analizza.metric_elev_down"), f"{analysis_v['elevation_loss_m']:.0f} m")
                     if auto_rt_v == "loop":
                         loop_icon = "✅" if analysis_v.get("loop_closed") else "⚠️"

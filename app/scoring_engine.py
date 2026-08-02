@@ -28,6 +28,22 @@ except ImportError:
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "scoring_weights.yaml"
 _PLACEHOLDER = 70.0   # valore neutro per componenti non ancora calcolabili
 
+# Riferimento fisso per la FORMA della curva di punteggio dislivello — non più
+# configurabile dall'utente (era max_elevation_gain_m). L'utente non conosce il
+# dislivello reale finché il Builder non lo scopre, quindi non ha senso chiedergli
+# un tetto esatto: l'intensità della sua preferenza si esprime nel PESO del
+# componente nel punteggio totale, non in questa soglia — vedi
+# _ELEVATION_PREFERENCE_WEIGHT_MULTIPLIER più sotto.
+_ELEVATION_SCORE_REFERENCE_M = 700.0
+
+# "Nessuna preferenza" → peso invariato; via via più alto quanto più l'utente
+# vuole evitare dislivello — mai uno scarto rigido, solo più influenza sul ranking.
+_ELEVATION_PREFERENCE_WEIGHT_MULTIPLIER = {
+    "none": 1.0,
+    "prefer_avoid": 2.5,
+    "avoid_max": 5.0,
+}
+
 
 def _load_config() -> dict:
     with open(_CONFIG_PATH) as f:
@@ -167,8 +183,10 @@ def score_candidate(
     target_km    = float(request["target_km"])
     distance_unconstrained = target_km <= 0  # sentinel: -1 = "non vincolare alla distanza"
     tolerance_km = float(request.get("distance_tolerance_km", 5))
-    max_elev     = float(request.get("max_elevation_gain_m", 800))
     route_type   = request.get("route_type", "loop")
+
+    elevation_preference = request.get("elevation_preference", "none")
+    elev_weight_multiplier = _ELEVATION_PREFERENCE_WEIGHT_MULTIPLIER.get(elevation_preference, 1.0)
 
     distance_km      = float(analysis["distance_km"])
     elevation_gain_m = float(analysis.get("elevation_gain_m", 0))
@@ -240,7 +258,7 @@ def score_candidate(
 
     comp: dict[str, dict] = {
         "elevation": {
-            "score": round(_elevation_score(elevation_gain_m, max_elev), 1),
+            "score": round(_elevation_score(elevation_gain_m, _ELEVATION_SCORE_REFERENCE_M), 1),
             "placeholder": False, "source": "gpx",
         },
         "user_preferences": _ph("fase_futura"),  # richiede analisi POI + storico
@@ -318,7 +336,13 @@ def score_candidate(
     # (es. distance_match escluso perché target_km=-1), il suo peso si redistribuisce
     # sugli altri componenti presenti invece di andare perso (equivalente al
     # comportamento precedente quando tutti i componenti pesati erano sempre presenti).
-    weights_used = {k: w for k, w in weights.items() if w > 0.0 and k in comp}
+    # elev_weight_multiplier applica qui la preferenza dislivello dell'utente: più
+    # alto → il componente elevation pesa di più sul totale, gli altri si riducono
+    # proporzionalmente di conseguenza — mai un tetto che scarta un candidato.
+    weights_used = {
+        k: (w * elev_weight_multiplier if k == "elevation" else w)
+        for k, w in weights.items() if w > 0.0 and k in comp
+    }
     weight_sum = sum(weights_used.values())
     total = (
         sum(comp[k]["score"] * (w / weight_sum) for k, w in weights_used.items())

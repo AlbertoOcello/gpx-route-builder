@@ -1,0 +1,31 @@
+# Dati utente/di test locali — mai nell'immagine pubblicata.
+# L'app li ricrea da sola a runtime (mkdir(parents=True, exist_ok=True)),
+# quindi escluderli non richiede nessuna struttura placeholder.
+routes/generated/
+routes/planned/
+
+# Git
+.git/
+.gitignore
+
+# Python — pattern senza slash iniziale in .dockerignore NON fanno match
+# ricorsivo come in .gitignore: serve il prefisso **/ per colpire ogni livello.
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+*.egg-info/
+venv/
+.venv/
+
+# Ambiente locale / segreti — non deve mai finire in un'immagine pubblicata
+.env
+.env.*
+!.env.example
+
+# Editor/OS
+**/.DS_Store
+.vscode/
+.idea/
+
+# Installer/build artifacts del pacchetto desktop — non servono all'app in Docker
+installer/

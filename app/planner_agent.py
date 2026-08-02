@@ -452,6 +452,21 @@ def _deduplicate_waypoints(
     return result, warnings
 
 
+# Preferenza dislivello (SRS Fase 1, redesign) — informa già la scelta di
+# waypoint/narrativa del Planner AI, non solo lo score a posteriori del Builder.
+_ELEVATION_PREFERENCE_PROMPT_TEXT = {
+    "none": "nessuna preferenza particolare, il dislivello non è un fattore decisionale",
+    "prefer_avoid": (
+        "preferirebbe evitare salite molto impegnative quando possibile, "
+        "senza stravolgere il percorso o allontanarsi troppo dal tema richiesto"
+    ),
+    "avoid_max": (
+        "vuole evitare il più possibile salite impegnative, anche a costo di un "
+        "percorso meno diretto: privilegia zone/waypoint pianeggianti o collinari dolci"
+    ),
+}
+
+
 def build_raw_route_prompt(
     request: RouteRequest,
     geocoded_user_wps: list[dict],
@@ -501,6 +516,7 @@ def build_raw_route_prompt(
         f"tema_paesaggio:  {request.scenery_theme}",
         f"tema_atletico:   {request.athletic_theme}",
         f"geographic_direction: {dir_hint}",
+        f"preferenza_dislivello: {_ELEVATION_PREFERENCE_PROMPT_TEXT.get(request.elevation_preference, _ELEVATION_PREFERENCE_PROMPT_TEXT['none'])}",
     ]
 
     if route_type == "point_to_point" and request.end:
