@@ -143,8 +143,14 @@ def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
     per lo stesso waypoint e percorsi imprevedibili. Risolvendo una volta sola
     e condividendo il risultato, i 3 candidati usano sempre lo stesso set.
 
-    Ritorna un dict {chiave(_snap_key) → {"lat","lon"} se agganciato, oppure
-    {"excluded": "no_road" | "service_unavailable" | "no_coords"}}.
+    Ritorna un dict {chiave(_snap_key) → dict}. Il dict di ogni waypoint è uno di:
+      {"lat","lon", "source": "overpass"}          — snap a strada reale riuscito
+      {"lat","lon", "source": "brouter_raw_fallback"} — Overpass indisponibile,
+        coordinata geocodificata grezza passata a BRouter (che fa comunque il suo
+        snap nativo al nodo instradabile più vicino — qualità inferiore ma il
+        waypoint resta incluso invece di sparire dal percorso)
+      {"excluded": "no_road" | "no_coords"}        — nessuna strada nel raggio
+        (esito geografico legittimo di Overpass) o coordinate mancanti
     """
     snaps: dict[tuple, dict] = {}
     for wp in waypoints:
@@ -163,11 +169,20 @@ def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
         try:
             snapped = snap_to_nearest_road(float(lat), float(lon))
         except OverpassUnavailable as exc:
+            # Fallback: Overpass è indisponibile ma BRouter è locale (tile .rd5
+            # già scaricate, nessuna dipendenza di rete per il routing) — passargli
+            # la coordinata geocodificata grezza come via-point normale gli basta
+            # per fare il proprio snap nativo al nodo instradabile più vicino.
+            # Qualità inferiore allo snap "a strada di passaggio vera" di Overpass
+            # (può finire su una via secondaria vicino al centro), ma sempre
+            # meglio di far sparire del tutto il waypoint dal percorso.
             log.warning(
-                "Waypoint soft '%s' — servizio Overpass non ha risposto dopo i tentativi "
-                "previsti (%s), escluso dalla chiamata BRouter.", wp.get("name"), exc,
+                "Waypoint soft '%s' — Overpass non disponibile (%s): incluso con "
+                "aggancio grezzo via BRouter diretto (coordinata geocodificata "
+                "originale, non pre-snappata a una strada reale) invece di essere escluso.",
+                wp.get("name"), exc,
             )
-            snaps[key] = {"excluded": "service_unavailable"}
+            snaps[key] = {"lat": float(lat), "lon": float(lon), "source": "brouter_raw_fallback"}
             continue
 
         if snapped is None:
@@ -184,7 +199,7 @@ def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
             "Waypoint soft '%s' agganciato a strada: (%.6f,%.6f) → (%.6f,%.6f)  [%.0f m dall'originale]",
             wp.get("name"), lat, lon, snap_lat, snap_lon, snap_dist_m,
         )
-        snaps[key] = {"lat": snap_lat, "lon": snap_lon}
+        snaps[key] = {"lat": snap_lat, "lon": snap_lon, "source": "overpass"}
 
     return snaps
 
@@ -290,7 +305,7 @@ def _generate_one(
     request: dict | None,
     attempt: int,
     snaps: dict[tuple, dict],
-    snap_exclusions_summary: dict,
+    snap_issues_summary: dict,
 ) -> dict:
     # 1a. Espandi waypoint traversal con sentieri OSM reali (se presenti)
     if any(w.get("traversal") for w in strategy.get("waypoints", [])):
@@ -326,7 +341,7 @@ def _generate_one(
             "gpx_path": str(gpx_path),
             "status": "retried" if attempt == 2 else "ok",
             "analysis": analysis,
-            "soft_waypoint_exclusions": snap_exclusions_summary,
+            "soft_waypoint_issues": snap_issues_summary,
         }
 
     except Exception as exc:
@@ -338,7 +353,7 @@ def _generate_one(
             if alt is not None:
                 return _generate_one(
                     alt, label, run_dir, request=None, attempt=2,
-                    snaps=snaps, snap_exclusions_summary=snap_exclusions_summary,
+                    snaps=snaps, snap_issues_summary=snap_issues_summary,
                 )
 
         return {
@@ -350,7 +365,7 @@ def _generate_one(
             "status": "failed",
             "failure_reason": failure_reason,
             "analysis": None,
-            "soft_waypoint_exclusions": snap_exclusions_summary,
+            "soft_waypoint_issues": snap_issues_summary,
         }
 
 
@@ -375,14 +390,16 @@ def generate_candidates(
     base_waypoints = strategies[0]["waypoints"] if strategies else []
     snaps = _resolve_soft_snaps(base_waypoints)
 
-    snap_exclusions_summary = {
+    snap_issues_summary = {
         "no_road": sorted({
             wp["name"] for wp in base_waypoints
             if _is_soft_via(wp) and snaps.get(_snap_key(wp), {}).get("excluded") == "no_road"
         }),
-        "service_unavailable": sorted({
+        # Non più esclusi (vedi _resolve_soft_snaps) — inclusi ma con aggancio
+        # grezzo via BRouter diretto invece che a una strada reale via Overpass.
+        "raw_fallback": sorted({
             wp["name"] for wp in base_waypoints
-            if _is_soft_via(wp) and snaps.get(_snap_key(wp), {}).get("excluded") == "service_unavailable"
+            if _is_soft_via(wp) and snaps.get(_snap_key(wp), {}).get("source") == "brouter_raw_fallback"
         }),
     }
 
@@ -391,7 +408,7 @@ def generate_candidates(
         label = _SLOT_LABELS[i] if i < len(_SLOT_LABELS) else str(i)
         result = _generate_one(
             strategy, label, run_dir, request=request, attempt=1,
-            snaps=snaps, snap_exclusions_summary=snap_exclusions_summary,
+            snaps=snaps, snap_issues_summary=snap_issues_summary,
         )
         results.append(result)
 

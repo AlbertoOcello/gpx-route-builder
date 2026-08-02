@@ -1098,15 +1098,17 @@ with tab_builder:
 
                 winner_id_b = decision_b.get("winner")
 
-                # Fix 4: nota aggregata se uno o più waypoint soft sono stati esclusi per
-                # un problema temporaneo del servizio di geocoding (non per assenza
-                # geografica di strade) — stessa per tutti i candidati (snap condiviso, Fix 1).
-                _svc_unavail_b = (all_cands_b[0].get("soft_waypoint_exclusions", {}).get("service_unavailable")
-                                   if all_cands_b else [])
-                if _svc_unavail_b:
+                # Fix 4 (+ fallback BRouter successivo): nota aggregata se uno o più
+                # waypoint soft sono stati inclusi con aggancio grezzo via BRouter
+                # invece che tramite Overpass, per un problema temporaneo del servizio
+                # di geocoding — non sono più esclusi, solo di qualità inferiore.
+                # Stessa lista per tutti i candidati (snap condiviso, Fix 1).
+                _raw_fallback_b = (all_cands_b[0].get("soft_waypoint_issues", {}).get("raw_fallback")
+                                    if all_cands_b else [])
+                if _raw_fallback_b:
                     st.warning(
                         t("builder.snap_service_unavailable").format(
-                            n=len(_svc_unavail_b), names=", ".join(_svc_unavail_b)
+                            n=len(_raw_fallback_b), names=", ".join(_raw_fallback_b)
                         )
                     )
 
