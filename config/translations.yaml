@@ -60,6 +60,14 @@ it:
     naming_label: "Nome route (slug)"
     naming_help: "Claude ha suggerito questo nome — puoi modificarlo liberamente"
     btn_confirm_save: "💾 Conferma e salva"
+    btn_save_new: "💾 Salva come nuova route"
+    btn_update: "🔄 Aggiorna {name}"
+    save_new_name_conflict: "Esiste già una route chiamata '{name}'. Scegli un nome diverso, oppure usa \"Aggiorna\" se vuoi sovrascriverla."
+    route_updated: "Route aggiornata in"
+    update_confirm_msg: >-
+      Aggiornare **{name}** cancellerà **{builder}** run Builder, **{ride}**
+      analisi Ride Analysis, **{feedback}** feedback e **{files}** file
+      GPX/report collegati su disco. L'operazione non è reversibile. Continuare?
     btn_cancel: "✗ Annulla"
     status_loading: "🗺️ Pianificazione in corso..."
     status_prefs: "📡 Carico preferenze utente e geocodifiche..."
@@ -98,6 +106,7 @@ it:
     result_user_prompt: "**USER PROMPT:**"
     result_map_init_caption: "Punto di partenza corrente — compila il form e clicca **Pianifica waypoint**"
     route_saved: "Route salvata in"
+    loaded_from_route: "📂 Caricata la route '{name}' — modificala e rigenera, poi salva con \"Aggiorna {name}\" o \"Salva come nuova route\"."
     col_ord: "Ord."
     col_role: "Ruolo"
     col_name: "Nome"
@@ -385,6 +394,7 @@ it:
     routes_mgmt_header: "🗑️ Gestione route"
     routes_mgmt_planned_expander: "📁 Route pianificate — elimina"
     routes_mgmt_created: "creata"
+    routes_mgmt_load_help: "Carica nel Planner per modificarla"
     routes_mgmt_delete_help: "Elimina questa route"
     routes_mgmt_confirm_msg: "Eliminare definitivamente la route **{name}**? L'operazione non è reversibile."
     confirm_delete_btn: "🗑️ Conferma cancellazione"
@@ -546,6 +556,14 @@ en:
     naming_label: "Route name (slug)"
     naming_help: "Claude suggested this name — you can change it freely"
     btn_confirm_save: "💾 Confirm & save"
+    btn_save_new: "💾 Save as new route"
+    btn_update: "🔄 Update {name}"
+    save_new_name_conflict: "A route named '{name}' already exists. Choose a different name, or use \"Update\" if you want to overwrite it."
+    route_updated: "Route updated in"
+    update_confirm_msg: >-
+      Updating **{name}** will delete **{builder}** Builder run(s), **{ride}**
+      Ride Analysis report(s), **{feedback}** feedback entries, and **{files}**
+      linked GPX/report files from disk. This cannot be undone. Continue?
     btn_cancel: "✗ Cancel"
     status_loading: "🗺️ Planning in progress..."
     status_prefs: "📡 Loading user preferences and geocoding..."
@@ -584,6 +602,7 @@ en:
     result_user_prompt: "**USER PROMPT:**"
     result_map_init_caption: "Current start point — fill in the form and click **Plan waypoints**"
     route_saved: "Route saved in"
+    loaded_from_route: "📂 Loaded route '{name}' — edit and regenerate, then save with \"Update {name}\" or \"Save as new route\"."
     col_ord: "Ord."
     col_role: "Role"
     col_name: "Name"
@@ -870,6 +889,7 @@ en:
     routes_mgmt_header: "🗑️ Route management"
     routes_mgmt_planned_expander: "📁 Planned routes — delete"
     routes_mgmt_created: "created"
+    routes_mgmt_load_help: "Load into Planner to edit"
     routes_mgmt_delete_help: "Delete this route"
     routes_mgmt_confirm_msg: "Permanently delete route **{name}**? This cannot be undone."
     confirm_delete_btn: "🗑️ Confirm deletion"

@@ -34,55 +34,24 @@ def init_db() -> None:
     _DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     ddl = """
-    -- Pipeline runs
-    CREATE TABLE IF NOT EXISTS routes_generated (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at      TEXT    DEFAULT (datetime('now')),
-        request         TEXT    NOT NULL,   -- JSON RouteRequest
-        candidates      TEXT    NOT NULL,   -- JSON list[CandidateRoute + analysis]
-        scores          TEXT    NOT NULL,   -- JSON list[scoring result]
-        decision        TEXT    NOT NULL,   -- JSON DecisionReport
-        winner_id       TEXT                -- "A" | "B" | "C" | null
-    );
-
-    CREATE TABLE IF NOT EXISTS routes_approved (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at      TEXT    DEFAULT (datetime('now')),
-        route_gen_id    INTEGER REFERENCES routes_generated(id),
-        candidate_id    TEXT    NOT NULL,
-        strategy_name   TEXT,
-        profile         TEXT,
-        distance_km     REAL,
-        elevation_gain_m REAL,
-        gpx_path        TEXT
-    );
-
+    -- route_gen_id era un FK a routes_generated, tabella morta rimossa dal
+    -- redesign persistenza (mai riletta da nessuna query, vedi routes_generated/
+    -- routes_approved/user_feedback sotto) — colonna lasciata orfana (nessun
+    -- vincolo REFERENCES) perché routes_rejected stessa non è mai scritta
+    -- (save_route_rejected() non è chiamata da nessuna parte, come
+    -- save_route_approved() già rimossa): non tocchiamo la tabella in sé,
+    -- non richiesto in questo redesign, ma il riferimento pendente andava
+    -- comunque sistemato.
     CREATE TABLE IF NOT EXISTS routes_rejected (
         id              INTEGER PRIMARY KEY AUTOINCREMENT,
         created_at      TEXT    DEFAULT (datetime('now')),
-        route_gen_id    INTEGER REFERENCES routes_generated(id),
+        route_gen_id    INTEGER,
         candidate_id    TEXT    NOT NULL,
         strategy_name   TEXT,
         profile         TEXT,
         distance_km     REAL,
         elevation_gain_m REAL,
         reason          TEXT
-    );
-
-    -- Feedback utente (SRS §11)
-    CREATE TABLE IF NOT EXISTS user_feedback (
-        id              INTEGER PRIMARY KEY AUTOINCREMENT,
-        created_at      TEXT    DEFAULT (datetime('now')),
-        route_gen_id    INTEGER REFERENCES routes_generated(id),
-        candidate_id    TEXT    NOT NULL,
-        rating          INTEGER,    -- 1–5
-        too_traffic     INTEGER,    -- 0/1
-        too_gravel      INTEGER,    -- 0/1
-        too_hard        INTEGER,    -- 0/1
-        good_surface    INTEGER,    -- 0/1
-        nice_views      INTEGER,    -- 0/1
-        would_repeat    INTEGER,    -- 0/1
-        notes           TEXT
     );
 
     -- POI locali
@@ -179,16 +148,27 @@ def init_db() -> None:
         driver_health_notes TEXT
     );
 
-    -- Colonna annotations_json in user_feedback (idempotente via IF NOT EXISTS non supportata
-    -- per ALTER, lo gestisce il codice Python sotto)
     """
 
     with get_conn() as conn:
         conn.executescript(ddl)
-        # ALTER TABLE idempotente: aggiungi annotations_json a user_feedback se mancante
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(user_feedback)").fetchall()}
-        if "annotations_json" not in cols:
-            conn.execute("ALTER TABLE user_feedback ADD COLUMN annotations_json TEXT")
+
+        # Redesign persistenza: routes_generated/routes_approved/user_feedback erano
+        # un'isola morta — mai rilette da nessuna query, routes_approved mai scritta.
+        # Il feedback vive ora in feedback_history dentro il JSON della route; i
+        # segnaposto "problema" vengono promossi direttamente a known_obstacles.
+        # DROP IF EXISTS è idempotente: no-op ai riavvii successivi al primo.
+        conn.execute("DROP TABLE IF EXISTS routes_approved")
+        conn.execute("DROP TABLE IF EXISTS user_feedback")
+        conn.execute("DROP TABLE IF EXISTS routes_generated")
+
+        # ALTER TABLE idempotente: colonna zona su known_obstacles (redesign
+        # persistenza — filtra gli ostacoli per zona di partenza invece di
+        # applicarli indistintamente a qualunque route futura). Righe esistenti:
+        # zona resta NULL, nessun dato perso.
+        ko_cols = {r[1] for r in conn.execute("PRAGMA table_info(known_obstacles)").fetchall()}
+        if "zona" not in ko_cols:
+            conn.execute("ALTER TABLE known_obstacles ADD COLUMN zona TEXT")
 
         # ALTER TABLE idempotente: nuove colonne ride_profiles
         rp_cols = {r[1] for r in conn.execute("PRAGMA table_info(ride_profiles)").fetchall()}
@@ -236,85 +216,11 @@ def _seed_known_avoid_roads() -> None:
 
 
 # ── CRUD pipeline ─────────────────────────────────────────────────────────────
-
-def save_pipeline_run(
-    request: dict,
-    candidates: list[dict],
-    scored: list[dict],
-    decision: dict,
-) -> int:
-    """Salva un run completo della pipeline in routes_generated. Ritorna l'id inserito."""
-    winner_id = decision.get("winner")
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO routes_generated (request, candidates, scores, decision, winner_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (
-                json.dumps(request, ensure_ascii=False),
-                json.dumps(candidates, ensure_ascii=False, default=str),
-                json.dumps(scored, ensure_ascii=False),
-                json.dumps(decision, ensure_ascii=False),
-                winner_id,
-            ),
-        )
-        return cur.lastrowid
-
-
-def save_feedback(
-    route_gen_id: int,
-    candidate_id: str,
-    rating: int,
-    too_traffic: bool,
-    too_gravel: bool,
-    too_hard: bool,
-    good_surface: bool,
-    nice_views: bool,
-    would_repeat: bool,
-    notes: str,
-    annotations: list[dict] | None = None,
-) -> int:
-    """Salva il feedback utente. Ritorna l'id inserito.
-
-    annotations: lista di segnaposto route_map_annotations al momento del salvataggio
-                 (snapshot JSON). I segnaposto 'problema' vengono promossi automaticamente
-                 a known_obstacles dalla funzione chiamante.
-    """
-    annotations_json = json.dumps(annotations or [], ensure_ascii=False)
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO user_feedback "
-            "(route_gen_id, candidate_id, rating, too_traffic, too_gravel, "
-            " too_hard, good_surface, nice_views, would_repeat, notes, annotations_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                route_gen_id, candidate_id, rating,
-                int(too_traffic), int(too_gravel), int(too_hard),
-                int(good_surface), int(nice_views), int(would_repeat),
-                notes, annotations_json,
-            ),
-        )
-        return cur.lastrowid
-
-
-def save_route_approved(route_gen_id: int, candidate: dict) -> int:
-    a = candidate["analysis"]
-    with get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO routes_approved "
-            "(route_gen_id, candidate_id, strategy_name, profile, "
-            " distance_km, elevation_gain_m, gpx_path) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                route_gen_id,
-                candidate["id"],
-                candidate.get("strategy_name"),
-                candidate.get("profile"),
-                a.get("distance_km"),
-                a.get("elevation_gain_m"),
-                candidate.get("gpx_path"),
-            ),
-        )
-        return cur.lastrowid
+# save_pipeline_run/save_feedback/save_route_approved rimosse (redesign
+# persistenza): scrivevano su routes_generated/user_feedback/routes_approved,
+# tabelle mai rilette da nessuna query — isola morta, ora eliminata (vedi
+# init_db). Il feedback vive in feedback_history nel JSON della route; i
+# segnaposto "problema" vengono promossi a known_obstacles da main.py.
 
 
 def save_route_rejected(route_gen_id: int, candidate: dict, reason: str = "") -> int:
@@ -346,9 +252,16 @@ def save_known_obstacle(
     description: str,
     route_name: str | None = None,
     annotation_id: int | None = None,
+    zona: str | None = None,
 ) -> int:
     """Inserisce un ostacolo noto. Idempotente: se esiste già (stessa lat/lon arrotondate
-    a 5 decimali, ~1 m), aggiorna la descrizione e riattiva invece di duplicare."""
+    a 5 decimali, ~1 m), aggiorna la descrizione e riattiva invece di duplicare.
+
+    zona: nome del comune/città di partenza della route che ha segnalato
+    l'ostacolo (request.start.name) — usato da get_active_obstacles() per
+    limitare gli ostacoli considerati alle sole route future con la stessa
+    zona di partenza, invece di applicarli indistintamente a qualunque route.
+    """
     lat_r = round(lat, 5)
     lon_r = round(lon, 5)
     with get_conn() as conn:
@@ -359,25 +272,41 @@ def save_known_obstacle(
         if existing:
             conn.execute(
                 "UPDATE known_obstacles SET description=?, route_name=?, active=1, "
-                "annotation_id=COALESCE(?,annotation_id) WHERE id=?",
-                (description, route_name, annotation_id, existing["id"]),
+                "annotation_id=COALESCE(?,annotation_id), zona=COALESCE(?,zona) WHERE id=?",
+                (description, route_name, annotation_id, zona, existing["id"]),
             )
             return existing["id"]
         cur = conn.execute(
-            "INSERT INTO known_obstacles (lat, lon, description, route_name, annotation_id) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (lat, lon, description, route_name, annotation_id),
+            "INSERT INTO known_obstacles (lat, lon, description, route_name, annotation_id, zona) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (lat, lon, description, route_name, annotation_id, zona),
         )
         return cur.lastrowid
 
 
-def get_active_obstacles() -> list[dict]:
-    """Ritorna tutti gli ostacoli attivi (active=1)."""
+def get_active_obstacles(zona: str | None = None) -> list[dict]:
+    """
+    Ritorna gli ostacoli attivi (active=1).
+
+    zona=None (default): tutti gli ostacoli, indipendentemente dalla zona —
+    usato dalle viste di gestione/debug dove serve vedere tutto.
+    zona="Senigallia" ecc.: solo gli ostacoli con quella zona esatta, PIÙ
+    quelli storici senza zona (zona IS NULL, salvati prima di questo redesign)
+    — così i dati già presenti restano visibili invece di sparire silenziosamente.
+    """
     with get_conn() as conn:
-        rows = conn.execute(
-            "SELECT id, lat, lon, description, route_name, created_at "
-            "FROM known_obstacles WHERE active=1 ORDER BY created_at DESC"
-        ).fetchall()
+        if zona:
+            rows = conn.execute(
+                "SELECT id, lat, lon, description, route_name, zona, created_at "
+                "FROM known_obstacles WHERE active=1 AND (zona=? OR zona IS NULL) "
+                "ORDER BY created_at DESC",
+                (zona,),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, lat, lon, description, route_name, zona, created_at "
+                "FROM known_obstacles WHERE active=1 ORDER BY created_at DESC"
+            ).fetchall()
     return [dict(r) for r in rows]
 
 
@@ -424,11 +353,10 @@ def delete_map_annotation(annotation_id: int) -> None:
 def db_stats() -> dict:
     """Ritorna il conteggio righe per tabella — utile per test e debug."""
     tables = [
-        "routes_generated", "routes_approved", "routes_rejected",
-        "user_feedback", "geocoding_cache",
-        "known_places", "known_avoid_roads",
+        "routes_rejected", "geocoding_cache",
+        "known_places", "known_avoid_roads", "known_obstacles",
         "known_water_points", "known_bars", "known_scenic_points",
-        "route_map_annotations",
+        "route_map_annotations", "ride_profiles",
     ]
     with get_conn() as conn:
         return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in tables}

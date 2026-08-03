@@ -111,6 +111,12 @@ tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = 
 _PLANNED_DIR = Path("routes/planned")
 _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 
+# Report HTML di Ride Analysis per candidati collegati a una route pianificata
+# (redesign persistenza) — path referenziato da ride_analysis_history nel JSON
+# della route, stesso pattern dei GPX generati dal Builder. I GPX esterni non
+# collegati restano volatili (solo session_state + download), come deciso.
+_RIDE_REPORTS_DIR = Path("routes/ride_reports")
+
 # Soglia (bassa, informativa) per mostrare quale waypoint ha causato uno spuntone
 # andata/ritorno — più bassa di OUT_AND_BACK_WARN_THRESHOLD_PCT (20%, warning
 # vero e proprio): qui vogliamo informare anche su casi minori, tono neutro.
@@ -436,6 +442,39 @@ def _save_comparison_to_route(route_name: str, record: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _save_ride_analysis_to_route(route_name: str, record: dict) -> None:
+    """Appende un record di analisi Ride Analysis in ride_analysis_history dentro
+    il JSON della route — stesso pattern di _save_comparison_to_route. Il report
+    HTML completo vive già su disco (_RIDE_REPORTS_DIR); qui salviamo solo il
+    path e i numeri chiave in chiaro (kcal/bpm/batteria), non il contenuto."""
+    path = _PLANNED_DIR / f"{route_name}.json"
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    history = data.get("ride_analysis_history", [])
+    history.append(record)
+    data["ride_analysis_history"] = history
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _save_feedback_to_route(route_name: str, record: dict) -> None:
+    """
+    Appende un record di feedback soggettivo (rating/checkbox/note) in
+    feedback_history dentro il JSON della route — stesso pattern di
+    _save_comparison_to_route. Non include i segnaposto "problema": quelli
+    vengono promossi a known_obstacles (SQLite) dal chiamante, non duplicati
+    qui — il feedback_history è solo l'opinione soggettiva sulla route.
+    """
+    path = _PLANNED_DIR / f"{route_name}.json"
+    if not path.exists():
+        return
+    data = json.loads(path.read_text(encoding="utf-8"))
+    history = data.get("feedback_history", [])
+    history.append(record)
+    data["feedback_history"] = history
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
 def _load_saved_routes() -> dict[str, dict]:
     """Carica tutti i JSON da routes/planned/ — {route_name: data}."""
     routes = {}
@@ -448,6 +487,73 @@ def _load_saved_routes() -> dict[str, dict]:
     return routes
 
 
+def _normalize_builder_results(data: dict) -> list[dict]:
+    """
+    builder_results è una lista di run Builder (una per generazione, accumula
+    nel tempo — redesign persistenza). I JSON salvati prima del redesign hanno
+    builder_results come oggetto singolo (l'unica run, sovrascritta ad ogni
+    generazione) o assente — qui normalizziamo entrambi i casi a lista, senza
+    toccare il file su disco: la migrazione fisica non è richiesta, solo la
+    lettura senza errori.
+    """
+    br = data.get("builder_results")
+    if br is None:
+        return []
+    if isinstance(br, dict):
+        return [br] if br else []
+    return list(br)
+
+
+def _count_route_artifacts(route_data: dict) -> dict:
+    """
+    Conta cosa verrebbe perso da un "Aggiorna [nome]" su questa route —
+    usato sia per l'avviso di conferma sia per la cancellazione vera e
+    propria (_delete_route_artifacts riusa le stesse cartelle/file).
+    """
+    builder_runs = _normalize_builder_results(route_data)
+    gpx_dirs: set[str] = set()
+    gpx_file_count = 0
+    for run in builder_runs:
+        for c in run.get("candidates", []):
+            gp = c.get("gpx_path")
+            if gp:
+                gpx_file_count += 1
+                gpx_dirs.add(str(Path(gp).parent))
+
+    ride_history = route_data.get("ride_analysis_history", [])
+    report_files = [r["report_path"] for r in ride_history if r.get("report_path")]
+
+    return {
+        "builder_runs": len(builder_runs),
+        "ride_analyses": len(ride_history),
+        "feedbacks": len(route_data.get("feedback_history", [])),
+        "gpx_dirs": sorted(gpx_dirs),
+        "gpx_file_count": gpx_file_count,
+        "report_files": report_files,
+    }
+
+
+def _delete_route_artifacts(route_data: dict) -> None:
+    """
+    Cancella davvero da disco i file/cartelle referenziati da builder_results
+    (routes/generated/{timestamp}/ — condivisa dai 3 candidati di uno stesso
+    run, sicuro rimuoverla per intero) e ride_analysis_history (report HTML
+    singoli) — non solo i riferimenti nel JSON. Chiamata da "Aggiorna [nome]"
+    subito prima di riscrivere la pianificazione con le liste azzerate.
+    """
+    counts = _count_route_artifacts(route_data)
+    for d in counts["gpx_dirs"]:
+        try:
+            shutil.rmtree(d)
+        except OSError:
+            pass
+    for f in counts["report_files"]:
+        try:
+            Path(f).unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
 def _save_planned_route(
     route_name: str,
     request: RouteRequest,
@@ -458,7 +564,16 @@ def _save_planned_route(
     search_queries: list[str] | None = None,
     route_narrative: str = "",
 ) -> Path:
-    """Salva la bozza Planner in routes/planned/{route_name}.json."""
+    """
+    Salva la bozza Planner in routes/planned/{route_name}.json.
+
+    Schema (redesign persistenza): la sezione di pianificazione (request/
+    narrativa/waypoint/prompt) è sempre sovrascritta con l'ultimo salvataggio;
+    le liste sottostanti accumulano nel tempo e vengono azzerate SOLO da un
+    "Aggiorna [nome]" esplicito (vedi _delete_route_artifacts), mai da un
+    salvataggio Planner qualunque — chi chiama questa funzione su una route
+    già esistente deve aver già gestito quell'azzeramento a monte.
+    """
     _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "route_name": route_name,
@@ -470,7 +585,10 @@ def _save_planned_route(
         "user_prompt": user_prompt,
         "warnings": warnings,
         "search_queries": search_queries or [],
-        "builder_scores": [],
+        "builder_results": [],
+        "comparison_history": [],
+        "ride_analysis_history": [],
+        "feedback_history": [],
     }
     path = _PLANNED_DIR / f"{route_name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -527,6 +645,58 @@ with tab_planner:
         st.session_state["pl_elevpref"] = t("planner.form.elevation_pref_none")
         st.session_state["pl_avoid"] = ""
         st.session_state["pl_free"] = ""
+        st.session_state.pop("pl_loaded_route_name", None)
+
+    # Carica una route salvata nel form (bottone "📂 Carica nel Planner" in
+    # Utility → Gestione file) — stesso pattern del reset sopra: i valori reali
+    # al posto dei default, assegnati a session_state PRIMA che i widget pl_
+    # rendano, altrimenti Streamlit non li mostrerebbe (vedi commento sopra).
+    _pl_load_name = st.session_state.pop("_pl_load_route_pending", None)
+    if _pl_load_name:
+        _load_routes = _load_saved_routes()
+        _load_data = _load_routes.get(_pl_load_name)
+        if _load_data:
+            _load_req = _load_data.get("request", {})
+            _load_start = _load_req.get("start") or {}
+            _load_end = _load_req.get("end") or {}
+            _load_target_km = _load_req.get("target_km", 60.0)
+            _load_unconstrained = _load_target_km == -1.0
+            _KM_OPTIONS = [40, 50, 55, 60, 65, 70, 80, 100]
+
+            st.session_state.pop("pl_slat", None)
+            st.session_state.pop("pl_slon", None)
+            st.session_state["pl_sname"] = _load_start.get("name", "Senigallia")
+            st.session_state["pl_slat"] = _load_start.get("lat", 43.7136520)
+            st.session_state["pl_slon"] = _load_start.get("lon", 13.2278056)
+            st.session_state["pl_km_unconstrained"] = _load_unconstrained
+            st.session_state["pl_km"] = (
+                _load_target_km if _load_target_km in _KM_OPTIONS else 60
+            )
+            st.session_state["pl_rt"] = _load_req.get("route_type", "loop")
+            st.session_state["pl_scenery"] = _load_req.get("scenery_theme", "misto")
+            st.session_state["pl_athletic"] = _load_req.get("athletic_theme", "medio")
+            _load_dir = _load_req.get("geographic_direction")
+            st.session_state["pl_direction"] = _load_dir or t("planner.form.direction_free")
+            st.session_state["pl_ename"] = _load_end.get("name", "")
+            st.session_state["pl_elat"] = _load_end.get("lat", 43.6158)
+            st.session_state["pl_elon"] = _load_end.get("lon", 13.5189)
+            # "!" finale ricostruito per i waypoint mandatory=True — stesso
+            # formato testuale che _parse_pl_waypoint_line si aspetta in input.
+            st.session_state["pl_wps"] = "\n".join(
+                f"{w.get('name', '')}!" if w.get("mandatory") else w.get("name", "")
+                for w in _load_req.get("user_waypoints", [])
+            )
+            st.session_state["pl_elevpref"] = t(
+                f"planner.form.elevation_pref_{_load_req.get('elevation_preference', 'none')}"
+            )
+            st.session_state["pl_avoid"] = ", ".join(_load_req.get("avoid_named_roads", []))
+            st.session_state["pl_free"] = _load_req.get("free_text", "")
+
+            st.session_state["pl_loaded_route_name"] = _pl_load_name
+            st.session_state.pop("pl_result", None)
+            st.session_state.pop("pl_naming_active", None)
+            st.session_state.pop("pl_name_suggestion", None)
+            st.info(t("planner.loaded_from_route").format(name=_pl_load_name))
 
     col_form, col_map = st.columns([1, 2], gap="large")
 
@@ -686,34 +856,159 @@ with tab_planner:
                 type="secondary",
             )
 
-        # Naming UI — shown after accept_btn clicked, before final save
+        # Naming UI — shown after accept_btn clicked, before final save.
+        # Se una route è stata caricata dal Planner (Utility → Gestione file),
+        # offre anche "Aggiorna [nome]" accanto a "Salva come nuova route".
+        _pl_loaded_name = st.session_state.get("pl_loaded_route_name")
         if st.session_state.get("pl_naming_active") and "pl_result" in st.session_state:
             st.divider()
             st.markdown(t("planner.naming_header"))
             suggested = st.session_state.get("pl_name_suggestion", "nuova_route")
             pl_route_name_final = st.text_input(
                 t("planner.naming_label"),
-                value=suggested,
+                value=_pl_loaded_name or suggested,
                 key="pl_route_name_final",
                 help=t("planner.naming_help"),
             )
-            col_sv1, col_sv2 = st.columns(2)
-            with col_sv1:
-                confirm_save_btn = st.button(
-                    t("planner.btn_confirm_save"), type="primary", key="btn_pl_confirm_save"
-                )
-            with col_sv2:
-                cancel_naming_btn = st.button(t("planner.btn_cancel"), key="btn_pl_cancel_naming")
+            update_btn = False
+            if _pl_loaded_name:
+                col_sv0, col_sv1, col_sv2 = st.columns(3)
+                with col_sv0:
+                    update_btn = st.button(
+                        t("planner.btn_update").format(name=_pl_loaded_name),
+                        type="primary", key="btn_pl_update",
+                    )
+                with col_sv1:
+                    confirm_save_btn = st.button(t("planner.btn_save_new"), key="btn_pl_confirm_save")
+                with col_sv2:
+                    cancel_naming_btn = st.button(t("planner.btn_cancel"), key="btn_pl_cancel_naming")
+            else:
+                col_sv1, col_sv2 = st.columns(2)
+                with col_sv1:
+                    confirm_save_btn = st.button(
+                        t("planner.btn_save_new"), type="primary", key="btn_pl_confirm_save"
+                    )
+                with col_sv2:
+                    cancel_naming_btn = st.button(t("planner.btn_cancel"), key="btn_pl_cancel_naming")
         else:
             pl_route_name_final = ""
             confirm_save_btn = False
             cancel_naming_btn = False
+            update_btn = False
+
+        # I messaggi di esito (successo/errore) e l'avviso di conferma con i
+        # conteggi vanno qui, subito sotto i bottoni che li generano — non in
+        # fondo alla pagina dopo l'intera colonna mappa/risultati (dov'erano
+        # prima: con pl_result popolato, col_map è lunga, quindi "in fondo"
+        # significava fuori dallo schermo senza scroll).
+
+        # ── "Salva come nuova route" — nome diverso obbligatorio, mai sovrascrive
+        # una route esistente silenziosamente (prima non c'era questo controllo:
+        # riusare un nome esistente qui equivaleva a un "Aggiorna" senza avviso).
+        if confirm_save_btn and "pl_result" in st.session_state:
+            res = st.session_state["pl_result"]
+            slug = re.sub(r"[^\w\-]", "_", pl_route_name_final.strip()) or "route"
+            if slug in _load_saved_routes():
+                st.error(t("planner.save_new_name_conflict").format(name=slug))
+            else:
+                try:
+                    saved_path = _save_planned_route(
+                        route_name=slug,
+                        request=res["request"],
+                        ordered_wps=res["ordered_wps"],
+                        system_prompt=res["system_prompt"],
+                        user_prompt=res["user_prompt"],
+                        warnings=res["warnings"],
+                        search_queries=res.get("search_queries", []),
+                        route_narrative=res.get("route_narrative", ""),
+                    )
+                    st.session_state.pop("pl_naming_active", None)
+                    st.session_state.pop("pl_name_suggestion", None)
+                    st.session_state.pop("pl_loaded_route_name", None)
+                    st.success(f"{t('planner.route_saved')} `{saved_path}`")
+                    st.session_state[f"pl_saved_{slug}"] = True
+                except Exception as exc:
+                    st.error(f"Errore salvataggio: {exc}")
+
+        # ── "Aggiorna [nome]" — sovrascrive la route caricata. Se ha già dati
+        # collegati (run Builder/analisi/feedback), richiede conferma esplicita
+        # mostrando cosa verrebbe cancellato davvero da disco prima di procedere.
+        if update_btn and "pl_result" in st.session_state and _pl_loaded_name:
+            _existing_for_update = _load_saved_routes().get(_pl_loaded_name, {})
+            _counts_check = _count_route_artifacts(_existing_for_update)
+            if _counts_check["builder_runs"] or _counts_check["ride_analyses"] or _counts_check["feedbacks"]:
+                st.session_state["_pl_update_confirm_pending"] = _pl_loaded_name
+            else:
+                # Niente da perdere: aggiorna direttamente, senza interrompere con un avviso vuoto.
+                try:
+                    res = st.session_state["pl_result"]
+                    saved_path = _save_planned_route(
+                        route_name=_pl_loaded_name,
+                        request=res["request"],
+                        ordered_wps=res["ordered_wps"],
+                        system_prompt=res["system_prompt"],
+                        user_prompt=res["user_prompt"],
+                        warnings=res["warnings"],
+                        search_queries=res.get("search_queries", []),
+                        route_narrative=res.get("route_narrative", ""),
+                    )
+                    st.session_state.pop("pl_naming_active", None)
+                    st.session_state.pop("pl_name_suggestion", None)
+                    st.session_state.pop("pl_loaded_route_name", None)
+                    st.success(f"{t('planner.route_updated')} `{saved_path}`")
+                    st.session_state[f"pl_saved_{_pl_loaded_name}"] = True
+                except Exception as exc:
+                    st.error(f"Errore aggiornamento: {exc}")
+            st.rerun()
+
+        _pl_update_pending = st.session_state.get("_pl_update_confirm_pending")
+        if _pl_update_pending and "pl_result" in st.session_state:
+            _existing_for_update = _load_saved_routes().get(_pl_update_pending, {})
+            _counts = _count_route_artifacts(_existing_for_update)
+            st.warning(
+                t("planner.update_confirm_msg").format(
+                    name=_pl_update_pending,
+                    builder=_counts["builder_runs"],
+                    ride=_counts["ride_analyses"],
+                    feedback=_counts["feedbacks"],
+                    files=_counts["gpx_file_count"] + len(_counts["report_files"]),
+                )
+            )
+            col_upc1, col_upc2 = st.columns(2)
+            with col_upc1:
+                if st.button(t("debug.confirm_delete_btn"), key="btn_pl_update_yes", type="primary"):
+                    try:
+                        _delete_route_artifacts(_existing_for_update)
+                        res = st.session_state["pl_result"]
+                        saved_path = _save_planned_route(
+                            route_name=_pl_update_pending,
+                            request=res["request"],
+                            ordered_wps=res["ordered_wps"],
+                            system_prompt=res["system_prompt"],
+                            user_prompt=res["user_prompt"],
+                            warnings=res["warnings"],
+                            search_queries=res.get("search_queries", []),
+                            route_narrative=res.get("route_narrative", ""),
+                        )
+                        st.session_state.pop("_pl_update_confirm_pending", None)
+                        st.session_state.pop("pl_naming_active", None)
+                        st.session_state.pop("pl_name_suggestion", None)
+                        st.session_state.pop("pl_loaded_route_name", None)
+                        st.success(f"{t('planner.route_updated')} `{saved_path}`")
+                        st.session_state[f"pl_saved_{_pl_update_pending}"] = True
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"Errore aggiornamento: {exc}")
+            with col_upc2:
+                if st.button(t("debug.cancel_delete_btn"), key="btn_pl_update_no"):
+                    st.session_state.pop("_pl_update_confirm_pending", None)
+                    st.rerun()
 
     # ── Reset form — torna ai default, non tocca route già salvate su disco ───
     if reset_btn:
         _pl_flow_keys = [
             "pl_result", "pl_request", "pl_naming_active",
-            "pl_name_suggestion", "pl_route_name_final",
+            "pl_name_suggestion", "pl_route_name_final", "pl_loaded_route_name",
         ]
         for _k in _pl_flow_keys:
             st.session_state.pop(_k, None)
@@ -826,35 +1121,15 @@ with tab_planner:
     # ── Accettazione — avvia il flusso di naming ─────────────────────────────
     if accept_btn and "pl_result" in st.session_state:
         res = st.session_state["pl_result"]
-        if "pl_name_suggestion" not in st.session_state:
+        # Route caricata (Parte 3): il nome è già noto, non serve suggerirne uno
+        # nuovo — il text_input sopra usa già pl_loaded_route_name come default.
+        if "pl_name_suggestion" not in st.session_state and not st.session_state.get("pl_loaded_route_name"):
             narrative = res.get("route_narrative", "")
             with st.spinner(t("planner.naming_spinner")):
                 suggestion = _generate_route_slug(narrative)
             st.session_state["pl_name_suggestion"] = suggestion
         st.session_state["pl_naming_active"] = True
         st.rerun()
-
-    # ── Salvataggio confermato ────────────────────────────────────────────────
-    if confirm_save_btn and "pl_result" in st.session_state:
-        res = st.session_state["pl_result"]
-        slug = re.sub(r"[^\w\-]", "_", pl_route_name_final.strip()) or "route"
-        try:
-            saved_path = _save_planned_route(
-                route_name=slug,
-                request=res["request"],
-                ordered_wps=res["ordered_wps"],
-                system_prompt=res["system_prompt"],
-                user_prompt=res["user_prompt"],
-                warnings=res["warnings"],
-                search_queries=res.get("search_queries", []),
-                route_narrative=res.get("route_narrative", ""),
-            )
-            st.session_state.pop("pl_naming_active", None)
-            st.session_state.pop("pl_name_suggestion", None)
-            st.success(f"{t('planner.route_saved')} `{saved_path}`")
-            st.session_state[f"pl_saved_{slug}"] = True
-        except Exception as exc:
-            st.error(f"Errore salvataggio: {exc}")
 
     if cancel_naming_btn:
         st.session_state.pop("pl_naming_active", None)
@@ -1102,7 +1377,8 @@ with tab_builder:
 
                         try:
                             memory_b = load_user_memory()
-                            _obstacles_b = db.get_active_obstacles()
+                            _zona_b = (merged_req_b.get("start") or {}).get("name")
+                            _obstacles_b = db.get_active_obstacles(zona=_zona_b)
                             merged_req_b = merge_memory_with_request(merged_req_b, memory_b, obstacles=_obstacles_b)
 
                             _bld_status.update(label=t("builder.status_brouter"))
@@ -1146,10 +1422,13 @@ with tab_builder:
                                     state="complete", expanded=False,
                                 )
 
-                                # Salva builder_results nel JSON del route
+                                # Accoda un nuovo run in builder_results (lista, accumula
+                                # nel tempo — redesign persistenza) invece di sovrascrivere
+                                # l'unica run precedente.
                                 try:
                                     rd_b_updated = dict(rd_b)
-                                    rd_b_updated["builder_results"] = {
+                                    _builder_runs = _normalize_builder_results(rd_b)
+                                    _builder_runs.append({
                                         "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
                                         "candidates": [
                                             {
@@ -1165,7 +1444,8 @@ with tab_builder:
                                         ],
                                         "scored": scored_b,
                                         "decision": report_b.model_dump(),
-                                    }
+                                    })
+                                    rd_b_updated["builder_results"] = _builder_runs
                                     json_path = _PLANNED_DIR / f"{bld_sel}.json"
                                     json_path.write_text(
                                         json.dumps(rd_b_updated, ensure_ascii=False, indent=2),
@@ -1666,15 +1946,17 @@ with tab_ride:
                 st.session_state["ride_route_sel"] = _base  # pre-select before widget renders
 
         _route_narrative = None
+        _route_sel = None  # nome route collegata, None se GPX esterno non collegato
         if _saved_routes:
             _route_link_none = t("ride_analysis.route_link_none")
-            _route_sel = st.selectbox(
+            _sel = st.selectbox(
                 t("ride_analysis.route_link"),
                 options=[_route_link_none] + sorted(_saved_routes.keys()),
                 key="ride_route_sel",
             )
-            if _route_sel != _route_link_none:
-                _route_narrative = _saved_routes[_route_sel].get("route_narrative")
+            if _sel != _route_link_none:
+                _route_narrative = _saved_routes[_sel].get("route_narrative")
+                _route_sel = _sel
 
         # Determine active profile (must be saved, not "new")
         _active_profile = None if _is_new_profile else (_existing or None)
@@ -1694,6 +1976,30 @@ with tab_ride:
                         st.session_state["ride_result_gpx"] = _gpx_stats
                         st.session_state["ride_result_profile"] = _active_profile
                         st.session_state["ride_result_lang"] = _lang
+
+                        # Solo per candidati collegati a una route pianificata — un
+                        # GPX esterno non collegato resta volatile (solo session_state
+                        # + download manuale), come deciso. Il report HTML va su disco
+                        # (path referenziato, stesso pattern dei GPX del Builder — non
+                        # contenuto inline nel JSON).
+                        if _route_sel:
+                            _html_hist = ride_analysis.render_html_report(
+                                _result, _gpx_stats, _active_profile, _lang,
+                                route_narrative=_route_narrative,
+                            )
+                            _RIDE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
+                            _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                            _report_path = _RIDE_REPORTS_DIR / f"{_route_sel}_{_ts}.html"
+                            _report_path.write_text(_html_hist, encoding="utf-8")
+                            _save_ride_analysis_to_route(_route_sel, {
+                                "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "report_path": str(_report_path),
+                                "gpx_filename": _gpx_stats.get("gpx_filename"),
+                                "calories_kcal": _result.get("calories_kcal"),
+                                "avg_hr_bpm": _result.get("avg_hr_bpm"),
+                                "battery_pct_consumed": _result.get("battery_pct_consumed"),
+                                "fatigue_index": _result.get("fatigue_index"),
+                            })
                     except Exception as _e:
                         st.error(f"❌ {_e}")
 
@@ -2062,8 +2368,9 @@ with tab_post_ride:
                     f"Tema: {req_fb.get('scenery_theme','—')} / {req_fb.get('athletic_theme','—')}"
                 )
 
-                # Builder results — pick candidate
-                builder_res = rd_fb.get("builder_results", {})
+                # Builder results — pick candidate (run più recente = ultimo elemento)
+                _builder_runs_fb = _normalize_builder_results(rd_fb)
+                builder_res = _builder_runs_fb[-1] if _builder_runs_fb else {}
                 builder_cands = builder_res.get("candidates", []) if builder_res else []
                 ok_cands_fb = [c for c in builder_cands if c.get("status") in ("ok", "retried")]
 
@@ -2125,23 +2432,26 @@ with tab_post_ride:
 
                 if fb_submitted:
                     try:
+                        # Opinione soggettiva sulla route → feedback_history nel JSON
+                        # (non SQLite: è specifica di questa route, non trasversale).
+                        _save_feedback_to_route(fb_route_sel, {
+                            "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                            "candidate_id": fb_candidate_id or "—",
+                            "rating": fb_rating,
+                            "too_traffic": fb_traffic,
+                            "too_gravel": fb_gravel,
+                            "too_hard": fb_hard,
+                            "good_surface": fb_surface,
+                            "nice_views": fb_views,
+                            "would_repeat": fb_repeat,
+                            "notes": fb_notes,
+                        })
 
-                        route_gen_id = db.save_pipeline_run(req_fb, [], [], {})
-                        db.save_feedback(
-                            route_gen_id=route_gen_id,
-                            candidate_id=fb_candidate_id or "—",
-                            rating=fb_rating,
-                            too_traffic=fb_traffic,
-                            too_gravel=fb_gravel,
-                            too_hard=fb_hard,
-                            good_surface=fb_surface,
-                            nice_views=fb_views,
-                            would_repeat=fb_repeat,
-                            notes=fb_notes,
-                            annotations=_fb_annotations,
-                        )
-
-                        # Promuovi segnaposto "problema" → known_obstacles
+                        # Segnaposto "problema" → promossi a known_obstacles (SQLite,
+                        # trasversale: vale per qualunque route futura con la stessa
+                        # zona di partenza, indipendentemente da cosa succede poi a
+                        # questo JSON). zona = comune di partenza della route corrente.
+                        _zona_fb = (req_fb.get("start") or {}).get("name")
                         _problems = [a for a in _fb_annotations if a.get("category") == "problema"]
                         for _p in _problems:
                             db.save_known_obstacle(
@@ -2150,6 +2460,7 @@ with tab_post_ride:
                                 description=_p["comment"],
                                 route_name=fb_route_sel,
                                 annotation_id=_p["id"],
+                                zona=_zona_fb,
                             )
 
                         _msg = t("analizza.fb_saved")
@@ -2380,12 +2691,18 @@ with tab_utility:
             else:
                 for _rname, _rdata in _mgmt_routes.items():
                     _confirm_key = f"dbg_confirm_del_route_{_rname}"
-                    _rcol1, _rcol2 = st.columns([5, 1])
+                    _rcol1, _rcol2, _rcol3 = st.columns([4, 1, 1])
                     with _rcol1:
                         st.markdown(
                             f"**{_rname}** — {t('debug.routes_mgmt_created')} {_rdata.get('created_at', '—')}"
                         )
                     with _rcol2:
+                        if st.button(
+                            "📂", key=f"dbg_load_route_{_rname}", help=t("debug.routes_mgmt_load_help"),
+                        ):
+                            st.session_state["_pl_load_route_pending"] = _rname
+                            st.rerun()
+                    with _rcol3:
                         if st.button("🗑️", key=f"dbg_del_route_{_rname}", help=t("debug.routes_mgmt_delete_help")):
                             st.session_state[_confirm_key] = True
                             st.rerun()
@@ -2562,7 +2879,8 @@ with tab_utility:
                             st.caption(t("debug.no_prompt"))
 
                     with sub3:
-                        scores = rd.get("builder_scores", [])
+                        _br_runs = _normalize_builder_results(rd)
+                        scores = _br_runs[-1].get("scored", []) if _br_runs else []
                         if scores:
                             st.json(scores)
                         else:
@@ -2794,6 +3112,7 @@ with tab_utility:
                         st.markdown(
                             f"🔴 **{_obs['description']}** "
                             f"<small>({_obs['lat']:.5f}, {_obs['lon']:.5f}) "
+                            f"· zona: {_obs.get('zona') or '—'} "
                             f"· {_obs.get('route_name','—')} · {_obs['created_at'][:10]}</small> "
                             f"[↗ Maps]({maps_url_obs})",
                             unsafe_allow_html=True,
