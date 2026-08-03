@@ -13,6 +13,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+from typing import Callable
 
 import gpxpy
 from geopy.distance import geodesic
@@ -130,7 +131,10 @@ def _snap_key(wp: dict) -> tuple:
     return (wp.get("name"), wp.get("lat"), wp.get("lon"))
 
 
-def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
+def _resolve_soft_snaps(
+    waypoints: list[dict],
+    on_progress: Callable[[str], None] | None = None,
+) -> dict[tuple, dict]:
     """
     Risolve UNA SOLA VOLTA, per l'intera generazione (condivisa tra i 3
     candidati A/B/C), lo snap-to-road di ogni waypoint "via" soft.
@@ -152,6 +156,13 @@ def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
       {"excluded": "no_road" | "no_coords"}        — nessuna strada nel raggio
         (esito geografico legittimo di Overpass) o coordinate mancanti
     """
+    def _emit(message: str) -> None:
+        if on_progress:
+            try:
+                on_progress(message)
+            except Exception:
+                pass
+
     snaps: dict[tuple, dict] = {}
     for wp in waypoints:
         if not _is_soft_via(wp):
@@ -166,8 +177,9 @@ def _resolve_soft_snaps(waypoints: list[dict]) -> dict[tuple, dict]:
             snaps[key] = {"excluded": "no_coords"}
             continue
 
+        _emit(f"🔎 Attaching waypoint '{wp.get('name')}'...")
         try:
-            snapped = snap_to_nearest_road(float(lat), float(lon))
+            snapped = snap_to_nearest_road(float(lat), float(lon), on_progress=on_progress)
         except OverpassUnavailable as exc:
             # Fallback: Overpass è indisponibile ma BRouter è locale (tile .rd5
             # già scaricate, nessuna dipendenza di rete per il routing) — passargli
@@ -397,7 +409,15 @@ def _generate_one(
     attempt: int,
     snaps: dict[tuple, dict],
     snap_issues_summary: dict,
+    on_progress: Callable[[str], None] | None = None,
 ) -> dict:
+    def _emit(message: str) -> None:
+        if on_progress:
+            try:
+                on_progress(message)
+            except Exception:
+                pass
+
     # 1a. Espandi waypoint traversal con sentieri OSM reali (se presenti)
     if any(w.get("traversal") for w in strategy.get("waypoints", [])):
         strategy = _expand_traversal_waypoints(strategy)
@@ -409,6 +429,8 @@ def _generate_one(
     gpx_path = run_dir / f"candidate_{label}.gpx"
 
     _log_brouter_call(strategy, lonlat)
+
+    _emit(f"🚴 Generating Variant {label} ({strategy['profile']}) — calling BRouter...")
 
     try:
         # 2. Chiama BRouter
@@ -445,6 +467,8 @@ def _generate_one(
             named_via_points,
         )
 
+        _emit(f"✅ Variant {label} completed ({analysis['distance_km']:.1f} km)")
+
         return {
             "id": label,
             "strategy_name": strategy["name"],
@@ -459,6 +483,7 @@ def _generate_one(
     except Exception as exc:
         failure_reason = str(exc)
         log.warning("Candidato %s fallito (attempt %d): %s", label, attempt, failure_reason)
+        _emit(f"❌ Variant {label} failed: {failure_reason}")
 
         if attempt == 1 and request is not None:
             alt = _get_alternative(strategy, request)
@@ -466,6 +491,7 @@ def _generate_one(
                 return _generate_one(
                     alt, label, run_dir, request=None, attempt=2,
                     snaps=snaps, snap_issues_summary=snap_issues_summary,
+                    on_progress=on_progress,
                 )
 
         return {
@@ -484,10 +510,15 @@ def _generate_one(
 def generate_candidates(
     strategies: list[dict],
     request: dict | None = None,
+    on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """
-    strategies: CandidateRoute geocodificati (output di geocode_candidate).
-    request:    RouteRequest originale — necessario per retry via Planner (SRS §6.3).
+    strategies:  CandidateRoute geocodificati (output di geocode_candidate).
+    request:     RouteRequest originale — necessario per retry via Planner (SRS §6.3).
+    on_progress: callback opzionale (message: str) -> None, chiamato ad ogni
+                 passo significativo (snap waypoint, retry Overpass, generazione
+                 di ciascun candidato) — per la UI (log "parlante" nel Builder).
+                 Default no-op: chiamate da script/test esterni non cambiano.
 
     Ritorna lista con id (A/B/C), status (ok/retried/failed), gpx_path, analysis.
     Ogni candidato è indipendente: un fallimento non blocca gli altri.
@@ -500,7 +531,7 @@ def generate_candidates(
     # condiviso tra i 3 candidati — tutte le strategie condividono la stessa
     # sequenza di waypoint base (stesso Planner output, solo profilo diverso).
     base_waypoints = strategies[0]["waypoints"] if strategies else []
-    snaps = _resolve_soft_snaps(base_waypoints)
+    snaps = _resolve_soft_snaps(base_waypoints, on_progress=on_progress)
 
     snap_issues_summary = {
         "no_road": sorted({
@@ -521,6 +552,7 @@ def generate_candidates(
         result = _generate_one(
             strategy, label, run_dir, request=request, attempt=1,
             snaps=snaps, snap_issues_summary=snap_issues_summary,
+            on_progress=on_progress,
         )
         results.append(result)
 

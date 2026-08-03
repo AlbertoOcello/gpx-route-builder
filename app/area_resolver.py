@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import time
+from typing import Callable
 
 import httpx
 from geopy.distance import geodesic
@@ -149,6 +150,7 @@ def snap_to_nearest_road(
     lat: float,
     lon: float,
     radius_m: int = SNAP_SEARCH_RADIUS,
+    on_progress: Callable[[str], None] | None = None,
 ) -> tuple[float, float] | None:
     """
     Trova il punto più vicino su una strada carrabile reale entro radius_m da
@@ -199,7 +201,7 @@ def snap_to_nearest_road(
             f");\n"
             f"out body geom;\n"
         )
-        return _query_overpass(query)  # OverpassUnavailable si propaga al chiamante
+        return _query_overpass(query, on_progress=on_progress)  # OverpassUnavailable si propaga al chiamante
 
     current_radius = radius_m
     candidates_filtered: list[dict] = []
@@ -242,7 +244,10 @@ def snap_to_nearest_road(
 
 # ── Rete ──────────────────────────────────────────────────────────────────────
 
-def _query_overpass(query_str: str) -> list[dict]:
+def _query_overpass(
+    query_str: str,
+    on_progress: Callable[[str], None] | None = None,
+) -> list[dict]:
     """
     Interroga Overpass con retry, ruotando tra OVERPASS_URLS a ogni tentativo
     (round-robin) invece di ripetere sempre lo stesso host — se l'endpoint
@@ -252,6 +257,10 @@ def _query_overpass(query_str: str) -> list[dict]:
     Ritorna la lista di way OSM su una risposta 200 (anche vuota, se l'area
     non ha strade nel raggio — esito legittimo). Solleva OverpassUnavailable
     se NESSUN tentativo, su NESSUN mirror, ottiene una risposta 200.
+
+    on_progress(message), se fornito, viene chiamato ad ogni nuovo tentativo —
+    questo è il caso che più spesso fa sembrare l'app bloccata per minuti
+    (429/504 a ripetizione), quindi va reso visibile all'utente.
     """
     raw_body = ("data=" + query_str).encode("utf-8")
     headers  = {
@@ -271,6 +280,19 @@ def _query_overpass(query_str: str) -> list[dict]:
         except Exception:
             pass
         if delay is not None:
+            next_attempt = attempt + 2  # 1-indexed, il prossimo tentativo
+            log.info(
+                "Overpass non risponde, nuovo tentativo (%d/%d, mirror alternativo)...",
+                next_attempt, len(attempts),
+            )
+            if on_progress:
+                try:
+                    on_progress(
+                        f"⏳ Overpass not responding, retrying ({next_attempt}/{len(attempts)}, "
+                        f"alternate mirror)..."
+                    )
+                except Exception:
+                    pass
             time.sleep(delay)
 
     raise OverpassUnavailable(

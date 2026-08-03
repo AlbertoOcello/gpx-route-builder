@@ -9,6 +9,7 @@ import os
 import re
 import shutil
 import tempfile
+from collections import deque
 from pathlib import Path
 
 # Configurazione logging applicativa — deve avvenire prima che qualunque modulo
@@ -61,6 +62,36 @@ def _build_commit() -> str:
     # livello di ENV, mostrato come "dev" invece di rompere.
     commit = os.environ.get("GIT_COMMIT", "unknown")
     return "dev" if commit == "unknown" else commit
+
+
+class _TalkingLog:
+    """
+    Log a scorrimento stile terminale dentro un container st.status(): mostra
+    solo le ultime `maxlen` righe (deque), l'ultima sempre in fondo con 🔄
+    (passo in corso), le precedenti con ✅ (completate) — non un log che
+    cresce all'infinito. Riscrive l'intero blocco in un st.empty() ad ogni
+    step invece di fare append incrementale nativo.
+    """
+
+    def __init__(self, placeholder, maxlen: int = 5):
+        self._lines: deque[str] = deque(maxlen=maxlen)
+        self._placeholder = placeholder
+
+    def step(self, message: str) -> None:
+        if self._lines and self._lines[-1].startswith("🔄"):
+            self._lines[-1] = "✅" + self._lines[-1][1:]
+        self._lines.append(f"🔄 {message}")
+        self._render()
+
+    def finish(self, message: str | None = None) -> None:
+        if self._lines and self._lines[-1].startswith("🔄"):
+            self._lines[-1] = "✅" + self._lines[-1][1:]
+        if message:
+            self._lines.append(f"✅ {message}")
+        self._render()
+
+    def _render(self) -> None:
+        self._placeholder.markdown("  \n".join(self._lines) or "…")
 
 
 st.set_page_config(page_title=t("app.page_title"), layout="wide")
@@ -692,19 +723,42 @@ with tab_planner:
         st.rerun()
 
     # ── Esecuzione pianificazione ─────────────────────────────────────────────
-    if plan_btn or regen_btn:
-        request_to_use = _pl_build_request()
-        st.session_state["pl_request"] = request_to_use
-
+    def _run_planner_generation(
+        request_to_use: RouteRequest,
+        memory: dict,
+        geocoded_wps: list[dict] | None = None,
+    ) -> None:
+        """
+        Fase 1 (geocodifica + check preliminare) + Fase 2 (ricerca web + Claude)
+        in un unico st.status() "parlante". Se geocoded_wps è None, la
+        geocodifica viene eseguita qui come primo passo (caso comune, nessuna
+        pausa se tutto va a buon fine). Se invece arriva già calcolata da un
+        gate precedente (utente ha cliccato "Continua comunque" dopo un
+        fallimento parziale), viene riusata senza rifarla.
+        """
         with st.status(t("planner.status_loading"), expanded=True) as _pl_status:
+            _pl_log = _TalkingLog(st.empty())
             try:
-                _pl_status.update(label=t("planner.status_prefs"))
-                memory = load_user_memory()
-                geocoded_wps = _geocode_user_waypoints(
-                    request_to_use.user_waypoints,
-                    region=f"{request_to_use.start.name}, Italia",
-                    start_coords=(request_to_use.start.lat, request_to_use.start.lon),
-                )
+                if geocoded_wps is None:
+                    _pl_log.step(t("planner.status_geocoding"))
+                    geocoded_wps = _geocode_user_waypoints(
+                        request_to_use.user_waypoints,
+                        region=f"{request_to_use.start.name}, Italia",
+                        start_coords=(request_to_use.start.lat, request_to_use.start.lon),
+                    )
+                    failed_wps = [w for w in geocoded_wps if w.get("geocoding_failed")]
+                    if failed_wps:
+                        gate_label = t("planner.geocode_gate_failed").format(n=len(failed_wps))
+                        _pl_log.finish(gate_label)
+                        _pl_status.update(label=gate_label, state="complete", expanded=True)
+                        st.session_state["pl_geocode_gate"] = {
+                            "request": request_to_use,
+                            "memory": memory,
+                            "geocoded": geocoded_wps,
+                            "failed_names": [w["name"] for w in failed_wps],
+                        }
+                        return
+
                 sp, up = build_raw_route_prompt(request_to_use, geocoded_wps, memory)
 
                 _search_count: list[int] = [0]
@@ -714,23 +768,17 @@ with tab_planner:
                         if kind == "search":
                             _search_count[0] += 1
                             short = detail[:80] + "…" if len(detail) > 80 else detail
-                            _pl_status.update(
-                                label=f"{t('planner.status_search')} {short}"
-                            )
+                            _pl_log.step(f"{t('planner.status_search')} {short}")
                         elif kind == "results":
                             n = _search_count[0]
                             word = t("planner.status_results_1") if n == 1 else t("planner.status_results_n")
-                            _pl_status.update(
-                                label=f"📍 Trovati risultati ({n} {word}), analizzo..."
-                            )
+                            _pl_log.step(f"📍 Trovati risultati ({n} {word}), analizzo...")
                         elif kind == "generating":
-                            _pl_status.update(
-                                label=t("planner.status_ordering")
-                            )
+                            _pl_log.step(t("planner.status_ordering"))
                     except Exception:
                         pass
 
-                _pl_status.update(label=t("planner.status_web"))
+                _pl_log.step(t("planner.status_web"))
                 ordered_wps, warnings, search_queries, route_narrative = generate_raw_route(
                     request_to_use, memory, on_event=_on_planner_event
                 )
@@ -744,10 +792,36 @@ with tab_planner:
                     "search_queries":  search_queries,
                     "route_narrative": route_narrative,
                 }
+                _pl_log.finish(t("planner.status_done"))
                 _pl_status.update(label=t("planner.status_done"), state="complete", expanded=False)
             except Exception as exc:
+                _pl_log.finish(t("planner.status_error"))
                 _pl_status.update(label=t("planner.status_error"), state="error")
                 st.error(f"Errore Planner: {exc}")
+
+    if plan_btn or regen_btn:
+        request_to_use = _pl_build_request()
+        st.session_state["pl_request"] = request_to_use
+        st.session_state.pop("pl_geocode_gate", None)
+        _run_planner_generation(request_to_use, load_user_memory())
+
+    # ── Gate di geocodifica — mostrato se l'ultimo check ha trovato waypoint
+    # non geocodificati; resta finché l'utente non sceglie come procedere ────
+    _pl_gate = st.session_state.get("pl_geocode_gate")
+    if _pl_gate:
+        st.warning(t("planner.geocode_gate_warning").format(names=", ".join(_pl_gate["failed_names"])))
+        st.caption(t("planner.geocode_gate_hint"))
+        col_gate1, col_gate2 = st.columns(2)
+        with col_gate1:
+            if st.button(t("planner.btn_continue_anyway"), key="btn_pl_continue_anyway", type="primary"):
+                _gate_data = st.session_state.pop("pl_geocode_gate")
+                _run_planner_generation(
+                    _gate_data["request"], _gate_data["memory"], geocoded_wps=_gate_data["geocoded"],
+                )
+        with col_gate2:
+            if st.button(t("planner.btn_cancel"), key="btn_pl_gate_cancel"):
+                st.session_state.pop("pl_geocode_gate", None)
+                st.rerun()
 
     # ── Accettazione — avvia il flusso di naming ─────────────────────────────
     if accept_btn and "pl_result" in st.session_state:
@@ -1021,13 +1095,20 @@ with tab_builder:
                         })
 
                     with st.status(t("builder.status_generating"), expanded=True) as _bld_status:
+                        _bld_log = _TalkingLog(st.empty())
+
+                        def _on_bld_progress(_msg: str, _log=_bld_log) -> None:
+                            _log.step(_msg)
+
                         try:
                             memory_b = load_user_memory()
                             _obstacles_b = db.get_active_obstacles()
                             merged_req_b = merge_memory_with_request(merged_req_b, memory_b, obstacles=_obstacles_b)
 
                             _bld_status.update(label=t("builder.status_brouter"))
-                            all_candidates_b = generate_candidates(strategies_b, request=None)
+                            all_candidates_b = generate_candidates(
+                                strategies_b, request=None, on_progress=_on_bld_progress,
+                            )
                             ok_candidates_b = [c for c in all_candidates_b if c["status"] in ("ok", "retried")]
                             failed_b = [c for c in all_candidates_b if c["status"] == "failed"]
 
@@ -1039,12 +1120,15 @@ with tab_builder:
                                     )
 
                             if not ok_candidates_b:
+                                _bld_log.finish(t("builder.status_all_failed"))
                                 _bld_status.update(label=t("builder.status_all_failed"), state="error")
                                 st.error(t("builder.err_all_failed"))
                             else:
+                                _bld_log.step(t("builder.status_scoring"))
                                 _bld_status.update(label=t("builder.status_scoring"))
                                 scored_b = [score_candidate(c["analysis"], merged_req_b) for c in ok_candidates_b]
 
+                                _bld_log.step(t("builder.status_decision"))
                                 _bld_status.update(label=t("builder.status_decision"))
                                 report_b = run_decision(ok_candidates_b, scored_b, merged_req_b)
 
@@ -1056,6 +1140,7 @@ with tab_builder:
                                     "scored": scored_b,
                                     "decision": report_b.model_dump(),
                                 }
+                                _bld_log.finish(t("builder.status_done").format(n=len(ok_candidates_b)))
                                 _bld_status.update(
                                     label=t("builder.status_done").format(n=len(ok_candidates_b)),
                                     state="complete", expanded=False,
@@ -1090,6 +1175,7 @@ with tab_builder:
                                     pass
 
                         except Exception as exc:
+                            _bld_log.finish(t("builder.err_builder"))
                             _bld_status.update(label=t("builder.err_builder"), state="error")
                             st.error(f"Errore Builder: {exc}")
                             with st.expander("Traceback completo", expanded=True):

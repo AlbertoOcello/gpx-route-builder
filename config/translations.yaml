@@ -70,6 +70,14 @@ it:
     status_ordering: "🗺️ Ordino i waypoint e costruisco il percorso..."
     status_done: "✅ Bozza pronta!"
     status_error: "❌ Errore Planner"
+    status_geocoding: "📍 Geocodifica waypoint..."
+    geocode_gate_failed: "⚠️ {n} waypoint non geocodificati"
+    geocode_gate_warning: "I seguenti waypoint non sono stati geocodificati: **{names}**."
+    geocode_gate_hint: >-
+      Puoi correggere il testo del waypoint e ricliccare "Pianifica waypoint",
+      oppure usare Utility → Geolocalizza per trovare le coordinate esatte e
+      incollarle al posto del nome (es. "43.6014,13.37414").
+    btn_continue_anyway: "▶️ Continua comunque"
     naming_spinner: "Claude suggerisce un nome…"
     result_narrative_header: "### Lo spirito del percorso"
     result_narrative_caption: >-
@@ -548,6 +556,14 @@ en:
     status_ordering: "🗺️ Ordering waypoints and building route..."
     status_done: "✅ Draft ready!"
     status_error: "❌ Planner error"
+    status_geocoding: "📍 Geocoding waypoints..."
+    geocode_gate_failed: "⚠️ {n} waypoint(s) not geocoded"
+    geocode_gate_warning: "The following waypoints could not be geocoded: **{names}**."
+    geocode_gate_hint: >-
+      You can fix the waypoint text and click "Plan waypoints" again, or use
+      Utility → Geolocate to find the exact coordinates and paste them instead
+      of the name (e.g. "43.6014,13.37414").
+    btn_continue_anyway: "▶️ Continue anyway"
     naming_spinner: "Claude is suggesting a name…"
     result_narrative_header: "### Route spirit"
     result_narrative_caption: >-
