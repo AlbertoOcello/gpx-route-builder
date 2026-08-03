@@ -63,6 +63,11 @@ _OAB_PROMPT_NOTE = (
     f"candidati DEVI menzionarlo esplicitamente in rationale (es. \"ripercorre parzialmente sé "
     f"stesso per un tratto di andata/ritorno\"), così come già fai per dislivello e distanza. "
     f"Come per la distanza, non è mai da solo motivo di esclusione (discarded).\n"
+    f"- Se analysis.out_and_back_attributions non è vuoto, indica quale via-point specifico causa "
+    f"il tratto ripercorso (waypoint_name) e quanto è lungo (overlap_km): quando menzioni "
+    f"l'andata/ritorno in rationale, sii specifico citando il nome del waypoint invece di restare "
+    f"generico — es. \"il tratto ripercorso è dovuto al waypoint Polverigi, che ha un solo accesso "
+    f"stradale\" invece di una frase vaga senza nominare la causa.\n"
 )
 
 _SYSTEM_PROMPT = """Sei un esperto cicloturistico che aiuta a scegliere il percorso migliore tra tre candidati.
@@ -137,6 +142,7 @@ def run_decision(candidates: list[dict], scored: list[dict], request: dict) -> D
                 "elevation_gain_m": c["analysis"]["elevation_gain_m"],
                 "loop_closed": c["analysis"].get("loop_closed"),
                 "out_and_back_percent": c["analysis"].get("out_and_back_percent"),
+                "out_and_back_attributions": c["analysis"].get("out_and_back_attributions", []),
             },
             "scoring": {
                 "total_score": s["total_score"],

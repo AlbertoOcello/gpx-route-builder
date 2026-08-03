@@ -13,10 +13,13 @@ Uso:
 """
 from __future__ import annotations
 
+import logging
 import time
 
 import httpx
 from geopy.distance import geodesic
+
+log = logging.getLogger(__name__)
 
 # Mirror pubblici di Overpass, provati a rotazione a ogni tentativo — se l'endpoint
 # principale è sotto stress (429/504, osservato in produzione su "Polverigi_5"),
@@ -38,6 +41,18 @@ _SNAP_ROAD_TYPES = (
     "primary|secondary|tertiary|unclassified|residential|service|cycleway|track"
 )
 SNAP_SEARCH_RADIUS = 600  # m
+
+# Filtro anti-vicolo-cieco/accesso-privato (diagnosi "Polverigi_9": lo snap aveva
+# agganciato un waypoint a una highway=service di soli 3 nodi, ~pochi metri —
+# tecnicamente passa il filtro per tipo, ma è quasi certamente un cortile/accesso
+# privato, non una strada di passaggio, e costringe BRouter a un vero e proprio
+# andata/ritorno per toccarlo). Scartiamo le vie troppo corte o con troppo pochi
+# nodi indipendentemente dal tag highway.
+MIN_WAY_LENGTH_M = 80.0
+MIN_WAY_NODES = 4
+# Se nessuna via supera il filtro nel raggio originale, un solo raddoppio prima
+# di ricadere nel comportamento esistente (fallback BRouter diretto o esclusione).
+MAX_SNAP_RADIUS_M = 1200
 
 # Cache in-memory dei soli aggangi RIUSCITI di snap_to_nearest_road, condivisa
 # tra tutte le route generate nel processo (la rete stradale non cambia nel
@@ -101,6 +116,35 @@ def resolve_area_traversal(
     return [pts[round(i * step)] for i in range(n_points)]
 
 
+def _way_length_m(way: dict) -> float:
+    geom = way.get("geometry", [])
+    total = 0.0
+    for i in range(1, len(geom)):
+        total += geodesic(
+            (geom[i - 1]["lat"], geom[i - 1]["lon"]),
+            (geom[i]["lat"], geom[i]["lon"]),
+        ).meters
+    return total
+
+
+def _filter_real_roads(ways: list[dict]) -> list[dict]:
+    """
+    Scarta vie troppo corte o con troppo pochi nodi — indipendentemente dal tag
+    highway, sono quasi sempre accessi privati/cortili/vicoli ciechi minori
+    (es. una highway=service di 3 nodi verso un cortile passa il filtro per
+    tipo ma non è una strada di passaggio — diagnosi "Polverigi_9"/Agugliano).
+    """
+    out = []
+    for w in ways:
+        geom = w.get("geometry", [])
+        if len(geom) < MIN_WAY_NODES:
+            continue
+        if _way_length_m(w) < MIN_WAY_LENGTH_M:
+            continue
+        out.append(w)
+    return out
+
+
 def snap_to_nearest_road(
     lat: float,
     lon: float,
@@ -114,20 +158,29 @@ def snap_to_nearest_road(
     Considera solo highway di passaggio reale (primary/secondary/tertiary/
     unclassified/residential/service/cycleway/track), escludendo footway/steps/
     pedestrian/path isolati (troppo minori/spesso vicoli ciechi in un centro
-    abitato — quelli restano di competenza di resolve_area_traversal).
+    abitato — quelli restano di competenza di resolve_area_traversal). Scarta
+    inoltre le vie troppo corte/con pochi nodi (MIN_WAY_LENGTH_M/MIN_WAY_NODES)
+    — probabili accessi privati anche se il tag highway le farebbe passare.
 
-    Tra le vie trovate, preferisce quelle con tag `ref` o `name` (più probabile
-    siano strade di passaggio vere, non stub residenziali senza sbocco): la
-    ricerca del punto più vicino avviene prima solo su quelle, e ricade sulle
-    altre solo se nessuna via con ref/name è nel raggio.
+    Se nessuna via supera il filtro nel raggio richiesto, allarga il raggio UNA
+    volta (raddoppiato, fino a MAX_SNAP_RADIUS_M) prima di arrendersi — una via
+    di passaggio vera potrebbe semplicemente essere un po' più lontana della
+    prima via (scartata) trovata nel raggio originale.
 
-    Ritorna (lat, lon) del punto agganciato, oppure None se nessuna strada è
-    stata trovata nel raggio (il chiamante mantiene in quel caso il comportamento
-    di fallback esistente).
+    Tra le vie che superano il filtro, preferisce quelle con tag `ref` o `name`
+    (più probabile siano strade di passaggio vere): la ricerca del punto più
+    vicino avviene prima solo su quelle, e ricade sulle altre solo se nessuna
+    via con ref/name è nel raggio.
+
+    Ritorna (lat, lon) del punto agganciato, oppure None se nessuna strada
+    valida è stata trovata nemmeno dopo l'allargamento del raggio (il chiamante
+    mantiene in quel caso il comportamento di fallback esistente).
 
     Solleva OverpassUnavailable se il servizio non risponde con successo dopo
     tutti i tentativi — il chiamante la distingue esplicitamente dal caso "nessuna
-    strada trovata" (vedi candidate_generator._resolve_soft_snaps).
+    strada trovata" (vedi candidate_generator._resolve_soft_snaps). Non viene
+    ritentata con raggio allargato: se il servizio è giù, allargare il raggio
+    non aiuta, serve solo altra attesa.
 
     Gli aggangi riusciti sono cachati a livello di modulo (coordinata arrotondata
     a 5 decimali, ~1m di precisione): la stessa coordinata richiesta da route
@@ -137,21 +190,41 @@ def snap_to_nearest_road(
     if cache_key in _snap_cache:
         return _snap_cache[cache_key]
 
-    query = (
-        f"[out:json][timeout:25];\n"
-        f"(\n"
-        f'  way(around:{radius_m},{lat:.6f},{lon:.6f})'
-        f'  ["highway"~"^({_SNAP_ROAD_TYPES})$"];\n'
-        f");\n"
-        f"out body geom;\n"
-    )
+    def _query_at_radius(r: int) -> list[dict]:
+        query = (
+            f"[out:json][timeout:25];\n"
+            f"(\n"
+            f'  way(around:{r},{lat:.6f},{lon:.6f})'
+            f'  ["highway"~"^({_SNAP_ROAD_TYPES})$"];\n'
+            f");\n"
+            f"out body geom;\n"
+        )
+        return _query_overpass(query)  # OverpassUnavailable si propaga al chiamante
 
-    ways = _query_overpass(query)  # OverpassUnavailable si propaga al chiamante
-    if not ways:
+    current_radius = radius_m
+    candidates_filtered: list[dict] = []
+    while True:
+        ways = _query_at_radius(current_radius)
+        candidates_filtered = _filter_real_roads(ways)
+        if candidates_filtered or current_radius >= MAX_SNAP_RADIUS_M:
+            break
+        next_radius = min(current_radius * 2, MAX_SNAP_RADIUS_M)
+        log.info(
+            "snap_to_nearest_road (%.6f,%.6f): nessuna via valida entro %dm "
+            "(%d vie trovate, tutte scartate per lunghezza/nodi insufficienti) "
+            "— allargo il raggio a %dm.",
+            lat, lon, current_radius, len(ways), next_radius,
+        )
+        current_radius = next_radius
+
+    if not candidates_filtered:
         return None
 
-    named_ways = [w for w in ways if (w.get("tags") or {}).get("ref") or (w.get("tags") or {}).get("name")]
-    candidates = named_ways or ways
+    named_ways = [
+        w for w in candidates_filtered
+        if (w.get("tags") or {}).get("ref") or (w.get("tags") or {}).get("name")
+    ]
+    candidates = named_ways or candidates_filtered
 
     best_point: tuple[float, float] | None = None
     best_dist = float("inf")

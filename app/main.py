@@ -48,8 +48,24 @@ from scoring_engine import score_candidate
 from user_memory import load_user_memory, merge_memory_with_request
 import db
 
+def _app_version() -> str:
+    try:
+        return (Path(__file__).parent.parent / "VERSION").read_text().strip()
+    except OSError:
+        return "dev"
+
+
+def _build_commit() -> str:
+    # "Baked" nell'immagine Docker al momento della build (Dockerfile ARG
+    # GIT_COMMIT) — in sviluppo locale senza build-arg resta "unknown" a
+    # livello di ENV, mostrato come "dev" invece di rompere.
+    commit = os.environ.get("GIT_COMMIT", "unknown")
+    return "dev" if commit == "unknown" else commit
+
+
 st.set_page_config(page_title=t("app.page_title"), layout="wide")
 st.title(t("app.title"))
+st.caption(f"v{_app_version()} · build {_build_commit()}")
 render_language_selector()
 
 tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = st.tabs([

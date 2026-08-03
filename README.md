@@ -269,9 +269,10 @@ Poi avvia con rebuild:
 docker compose up --build
 ```
 
-Per pubblicare una nuova immagine su Docker Hub:
+Per pubblicare una nuova immagine su Docker Hub (passa sempre l'hash del
+commit corrente, mostrato poi nella app sotto il titolo):
 
 ```bash
-docker build -t albertoocello/gpx-route-builder:latest .
+docker build --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t albertoocello/gpx-route-builder:latest .
 docker push albertoocello/gpx-route-builder:latest
 ```

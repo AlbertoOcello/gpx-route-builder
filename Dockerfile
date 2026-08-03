@@ -18,6 +18,14 @@ COPY app/ ./app/
 COPY brouter/ ./brouter/
 COPY config/ ./config/
 COPY routes/ ./routes/
+COPY VERSION ./VERSION
+
+# Hash del commit "baked" al momento della build — passare sempre
+# --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) in fase di build.
+# Senza build-arg (es. sviluppo locale) resta "unknown", letto dall'app come
+# fallback "dev" invece di rompere.
+ARG GIT_COMMIT=unknown
+ENV GIT_COMMIT=$GIT_COMMIT
 
 # Download segments4 at first run (handled by entrypoint)
 COPY docker-entrypoint.sh /docker-entrypoint.sh

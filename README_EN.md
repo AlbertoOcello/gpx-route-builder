@@ -269,9 +269,10 @@ Then start with rebuild:
 docker compose up --build
 ```
 
-To publish a new image to Docker Hub:
+To publish a new image to Docker Hub (always pass the current commit hash,
+shown in the app under the title):
 
 ```bash
-docker build -t albertoocello/gpx-route-builder:latest .
+docker build --build-arg GIT_COMMIT=$(git rev-parse --short HEAD) -t albertoocello/gpx-route-builder:latest .
 docker push albertoocello/gpx-route-builder:latest
 ```
