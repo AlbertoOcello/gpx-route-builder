@@ -639,8 +639,11 @@ with tab_planner:
         st.session_state["pl_athletic"] = "medio"
         st.session_state["pl_direction"] = t("planner.form.direction_free")
         st.session_state["pl_ename"] = ""
-        st.session_state["pl_elat"] = 43.6158
-        st.session_state["pl_elon"] = 13.5189
+        # None, non un default hardcoded plausibile (era la causa del bug
+        # "finisce sempre ad Ancona": 43.6158/13.5189 sembravano coordinate
+        # vere e passavano inosservate se l'utente scriveva solo il nome).
+        st.session_state["pl_elat"] = None
+        st.session_state["pl_elon"] = None
         st.session_state["pl_wps"] = ""
         st.session_state["pl_elevpref"] = t("planner.form.elevation_pref_none")
         st.session_state["pl_avoid"] = ""
@@ -678,8 +681,10 @@ with tab_planner:
             _load_dir = _load_req.get("geographic_direction")
             st.session_state["pl_direction"] = _load_dir or t("planner.form.direction_free")
             st.session_state["pl_ename"] = _load_end.get("name", "")
-            st.session_state["pl_elat"] = _load_end.get("lat", 43.6158)
-            st.session_state["pl_elon"] = _load_end.get("lon", 13.5189)
+            # None se la route caricata non aveva un end (es. era un loop) —
+            # non le coordinate di Ancona come prima.
+            st.session_state["pl_elat"] = _load_end.get("lat")
+            st.session_state["pl_elon"] = _load_end.get("lon")
             # "!" finale ricostruito per i waypoint mandatory=True — stesso
             # formato testuale che _parse_pl_waypoint_line si aspetta in input.
             st.session_state["pl_wps"] = "\n".join(
@@ -778,11 +783,47 @@ with tab_planner:
             st.markdown(t("planner.end_label"))
             col_e1, col_e2, col_e3 = st.columns([2, 1, 1])
             with col_e1:
-                pl_end_name = st.text_input(t("planner.form.end_name"), key="pl_ename", placeholder=t("planner.form.end_name_placeholder"))
+                _enc, _ebc = st.columns([3, 1])
+                with _enc:
+                    pl_end_name = st.text_input(
+                        t("planner.form.end_name"), key="pl_ename",
+                        placeholder=t("planner.form.end_name_placeholder"),
+                    )
+                with _ebc:
+                    st.write("")  # allinea verticalmente con il label dell'input
+                    geo_end_btn = st.button(
+                        "📍", key="btn_geo_end",
+                        help=t("planner.geo_btn_help"),
+                        use_container_width=True,
+                    )
+                # Geocoding QUI: aggiorna session_state prima che col_e2/col_e3
+                # leggano i valori — stesso pattern del punto di partenza sopra.
+                if geo_end_btn:
+                    _gname_end = (st.session_state.get("pl_ename") or "").strip()
+                    if _gname_end:
+                        from geocoding_agent import geocode_place as _gp
+                        with st.spinner(f"Geocoding «{_gname_end}»…"):
+                            _gresult_end = _gp(_gname_end, region=None)
+                        if _gresult_end:
+                            st.session_state["pl_elat"] = _gresult_end[0]
+                            st.session_state["pl_elon"] = _gresult_end[1]
+                        else:
+                            st.warning(f"«{_gname_end}» {t('planner.geo_not_found')}")
+            # value=None esplicito (a differenza di Start, che ha sempre un
+            # default reale): qui l'assenza di coordinate deve restare uno
+            # stato visibile — campo vuoto, non un numero plausibile mai
+            # aggiornato (era esattamente la causa del bug "finisce sempre ad
+            # Ancona"). Il valore digitato/geocodificato resta comunque in
+            # session_state tra un rerun e l'altro, come per tutti gli altri
+            # widget con key= di questo form.
             with col_e2:
-                pl_end_lat = st.number_input(t("planner.form.end_lat"), value=43.6158, format="%.7f", key="pl_elat")
+                pl_end_lat = st.number_input(
+                    t("planner.form.end_lat"), value=None, format="%.7f", key="pl_elat",
+                )
             with col_e3:
-                pl_end_lon = st.number_input(t("planner.form.end_lon"), value=13.5189, format="%.7f", key="pl_elon")
+                pl_end_lon = st.number_input(
+                    t("planner.form.end_lon"), value=None, format="%.7f", key="pl_elon",
+                )
         else:
             pl_end_name, pl_end_lat, pl_end_lon = None, None, None
 
@@ -1095,10 +1136,16 @@ with tab_planner:
                 st.error(f"Errore Planner: {exc}")
 
     if plan_btn or regen_btn:
-        request_to_use = _pl_build_request()
-        st.session_state["pl_request"] = request_to_use
-        st.session_state.pop("pl_geocode_gate", None)
-        _run_planner_generation(request_to_use, load_user_memory())
+        # Safety net: nome arrivo scritto ma coordinate mai geocodificate (né
+        # col bottone 📍 né a mano) — bloccare qui, non lasciar passare valori
+        # vuoti/None fino a _pl_build_request come se fosse un end valido.
+        if pl_route_type == "point_to_point" and (pl_end_name or "").strip() and (pl_end_lat is None or pl_end_lon is None):
+            st.error(t("planner.end_not_geocoded"))
+        else:
+            request_to_use = _pl_build_request()
+            st.session_state["pl_request"] = request_to_use
+            st.session_state.pop("pl_geocode_gate", None)
+            _run_planner_generation(request_to_use, load_user_memory())
 
     # ── Gate di geocodifica — mostrato se l'ultimo check ha trovato waypoint
     # non geocodificati; resta finché l'utente non sceglie come procedere ────
