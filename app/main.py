@@ -44,6 +44,7 @@ from planner_agent import (
     generate_raw_route,
     generate_strategies,
     _geocode_user_waypoints,
+    _COORD_RE,
 )
 from scoring_engine import score_candidate
 from user_memory import load_user_memory, merge_memory_with_request
@@ -1286,11 +1287,21 @@ with tab_planner:
         )
 
         def _parse_pl_waypoint_line(raw: str) -> UserWaypointInput:
-            """'!' finale (anche con spazi prima) marca il waypoint come obbligatorio."""
+            """
+            '!' finale (anche con spazi prima) marca il waypoint come obbligatorio.
+            Una coordinata lat,lon grezza è SEMPRE mandatory, con o senza '!':
+            chi scrive coordinate precise sta indicando un punto esatto del
+            percorso, non un riferimento di zona come farebbe con un nome di
+            località (che resta soft di default, invariato — richiede '!'
+            esplicito). Lo stesso '!' su una coordinata resta valido ma
+            ridondante, nessun comportamento diverso.
+            """
             s = raw.strip()
             mandatory = s.endswith("!")
             if mandatory:
                 s = s[:-1].rstrip()
+            if _COORD_RE.match(s):
+                mandatory = True
             return UserWaypointInput(name=s, mandatory=mandatory)
 
         def _pl_build_request() -> RouteRequest:
@@ -1517,6 +1528,7 @@ with tab_planner:
                         request_to_use.user_waypoints,
                         region=f"{request_to_use.start.name}, Italia",
                         start_coords=(request_to_use.start.lat, request_to_use.start.lon),
+                        free_text=request_to_use.free_text,
                     )
                     failed_wps = [w for w in geocoded_wps if w.get("geocoding_failed")]
                     if failed_wps:

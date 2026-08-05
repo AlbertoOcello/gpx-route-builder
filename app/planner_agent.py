@@ -243,6 +243,12 @@ Il JSON deve essere l'ULTIMO blocco nella risposta e contenere TUTTI i campi:
 
 _COORD_RE = re.compile(r"^\s*(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
 
+# Stesso pattern di _COORD_RE ma non ancorato all'inizio stringa — usato per
+# trovare coordinate incastonate in una frase di free_text (es. "passa vicino
+# a 43.65315,13.34274 prima di..."), non l'intera riga come nel campo
+# waypoint dedicato.
+_COORD_ANYWHERE_RE = re.compile(r"(-?\d{1,3}(?:\.\d+)?)\s*,\s*(-?\d{1,3}(?:\.\d+)?)")
+
 
 # ── Modello Pydantic interno per validare la risposta di generate_raw_route ──
 
@@ -267,6 +273,54 @@ def _parse_user_waypoint(s: str) -> tuple[str, float | None, float | None]:
         lat, lon = float(m.group(1)), float(m.group(2))
         return f"{lat},{lon}", lat, lon
     return s.strip(), None, None
+
+
+_FREE_TEXT_COORD_DEDUP_M = 200.0  # stessa soglia di _deduplicate_waypoints
+
+
+def _extract_free_text_coord_waypoints(
+    free_text: str,
+    existing_wps: list[UserWaypointInput],
+    start_coords: tuple[float, float] | None,
+    dedup_threshold_m: float = _FREE_TEXT_COORD_DEDUP_M,
+) -> list[UserWaypointInput]:
+    """
+    Estrae coordinate lat,lon scritte in prosa dentro free_text (non nel
+    campo waypoint dedicato) e le trasforma in UserWaypointInput
+    mandatory=True — stesso trattamento riservato a una coordinata scritta
+    nel campo dedicato (fix "coordinate grezze → mandatory di default"): chi
+    scrive una coordinata precisa, ovunque la scriva, sta specificando un
+    punto esatto del percorso, non un riferimento di zona.
+
+    Non tocca free_text: il testo resta invariato e la coordinata vi
+    compare comunque in prosa (ridondanza innocua) — questa funzione serve
+    solo ad aggiungerla alla lista strutturata dei waypoint inviata al
+    Planner AI, in aggiunta a quelli già nel campo dedicato.
+
+    Deduplica (stessa soglia di _deduplicate_waypoints, 200m) contro le
+    coordinate già presenti in existing_wps e contro lo start — una
+    coordinata già scritta nel campo dedicato, o ripetuta più volte nel
+    free_text, non deve comparire due volte nella lista finale.
+    """
+    if not free_text:
+        return []
+
+    known_coords: list[tuple[float, float]] = []
+    for wp in existing_wps:
+        _, lat, lon = _parse_user_waypoint(wp.name)
+        if lat is not None:
+            known_coords.append((lat, lon))
+    if start_coords:
+        known_coords.append(start_coords)
+
+    extracted: list[UserWaypointInput] = []
+    for lat_s, lon_s in _COORD_ANYWHERE_RE.findall(free_text):
+        lat, lon = float(lat_s), float(lon_s)
+        if any(geodesic((lat, lon), k).meters < dedup_threshold_m for k in known_coords):
+            continue
+        known_coords.append((lat, lon))  # evita anche doppioni interni al free_text stesso
+        extracted.append(UserWaypointInput(name=f"{lat},{lon}", mandatory=True))
+    return extracted
 
 
 # ── Normalizzazione waypoint utente ──────────────────────────────────────────
@@ -325,6 +379,7 @@ def _geocode_user_waypoints(
     user_wps: list[UserWaypointInput],
     region: str = "Italia",
     start_coords: tuple[float, float] | None = None,
+    free_text: str = "",
 ) -> list[dict]:
     """
     Geocodifica la lista di waypoint utente.
@@ -340,11 +395,18 @@ def _geocode_user_waypoints(
     Il flag mandatory di ciascun UserWaypointInput viene riportato invariato
     nel dict risultante (vedi UserWaypointInput per la semantica).
 
+    free_text: se presente, viene scansionato per coordinate lat,lon scritte
+    in prosa (vedi _extract_free_text_coord_waypoints) — trattate esattamente
+    come se fossero nel campo waypoint dedicato (mandatory=True, stesso
+    geocoding a costo zero). Il testo stesso non viene mai modificato.
+
     Restituisce list[dict] con chiavi:
       name, lat, lon, source, mandatory, geocoding_failed,
       proximity_warning (opt.), dist_from_start_km (opt.)
     """
     from geocoding_agent import geocode_place  # import locale per evitare dipendenze circolari
+
+    user_wps = list(user_wps) + _extract_free_text_coord_waypoints(free_text, user_wps, start_coords)
 
     fallback_regions = list(dict.fromkeys([region, "Marche, Italia", "Italia"]))
     # Nome della città di partenza (per il contesto della normalizzazione Claude)
@@ -655,6 +717,82 @@ def _check_bearing_compliance(
     return out
 
 
+_MANDATORY_ENFORCE_TOLERANCE_M = 20.0
+# Tolleranza per abbinare un waypoint "user" nella risposta di Claude al
+# corrispondente waypoint di input geocodificato — solo arrotondamenti
+# minimi attesi (Claude non dovrebbe alterare le coordinate "user", per
+# system prompt), non un margine per un match incerto/geografico.
+
+
+def _enforce_user_mandatory(
+    ordered_wps: list[WaypointOrdered],
+    geocoded_user_wps: list[dict],
+) -> None:
+    """
+    Sovrascrive IN PLACE il campo mandatory di ogni waypoint source="user"
+    nella risposta di Claude con il valore noto dall'input geocodificato,
+    ignorando cosa ha risposto il modello in quel campo.
+
+    Perché: mandatory di un waypoint utente è un dato che l'applicazione
+    conosce con certezza PRIMA di interpellare l'AI (dal campo waypoint
+    dedicato, o dall'estrazione di coordinate dal free_text — entrambi
+    deterministici, vedi _extract_free_text_coord_waypoints). Il system
+    prompt chiede esplicitamente a Claude di riportarlo invariato ("non
+    declassarlo mai"), ma verificato empiricamente che il modello a volte
+    non rispetta l'istruzione — non un problema di trasmissione dati (il
+    valore corretto arriva sempre nel prompt), un'inadempienza probabilistica
+    del modello. Non ha senso fidarsi della sua eco su un campo il cui
+    valore vero è già certo a monte: qui lo si applica sistematicamente a
+    ogni waypoint utente, non solo ai casi già osservati come sbagliati.
+
+    Solo waypoint role="via" — start/end non hanno un mandatory significativo
+    (sempre false per costruzione) e non hanno un corrispondente in
+    geocoded_user_wps (quella lista copre solo i via, vedi _geocode_user_waypoints).
+    Waypoint source="planner" non toccati: l'AI li decide da zero, non
+    hanno un valore di input con cui confrontarsi.
+
+    Match per coordinata (tolleranza minima, solo arrotondamenti) — se più
+    di un candidato entro tolleranza (waypoint di input molto vicini tra
+    loro), usa il nome come tie-break prima di ricadere sul più vicino.
+    Nessun match entro tolleranza → waypoint lasciato invariato (non
+    dovrebbe succedere per un via "user" con coordinate non alterate, ma
+    non è motivo per far fallire la generazione).
+    """
+    for wp in ordered_wps:
+        if wp.source != "user" or wp.role != "via" or wp.lat is None or wp.lon is None:
+            continue
+
+        candidates = []
+        for gwp in geocoded_user_wps:
+            if gwp.get("geocoding_failed") or gwp.get("lat") is None:
+                continue
+            dist = geodesic((wp.lat, wp.lon), (gwp["lat"], gwp["lon"])).meters
+            if dist <= _MANDATORY_ENFORCE_TOLERANCE_M:
+                candidates.append((dist, gwp))
+        if not candidates:
+            continue
+
+        candidates.sort(key=lambda t: t[0])
+        best = candidates[0][1]
+        if len(candidates) > 1:
+            name_match = next(
+                (g for _, g in candidates
+                 if g.get("name", "").strip().lower() == wp.name.strip().lower()),
+                None,
+            )
+            if name_match is not None:
+                best = name_match
+
+        true_mandatory = bool(best["mandatory"])
+        if wp.mandatory != true_mandatory:
+            log.warning(
+                "Enforcement mandatory: Claude ha risposto mandatory=%s per '%s' "
+                "(%.5f,%.5f) — valore reale dall'input: %s. Corretto.",
+                wp.mandatory, wp.name, wp.lat, wp.lon, true_mandatory,
+            )
+        wp.mandatory = true_mandatory
+
+
 def generate_raw_route(
     request: RouteRequest,
     user_memory: dict | None = None,
@@ -694,6 +832,7 @@ def generate_raw_route(
         request.user_waypoints,
         region=region,
         start_coords=start_coords,
+        free_text=request.free_text,
     )
 
     warnings: list[str] = []
@@ -728,6 +867,8 @@ def generate_raw_route(
 
     raw = json.loads(_extract_json(text))
     validated = _RawRouteOutput.model_validate(raw)
+
+    _enforce_user_mandatory(validated.ordered_waypoints, geocoded)
 
     deduped, dedup_warnings = _deduplicate_waypoints(validated.ordered_waypoints)
     warnings.extend(dedup_warnings)
