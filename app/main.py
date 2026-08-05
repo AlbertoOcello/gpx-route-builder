@@ -99,7 +99,8 @@ st.title(t("app.title"))
 st.caption(f"v{_app_version()} · build {_build_commit()}")
 render_language_selector()
 
-tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = st.tabs([
+tab_file, tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = st.tabs([
+    t("tabs.file"),
     t("tabs.planner"),
     t("tabs.builder"),
     t("tabs.optimizer"),
@@ -487,6 +488,92 @@ def _load_saved_routes() -> dict[str, dict]:
     return routes
 
 
+def _open_route_name() -> str | None:
+    """
+    Nome della route corrente "aperta" nel workspace (navigazione tipo
+    "documento aperto") — None se nessuna route è aperta. Riusa lo stesso
+    session_state già scritto da "Carica nel Planner"/File→Apri
+    (pl_loaded_route_name) come unica fonte di verità, invece di introdurre
+    un secondo stato da tenere sincronizzato: chi apre una route la carica
+    comunque nel Planner (stesso meccanismo), quindi i due concetti
+    coincidono per costruzione.
+    """
+    return st.session_state.get("pl_loaded_route_name")
+
+
+def _open_route_pending(_load_name: str) -> None:
+    """Segnala l'apertura di una route (File→Apri, o scorciatoie equivalenti
+    nei placeholder workspace) — stesso meccanismo di "Carica nel Planner"."""
+    st.session_state["_pl_load_route_pending"] = _load_name
+
+
+def _render_no_route_placeholder(saved_routes: dict[str, dict]) -> None:
+    """
+    Placeholder condiviso dai tab workspace vincolati a una route aperta
+    (oggi solo Builder — per costruzione richiede sempre una route salvata;
+    Planner/Ride Analysis/Post Ride/GPX Optimizer restano invece sempre
+    utilizzabili, vedi discussione di design). Include una scorciatoia
+    "Apri" inline equivalente a quella nel tab File — st.tabs non permette
+    di cambiare tab attivo da codice server-side, quindi la scorciatoia
+    reale è questo mini-selettore, non un link cliccabile al tab File.
+    """
+    st.info(f"**{t('workspace.no_route_title')}** — {t('workspace.no_route_hint')}")
+    if saved_routes:
+        _ph_sel = st.selectbox(
+            t("file.open_select"),
+            [t("builder.select_placeholder")] + list(saved_routes.keys()),
+            key="ws_placeholder_sel",
+        )
+        if _ph_sel != t("builder.select_placeholder"):
+            if st.button(t("file.open_btn"), key="ws_placeholder_open_btn", type="primary"):
+                _open_route_pending(_ph_sel)
+                st.rerun()
+
+
+def _has_unsaved_planner_work() -> bool:
+    """
+    True se c'è una pianificazione in corso nel Planner non ancora salvata —
+    usato da "Nuovo" (tab File) per decidere se avvisare prima di scartarla.
+
+    Due casi: (1) pl_dirty — una generazione IA (Pianifica/Rigenera) fatta e
+    non ancora salvata, impostato/azzerato esplicitamente attorno a quei
+    flussi; (2) nessuna generazione ancora, ma il form ha campi scritti
+    (waypoint, nome partenza) rispetto ai default E nessuna route è
+    caricata — un form "sporco" dopo aver caricato una route è normale, non
+    è lavoro incompiuto.
+    """
+    if st.session_state.get("pl_dirty"):
+        return True
+    if st.session_state.get("pl_loaded_route_name"):
+        return False
+    if (st.session_state.get("pl_wps") or "").strip():
+        return True
+    if (st.session_state.get("pl_sname") or "Senigallia") != "Senigallia":
+        return True
+    return False
+
+
+def _reset_planner_draft() -> None:
+    """
+    Pulisce lo stato del Planner e prepara il form vuoto per una nuova
+    pianificazione (non tocca route già salvate su disco). Stessa logica
+    del vecchio bottone "Reset" nel Planner — ora richiamata solo da
+    "Nuovo" nel tab File (unico punto d'ingresso per "ricomincia da capo",
+    coerente con la navigazione a documento aperto: avere due bottoni con
+    conferme diverse per la stessa azione sarebbe stata una scappatoia per
+    bypassare l'avviso di lavoro non salvato).
+    """
+    _pl_flow_keys = [
+        "pl_result", "pl_request", "pl_naming_active", "pl_dirty",
+        "pl_name_suggestion", "pl_route_name_final", "pl_loaded_route_name",
+    ]
+    for _k in _pl_flow_keys:
+        st.session_state.pop(_k, None)
+    for _k in [k for k in st.session_state if k.startswith("pl_saved_")]:
+        st.session_state.pop(_k, None)
+    st.session_state["_pl_reset_pending"] = True
+
+
 def _normalize_builder_results(data: dict) -> list[dict]:
     """
     builder_results è una lista di run Builder (una per generazione, accumula
@@ -554,6 +641,113 @@ def _delete_route_artifacts(route_data: dict) -> None:
             pass
 
 
+def _delete_route_completely(route_name: str, route_data: dict) -> None:
+    """
+    Elimina una route per intero (File → Le mie route → 🗑️): stessa cascata
+    di _delete_route_artifacts (GPX generati + report Ride Analysis), più il
+    JSON stesso — a differenza di "Aggiorna", che riusa _delete_route_artifacts
+    da solo per poi riscrivere il JSON con le liste azzerate, qui non c'è
+    nulla da riscrivere.
+    """
+    _delete_route_artifacts(route_data)
+    (_PLANNED_DIR / f"{route_name}.json").unlink(missing_ok=True)
+
+
+def _rename_route(old_name: str, new_name: str) -> Path:
+    """
+    Rinomina una route: file JSON su disco + campo route_name interno.
+    I GPX già generati con il vecchio nome NON vengono toccati — restano
+    "{old_name}_{label}" come nome interno <trk><name>, comportamento voluto
+    e verificato in una sessione precedente (solo le nuove generazioni dopo
+    il rename usano il nome aggiornato). Il chiamante deve aver già
+    verificato che new_name non sia già in uso.
+    """
+    old_path = _PLANNED_DIR / f"{old_name}.json"
+    data = json.loads(old_path.read_text(encoding="utf-8"))
+    data["route_name"] = new_name
+    new_path = _PLANNED_DIR / f"{new_name}.json"
+    new_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    old_path.unlink()
+    return new_path
+
+
+def _fmt_size_bytes(n: int) -> str:
+    if n >= 1_000_000:
+        return f"{n / 1_000_000:.1f} MB"
+    return f"{n / 1000:.1f} KB"
+
+
+def _find_orphan_gpx_dirs() -> list[dict]:
+    """
+    Cartelle in routes/generated/ non referenziate da builder_results in
+    NESSUNA route salvata — confronta per nome cartella (es. "20260803_220229"),
+    non per path assoluto: i path salvati nel JSON sono quelli visti dal
+    processo Python (assoluti, dentro il container), mentre qui iteriamo il
+    filesystem con path relativi — il nome cartella è l'unico identificatore
+    stabile condiviso tra le due rappresentazioni.
+    """
+    referenced_names = set()
+    for route_data in _load_saved_routes().values():
+        for d in _count_route_artifacts(route_data)["gpx_dirs"]:
+            referenced_names.add(Path(d).name)
+
+    gen_dir = Path("routes/generated")
+    orphans = []
+    if gen_dir.exists():
+        for d in sorted(gen_dir.iterdir()):
+            if d.is_dir() and d.name not in referenced_names:
+                gpx_files = list(d.glob("*.gpx"))
+                orphans.append({
+                    "path": d,
+                    "n_files": len(gpx_files),
+                    "size_bytes": sum(f.stat().st_size for f in gpx_files),
+                    "mtime": d.stat().st_mtime,
+                })
+    return orphans
+
+
+def _find_orphan_ride_reports() -> list[Path]:
+    """Stessa idea di _find_orphan_gpx_dirs, per i report HTML di Ride Analysis
+    (_RIDE_REPORTS_DIR) non referenziati da nessun ride_analysis_history."""
+    referenced_names = set()
+    for route_data in _load_saved_routes().values():
+        for r in route_data.get("ride_analysis_history", []):
+            rp = r.get("report_path")
+            if rp:
+                referenced_names.add(Path(rp).name)
+
+    orphans = []
+    if _RIDE_REPORTS_DIR.exists():
+        for f in sorted(_RIDE_REPORTS_DIR.glob("*.html")):
+            if f.name not in referenced_names:
+                orphans.append(f)
+    return orphans
+
+
+def _find_route_winner_gpx(route_name: str) -> tuple[Path, str, str] | None:
+    """
+    (gpx_path, candidate_id, profile) del candidato vincitore dell'ultima run
+    Builder per questa route — None se la route non ha ancora nessuna run,
+    se l'ultima run non ha un vincitore deciso, o se il suo GPX non esiste
+    più su disco. Usato dalla scorciatoia "usa il vincitore" di GPX Optimizer.
+    """
+    route_data = _load_saved_routes().get(route_name)
+    if not route_data:
+        return None
+    runs = _normalize_builder_results(route_data)
+    if not runs:
+        return None
+    winner_id = (runs[-1].get("decision") or {}).get("winner")
+    if not winner_id:
+        return None
+    for c in runs[-1].get("candidates", []):
+        if c.get("id") == winner_id and c.get("gpx_path"):
+            p = Path(c["gpx_path"])
+            if p.exists():
+                return p, winner_id, c.get("profile", "")
+    return None
+
+
 def _save_planned_route(
     route_name: str,
     request: RouteRequest,
@@ -616,6 +810,247 @@ def _analyze_gpx_bytes(raw: bytes) -> tuple[list, list, dict]:
         try: os.unlink(tmp_path)
         except OSError: pass
     return pts, coords, analysis
+
+
+# ─── Tab: File ────────────────────────────────────────────────────────────────
+# Punto di ingresso/gestione route, sempre accessibile (navigazione tipo
+# "documento aperto" — non solo schermata di avvio). File orfani arriva
+# nella parte successiva di questa ristrutturazione.
+with tab_file:
+    st.subheader(t("tabs.file"))
+    st.caption(t("file.caption"))
+
+    _file_open_now = _open_route_name()
+    if _file_open_now:
+        st.success(t("file.currently_open").format(name=_file_open_now))
+
+    # ── Nuovo ──────────────────────────────────────────────────────────────
+    st.markdown(t("file.new_header"))
+    if st.button(t("file.new_btn"), key="file_new_btn"):
+        if _has_unsaved_planner_work():
+            st.session_state["_file_new_confirm_pending"] = True
+        else:
+            _reset_planner_draft()
+        st.rerun()
+
+    if st.session_state.get("_file_new_confirm_pending"):
+        st.warning(t("file.new_unsaved_warning"))
+        _fn_c1, _fn_c2 = st.columns(2)
+        with _fn_c1:
+            if st.button(t("file.new_confirm_btn"), key="file_new_confirm_yes", type="primary"):
+                st.session_state.pop("_file_new_confirm_pending", None)
+                _reset_planner_draft()
+                st.rerun()
+        with _fn_c2:
+            if st.button(t("debug.cancel_delete_btn"), key="file_new_confirm_no"):
+                st.session_state.pop("_file_new_confirm_pending", None)
+                st.rerun()
+
+    st.divider()
+
+    # ── Apri ───────────────────────────────────────────────────────────────
+    st.markdown(t("file.open_header"))
+    _file_routes = _load_saved_routes()
+    if not _file_routes:
+        st.caption(t("debug.no_routes"))
+    else:
+        _file_sel = st.selectbox(
+            t("file.open_select"),
+            [t("builder.select_placeholder")] + list(_file_routes.keys()),
+            key="file_open_sel",
+        )
+        if _file_sel != t("builder.select_placeholder"):
+            if st.button(t("file.open_btn"), key="file_open_btn", type="primary"):
+                _open_route_pending(_file_sel)
+                st.rerun()
+
+    # ── Recenti ────────────────────────────────────────────────────────────
+    # created_at viene riscritto ad ogni salvataggio (sia "Salva come nuova"
+    # che "Aggiorna", vedi _save_planned_route) — funziona già come "ultima
+    # modifica" anche se il nome del campo suggerisce solo la creazione,
+    # nessun nuovo campo updated_at necessario.
+    st.divider()
+    st.markdown(t("file.recent_header"))
+    if not _file_routes:
+        st.caption(t("debug.no_routes"))
+    else:
+        _recent_routes = sorted(
+            _file_routes.items(), key=lambda kv: kv[1].get("created_at", ""), reverse=True,
+        )[:5]
+        for _rcname, _rcdata in _recent_routes:
+            _rcc1, _rcc2 = st.columns([5, 1])
+            with _rcc1:
+                st.caption(f"**{_rcname}** — {_rcdata.get('created_at', '—')}")
+            with _rcc2:
+                if st.button(t("file.open_btn"), key=f"file_recent_open_{_rcname}"):
+                    _open_route_pending(_rcname)
+                    st.rerun()
+
+    # ── Le mie route ───────────────────────────────────────────────────────
+    st.divider()
+    st.markdown(t("file.myroutes_header"))
+    if not _file_routes:
+        st.caption(t("debug.no_routes"))
+    else:
+        for _mname, _mdata in _file_routes.items():
+            _mcounts = _count_route_artifacts(_mdata)
+            _mcompares = len(_mdata.get("comparison_history", []))
+            with st.container(border=True):
+                _mc1, _mc2, _mc3, _mc4 = st.columns([3, 1, 1, 1])
+                with _mc1:
+                    st.markdown(f"**{_mname}**")
+                    st.caption(
+                        t("file.myroutes_summary").format(
+                            created=_mdata.get("created_at", "—"),
+                            builder=_mcounts["builder_runs"],
+                            ride=_mcounts["ride_analyses"],
+                            compare=_mcompares,
+                            feedback=_mcounts["feedbacks"],
+                        )
+                    )
+                with _mc2:
+                    if st.button("📂", key=f"file_my_open_{_mname}", help=t("file.open_btn")):
+                        _open_route_pending(_mname)
+                        st.rerun()
+                with _mc3:
+                    if st.button("✏️", key=f"file_my_rename_btn_{_mname}", help=t("file.rename_btn")):
+                        st.session_state[f"_file_rename_pending_{_mname}"] = True
+                        st.rerun()
+                with _mc4:
+                    if st.button("🗑️", key=f"file_my_del_btn_{_mname}", help=t("file.delete_btn")):
+                        st.session_state[f"_file_delete_pending_{_mname}"] = True
+                        st.rerun()
+
+                # ── Rinomina inline ──────────────────────────────────────────
+                if st.session_state.get(f"_file_rename_pending_{_mname}"):
+                    _new_name = st.text_input(
+                        t("file.rename_prompt"), value=_mname, key=f"file_rename_input_{_mname}",
+                    )
+                    _rn_c1, _rn_c2 = st.columns(2)
+                    with _rn_c1:
+                        if st.button(
+                            t("file.rename_confirm_btn"), key=f"file_rename_confirm_{_mname}", type="primary",
+                        ):
+                            _new_name_clean = _new_name.strip()
+                            if not _new_name_clean:
+                                st.error(t("file.rename_empty_error"))
+                            elif _new_name_clean == _mname:
+                                st.session_state.pop(f"_file_rename_pending_{_mname}", None)
+                                st.rerun()
+                            elif _new_name_clean in _file_routes:
+                                st.error(t("planner.save_new_name_conflict").format(name=_new_name_clean))
+                            else:
+                                _rename_route(_mname, _new_name_clean)
+                                # I GPX/report già generati restano col vecchio nome
+                                # (comportamento voluto) — solo il riferimento alla
+                                # route "aperta" segue il rename, se era questa.
+                                if _open_route_name() == _mname:
+                                    st.session_state["pl_loaded_route_name"] = _new_name_clean
+                                st.session_state.pop(f"_file_rename_pending_{_mname}", None)
+                                st.success(t("file.rename_success").format(old=_mname, new=_new_name_clean))
+                                st.rerun()
+                    with _rn_c2:
+                        if st.button(t("debug.cancel_delete_btn"), key=f"file_rename_cancel_{_mname}"):
+                            st.session_state.pop(f"_file_rename_pending_{_mname}", None)
+                            st.rerun()
+
+                # ── Elimina con doppia conferma e conteggi esatti ────────────
+                if st.session_state.get(f"_file_delete_pending_{_mname}"):
+                    st.warning(
+                        t("file.delete_confirm_msg").format(
+                            name=_mname,
+                            builder=_mcounts["builder_runs"],
+                            ride=_mcounts["ride_analyses"],
+                            compare=_mcompares,
+                            feedback=_mcounts["feedbacks"],
+                            files=_mcounts["gpx_file_count"] + len(_mcounts["report_files"]),
+                        )
+                    )
+                    _dl_c1, _dl_c2 = st.columns(2)
+                    with _dl_c1:
+                        if st.button(t("debug.confirm_delete_btn"), key=f"file_del_confirm_{_mname}", type="primary"):
+                            _delete_route_completely(_mname, _mdata)
+                            # Se stavo lavorando proprio su questa route, torno a
+                            # una bozza vuota (non ha senso lasciare il Planner a
+                            # mostrare dati di una route ora cancellata).
+                            if _open_route_name() == _mname:
+                                _reset_planner_draft()
+                            st.session_state.pop(f"_file_delete_pending_{_mname}", None)
+                            st.success(t("file.delete_success").format(name=_mname))
+                            st.rerun()
+                    with _dl_c2:
+                        if st.button(t("debug.cancel_delete_btn"), key=f"file_del_cancel_{_mname}"):
+                            st.session_state.pop(f"_file_delete_pending_{_mname}", None)
+                            st.rerun()
+
+    # ── File orfani ────────────────────────────────────────────────────────
+    # Cartelle GPX/report non referenziate da nessuna route salvata — diverso
+    # dalla sezione "Cartelle GPX generate" già esistente in Utility →
+    # Gestione file, che elenca TUTTE le cartelle indiscriminatamente (nessun
+    # filtro orfani lì, verificato in una parte precedente di questo lavoro):
+    # qui invece solo quelle davvero non più collegate a nulla, più sicuro da
+    # cancellare in blocco. Lasciata invariata la sezione in Utility.
+    st.divider()
+    st.markdown(t("file.orphans_header"))
+    _orphan_dirs = _find_orphan_gpx_dirs()
+    _orphan_reports = _find_orphan_ride_reports()
+    if not _orphan_dirs and not _orphan_reports:
+        st.caption(t("file.orphans_none"))
+    else:
+        st.caption(t("file.orphans_intro"))
+        for _od in _orphan_dirs:
+            _odname = _od["path"].name
+            _oc1, _oc2 = st.columns([5, 1])
+            with _oc1:
+                _od_date = datetime.datetime.fromtimestamp(_od["mtime"]).strftime("%Y-%m-%d %H:%M")
+                st.caption(
+                    t("file.orphan_dir_row").format(
+                        name=_odname, n=_od["n_files"], size=_fmt_size_bytes(_od["size_bytes"]), date=_od_date,
+                    )
+                )
+            with _oc2:
+                if st.button("🗑️", key=f"file_orphan_dir_del_{_odname}", help=t("file.delete_btn")):
+                    st.session_state[f"_file_orphan_dir_confirm_{_odname}"] = True
+                    st.rerun()
+            if st.session_state.get(f"_file_orphan_dir_confirm_{_odname}"):
+                st.warning(t("file.orphan_confirm_msg").format(name=_odname))
+                _odc1, _odc2 = st.columns(2)
+                with _odc1:
+                    if st.button(t("debug.confirm_delete_btn"), key=f"file_orphan_dir_yes_{_odname}", type="primary"):
+                        shutil.rmtree(_od["path"], ignore_errors=True)
+                        st.session_state.pop(f"_file_orphan_dir_confirm_{_odname}", None)
+                        st.rerun()
+                with _odc2:
+                    if st.button(t("debug.cancel_delete_btn"), key=f"file_orphan_dir_no_{_odname}"):
+                        st.session_state.pop(f"_file_orphan_dir_confirm_{_odname}", None)
+                        st.rerun()
+
+        for _orf in _orphan_reports:
+            _orfname = _orf.name
+            _rc1, _rc2 = st.columns([5, 1])
+            with _rc1:
+                _orf_date = datetime.datetime.fromtimestamp(_orf.stat().st_mtime).strftime("%Y-%m-%d %H:%M")
+                st.caption(
+                    t("file.orphan_report_row").format(
+                        name=_orfname, size=_fmt_size_bytes(_orf.stat().st_size), date=_orf_date,
+                    )
+                )
+            with _rc2:
+                if st.button("🗑️", key=f"file_orphan_rep_del_{_orfname}", help=t("file.delete_btn")):
+                    st.session_state[f"_file_orphan_rep_confirm_{_orfname}"] = True
+                    st.rerun()
+            if st.session_state.get(f"_file_orphan_rep_confirm_{_orfname}"):
+                st.warning(t("file.orphan_confirm_msg").format(name=_orfname))
+                _orc1, _orc2 = st.columns(2)
+                with _orc1:
+                    if st.button(t("debug.confirm_delete_btn"), key=f"file_orphan_rep_yes_{_orfname}", type="primary"):
+                        _orf.unlink(missing_ok=True)
+                        st.session_state.pop(f"_file_orphan_rep_confirm_{_orfname}", None)
+                        st.rerun()
+                with _orc2:
+                    if st.button(t("debug.cancel_delete_btn"), key=f"file_orphan_rep_no_{_orfname}"):
+                        st.session_state.pop(f"_file_orphan_rep_confirm_{_orfname}", None)
+                        st.rerun()
 
 
 # ─── Tab: Planner ─────────────────────────────────────────────────────────────
@@ -878,7 +1313,7 @@ with tab_planner:
                 free_text=pl_free_text.strip(),
             )
 
-        col_btn1, col_btn2, col_btn3, col_btn4 = st.columns(4)
+        col_btn1, col_btn2, col_btn3 = st.columns(3)
         with col_btn1:
             plan_btn = st.button(t("planner.btn_plan"), type="primary", key="btn_pl_plan")
         with col_btn2:
@@ -888,8 +1323,6 @@ with tab_planner:
                 disabled="pl_result" not in st.session_state,
             )
         with col_btn3:
-            reset_btn = st.button(t("planner.btn_reset"), key="btn_pl_reset")
-        with col_btn4:
             accept_btn = st.button(
                 t("planner.btn_accept"),
                 key="btn_pl_accept",
@@ -965,11 +1398,23 @@ with tab_planner:
                     )
                     st.session_state.pop("pl_naming_active", None)
                     st.session_state.pop("pl_name_suggestion", None)
-                    st.session_state.pop("pl_loaded_route_name", None)
+                    # La route appena salvata diventa quella "aperta" (navigazione
+                    # documento aperto) — non più azzerata: era corretto azzerarla
+                    # prima che esistesse questo concetto, ora lascerebbe Builder
+                    # senza una route disponibile subito dopo averla appena creata.
+                    st.session_state["pl_loaded_route_name"] = slug
+                    st.session_state.pop("pl_dirty", None)
                     st.success(f"{t('planner.route_saved')} `{saved_path}`")
                     st.session_state[f"pl_saved_{slug}"] = True
                 except Exception as exc:
                     st.error(f"Errore salvataggio: {exc}")
+            # Senza rerun qui, i tab eseguiti PRIMA di Planner nello script
+            # (File, che ora è il primo tab) restano con lo snapshot di
+            # session_state di inizio-run e non riflettono subito la route
+            # appena aperta/salvata — scoperto testando dal vivo il ciclo
+            # Nuovo→Salva→Builder. Stesso pattern già in uso per "Aggiorna"
+            # (vedi sotto), qui mancava.
+            st.rerun()
 
         # ── "Aggiorna [nome]" — sovrascrive la route caricata. Se ha già dati
         # collegati (run Builder/analisi/feedback), richiede conferma esplicita
@@ -995,7 +1440,9 @@ with tab_planner:
                     )
                     st.session_state.pop("pl_naming_active", None)
                     st.session_state.pop("pl_name_suggestion", None)
-                    st.session_state.pop("pl_loaded_route_name", None)
+                    # Resta la route aperta — vedi commento nel ramo "Salva come nuova".
+                    st.session_state["pl_loaded_route_name"] = _pl_loaded_name
+                    st.session_state.pop("pl_dirty", None)
                     st.success(f"{t('planner.route_updated')} `{saved_path}`")
                     st.session_state[f"pl_saved_{_pl_loaded_name}"] = True
                 except Exception as exc:
@@ -1034,7 +1481,9 @@ with tab_planner:
                         st.session_state.pop("_pl_update_confirm_pending", None)
                         st.session_state.pop("pl_naming_active", None)
                         st.session_state.pop("pl_name_suggestion", None)
-                        st.session_state.pop("pl_loaded_route_name", None)
+                        # Resta la route aperta — vedi commento nel ramo "Salva come nuova".
+                        st.session_state["pl_loaded_route_name"] = _pl_update_pending
+                        st.session_state.pop("pl_dirty", None)
                         st.success(f"{t('planner.route_updated')} `{saved_path}`")
                         st.session_state[f"pl_saved_{_pl_update_pending}"] = True
                         st.rerun()
@@ -1044,19 +1493,6 @@ with tab_planner:
                 if st.button(t("debug.cancel_delete_btn"), key="btn_pl_update_no"):
                     st.session_state.pop("_pl_update_confirm_pending", None)
                     st.rerun()
-
-    # ── Reset form — torna ai default, non tocca route già salvate su disco ───
-    if reset_btn:
-        _pl_flow_keys = [
-            "pl_result", "pl_request", "pl_naming_active",
-            "pl_name_suggestion", "pl_route_name_final", "pl_loaded_route_name",
-        ]
-        for _k in _pl_flow_keys:
-            st.session_state.pop(_k, None)
-        for _k in [k for k in st.session_state if k.startswith("pl_saved_")]:
-            st.session_state.pop(_k, None)
-        st.session_state["_pl_reset_pending"] = True
-        st.rerun()
 
     # ── Esecuzione pianificazione ─────────────────────────────────────────────
     def _run_planner_generation(
@@ -1128,6 +1564,10 @@ with tab_planner:
                     "search_queries":  search_queries,
                     "route_narrative": route_narrative,
                 }
+                # Una generazione fresca (Pianifica o Rigenera) è per
+                # definizione non ancora salvata — usato da "Nuovo" (tab
+                # File) per decidere se avvisare prima di scartarla.
+                st.session_state["pl_dirty"] = True
                 _pl_log.finish(t("planner.status_done"))
                 _pl_status.update(label=t("planner.status_done"), state="complete", expanded=False)
             except Exception as exc:
@@ -1274,478 +1714,523 @@ with tab_builder:
     st.subheader(t("builder.subheader"))
     st.caption(t("builder.caption"))
 
+    # Builder lavora sempre e solo sulla route corrente aperta (navigazione
+    # "documento aperto") — niente più tendina di riselezione propria, che
+    # duplicherebbe lo stato già tracciato da _open_route_name(). Per
+    # costruzione richiede sempre una route salvata, a differenza di Ride
+    # Analysis/Post Ride/GPX Optimizer (restati intenzionalmente non
+    # vincolati — vedi discussione di design, upload manuale/esterno da
+    # preservare per quei tre).
     saved_routes_b = _load_saved_routes()
+    bld_sel = _open_route_name()
 
-    if not saved_routes_b:
-        st.info(t("builder.no_routes"))
+    if bld_sel and bld_sel not in saved_routes_b:
+        # Route aperta ma non più trovata su disco (rinominata/eliminata da
+        # un'altra sessione/tab dopo l'apertura) — non un caso normale, ma
+        # va segnalato invece di fallire silenziosamente sul dict lookup.
+        st.warning(t("builder.stale_open_route").format(name=bld_sel))
+        bld_sel = None
+
+    if not bld_sel:
+        _render_no_route_placeholder(saved_routes_b)
     else:
-        route_names_b = list(saved_routes_b.keys())
-        bld_sel = st.selectbox(
-            t("builder.select_route"),
-            [t("builder.select_placeholder")] + route_names_b,
-            key="bld_route_sel",
-        )
+        rd_b = saved_routes_b[bld_sel]
+        req_b = rd_b.get("request", {})
+        wps_b = rd_b.get("ordered_waypoints", [])
 
-        if bld_sel != t("builder.select_placeholder"):
-            rd_b = saved_routes_b[bld_sel]
-            req_b = rd_b.get("request", {})
-            wps_b = rd_b.get("ordered_waypoints", [])
+        # ── Riepilogo readonly ────────────────────────────────────────────
+        with st.expander(t("builder.expander_summary"), expanded=True):
+            narrative_b = rd_b.get("route_narrative", "")
+            if narrative_b:
+                st.info(narrative_b)
+            col_rb1, col_rb2, col_rb3 = st.columns(3)
+            _target_km_b_disp = req_b.get("target_km", "?")
+            col_rb1.metric(
+                t("builder.metric_target"),
+                t("builder.metric_target_free") if _target_km_b_disp in (-1, -1.0)
+                else f"{_target_km_b_disp} km",
+            )
+            col_rb2.metric(t("builder.metric_type"), req_b.get("route_type", "—"))
+            col_rb3.metric(t("builder.metric_waypoints"), len(wps_b))
+            st.caption(
+                f"Tema: **{req_b.get('scenery_theme','—')}** · "
+                f"Atletico: **{req_b.get('athletic_theme','—')}** · "
+                f"Creata: {rd_b.get('created_at','—')}"
+            )
+            est_km_b = _estimate_route_km(wps_b)
+            if est_km_b > 0:
+                st.caption(t("builder.est_km").format(est=est_km_b))
 
-            # ── Riepilogo readonly ────────────────────────────────────────────
-            with st.expander(t("builder.expander_summary"), expanded=True):
-                narrative_b = rd_b.get("route_narrative", "")
-                if narrative_b:
-                    st.info(narrative_b)
-                col_rb1, col_rb2, col_rb3 = st.columns(3)
-                _target_km_b_disp = req_b.get("target_km", "?")
-                col_rb1.metric(
-                    t("builder.metric_target"),
-                    t("builder.metric_target_free") if _target_km_b_disp in (-1, -1.0)
-                    else f"{_target_km_b_disp} km",
-                )
-                col_rb2.metric(t("builder.metric_type"), req_b.get("route_type", "—"))
-                col_rb3.metric(t("builder.metric_waypoints"), len(wps_b))
-                st.caption(
-                    f"Tema: **{req_b.get('scenery_theme','—')}** · "
-                    f"Atletico: **{req_b.get('athletic_theme','—')}** · "
-                    f"Creata: {rd_b.get('created_at','—')}"
-                )
-                est_km_b = _estimate_route_km(wps_b)
-                if est_km_b > 0:
-                    st.caption(t("builder.est_km").format(est=est_km_b))
-
-            # ── Campi specifici Builder ───────────────────────────────────────
-            col_bld1, col_bld2 = st.columns(2)
-            with col_bld1:
-                bld_profiles = st.multiselect(
-                    t("builder.profiles_label"),
-                    ["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic",
-                     "roadbike_fast", "trekking", "gravel", "fastbike"],
-                    default=["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic"],
-                    key="bld_profiles",
-                    help=t("builder.profiles_help"),
-                )
-            with col_bld2:
-                # SS%/SP% rimossi: non hanno alcun effetto oggi (vedi models.py).
-                # Il dislivello non è più un tetto esatto — la preferenza qui
-                # riprende quella già scelta nel Planner, modificabile anche qui.
-                bld_elevation_pref = _elev_pref_selectbox(
-                    req_b.get("elevation_preference", "none"), key="bld_elevpref",
-                )
-
-            profiles_valid = len(bld_profiles) == 3
-            if not profiles_valid:
-                st.warning(t("builder.warn_profiles"))
-
-            bld_gen_btn = st.button(
-                t("builder.btn_generate"),
-                type="primary",
-                key="btn_bld_gen",
-                disabled=not profiles_valid or not wps_b,
+        # ── Campi specifici Builder ───────────────────────────────────────
+        col_bld1, col_bld2 = st.columns(2)
+        with col_bld1:
+            bld_profiles = st.multiselect(
+                t("builder.profiles_label"),
+                ["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic",
+                 "roadbike_fast", "trekking", "gravel", "fastbike"],
+                default=["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic"],
+                key="bld_profiles",
+                help=t("builder.profiles_help"),
+            )
+        with col_bld2:
+            # SS%/SP% rimossi: non hanno alcun effetto oggi (vedi models.py).
+            # Il dislivello non è più un tetto esatto — la preferenza qui
+            # riprende quella già scelta nel Planner, modificabile anche qui.
+            bld_elevation_pref = _elev_pref_selectbox(
+                req_b.get("elevation_preference", "none"), key="bld_elevpref",
             )
 
-            # ── Esecuzione Builder ────────────────────────────────────────────
-            if bld_gen_btn and profiles_valid and wps_b:
-                import traceback as _tb
-                import httpx as _httpx
+        profiles_valid = len(bld_profiles) == 3
+        if not profiles_valid:
+            st.warning(t("builder.warn_profiles"))
 
-                # Health-check BRouter prima di lanciare tutto
+        bld_gen_btn = st.button(
+            t("builder.btn_generate"),
+            type="primary",
+            key="btn_bld_gen",
+            disabled=not profiles_valid or not wps_b,
+        )
+
+        # ── Esecuzione Builder ────────────────────────────────────────────
+        if bld_gen_btn and profiles_valid and wps_b:
+            import traceback as _tb
+            import httpx as _httpx
+
+            # Health-check BRouter prima di lanciare tutto
+            _brouter_ok = False
+            try:
+                import os as _os
+                _brouter_base = _os.environ.get("BROUTER_URL", "http://localhost:17777")
+                _brouter_endpoint = _brouter_base.rstrip("/") + "/brouter"
+                _hc = _httpx.get(_brouter_endpoint, timeout=3.0,
+                                 params={"lonlats": "13.2278,43.7136|13.2279,43.7137",
+                                         "profile": "trekking", "alternativeidx": 0, "format": "gpx"})
+                _brouter_ok = _hc.status_code == 200
+            except Exception:
                 _brouter_ok = False
-                try:
-                    import os as _os
-                    _brouter_base = _os.environ.get("BROUTER_URL", "http://localhost:17777")
-                    _brouter_endpoint = _brouter_base.rstrip("/") + "/brouter"
-                    _hc = _httpx.get(_brouter_endpoint, timeout=3.0,
-                                     params={"lonlats": "13.2278,43.7136|13.2279,43.7137",
-                                             "profile": "trekking", "alternativeidx": 0, "format": "gpx"})
-                    _brouter_ok = _hc.status_code == 200
-                except Exception:
-                    _brouter_ok = False
 
-                if not _brouter_ok:
-                    _br_url = __import__("os").environ.get("BROUTER_URL", "localhost:17777")
-                    st.error(t("builder.brouter_error").format(url=_br_url))
+            if not _brouter_ok:
+                _br_url = __import__("os").environ.get("BROUTER_URL", "localhost:17777")
+                st.error(t("builder.brouter_error").format(url=_br_url))
+            else:
+                # ── Verifica / download tile OSM per la zona di partenza ──────
+                _tile_lat = wps_b[0].get("lat", 43.7136)
+                _tile_lon = wps_b[0].get("lon", 13.2278)
+                _tile_slot = st.empty()
+                with _tile_slot.container():
+                    _tile_prog = st.progress(0.0, text=t("builder.tile_progress"))
+                    def _on_tile_progress(frac: float, _p=_tile_prog):
+                        _p.progress(frac, text=f"{t('builder.tile_download')} {frac*100:.0f}%")
+                    _tile_ok, _tile_msg = ensure_tile(
+                        _tile_lat, _tile_lon, progress_cb=_on_tile_progress
+                    )
+                if _tile_ok:
+                    _tile_slot.empty()
                 else:
-                    # ── Verifica / download tile OSM per la zona di partenza ──────
-                    _tile_lat = wps_b[0].get("lat", 43.7136)
-                    _tile_lon = wps_b[0].get("lon", 13.2278)
-                    _tile_slot = st.empty()
-                    with _tile_slot.container():
-                        _tile_prog = st.progress(0.0, text=t("builder.tile_progress"))
-                        def _on_tile_progress(frac: float, _p=_tile_prog):
-                            _p.progress(frac, text=f"{t('builder.tile_download')} {frac*100:.0f}%")
-                        _tile_ok, _tile_msg = ensure_tile(
-                            _tile_lat, _tile_lon, progress_cb=_on_tile_progress
+                    _tile_slot.empty()
+                    st.error(f"{t('builder.tile_error')} {_tile_msg}")
+                    st.stop()
+
+                merged_req_b = {
+                    **req_b,
+                    "elevation_preference": bld_elevation_pref,
+                }
+                # Build 3 strategy dicts from Planner waypoints (already geocoded)
+                strategies_b = []
+                for i, profile in enumerate(bld_profiles):
+                    label = ["A", "B", "C"][i]
+                    waypoints_b = [
+                        {
+                            "role": wp["role"],
+                            "name": wp["name"],
+                            "lat": wp.get("lat"),
+                            "lon": wp.get("lon"),
+                            "needs_geocoding": False,
+                            "traversal": False,
+                            "source": wp.get("source", "user"),
+                            "mandatory": wp.get("mandatory", False),
+                        }
+                        for wp in wps_b
+                    ]
+                    strategies_b.append({
+                        "name": f"Variante {label} ({profile})",
+                        "route_type": req_b.get("route_type", "loop"),
+                        "profile": profile,
+                        "requires_geocoding": False,
+                        "estimated_km": req_b.get("target_km", 60.0),
+                        "rationale": f"Profilo {profile} sui waypoint del Planner",
+                        "waypoints": waypoints_b,
+                        "free_text_overrides": [],
+                    })
+
+                with st.status(t("builder.status_generating"), expanded=True) as _bld_status:
+                    _bld_log = _TalkingLog(st.empty())
+
+                    def _on_bld_progress(_msg: str, _log=_bld_log) -> None:
+                        _log.step(_msg)
+
+                    try:
+                        memory_b = load_user_memory()
+                        _zona_b = (merged_req_b.get("start") or {}).get("name")
+                        _obstacles_b = db.get_active_obstacles(zona=_zona_b)
+                        merged_req_b = merge_memory_with_request(merged_req_b, memory_b, obstacles=_obstacles_b)
+
+                        _bld_status.update(label=t("builder.status_brouter"))
+                        all_candidates_b = generate_candidates(
+                            strategies_b, request=None, route_name=bld_sel,
+                            on_progress=_on_bld_progress,
                         )
-                    if _tile_ok:
-                        _tile_slot.empty()
-                    else:
-                        _tile_slot.empty()
-                        st.error(f"{t('builder.tile_error')} {_tile_msg}")
-                        st.stop()
+                        ok_candidates_b = [c for c in all_candidates_b if c["status"] in ("ok", "retried")]
+                        failed_b = [c for c in all_candidates_b if c["status"] == "failed"]
 
-                    merged_req_b = {
-                        **req_b,
-                        "elevation_preference": bld_elevation_pref,
-                    }
-                    # Build 3 strategy dicts from Planner waypoints (already geocoded)
-                    strategies_b = []
-                    for i, profile in enumerate(bld_profiles):
-                        label = ["A", "B", "C"][i]
-                        waypoints_b = [
-                            {
-                                "role": wp["role"],
-                                "name": wp["name"],
-                                "lat": wp.get("lat"),
-                                "lon": wp.get("lon"),
-                                "needs_geocoding": False,
-                                "traversal": False,
-                                "source": wp.get("source", "user"),
-                                "mandatory": wp.get("mandatory", False),
-                            }
-                            for wp in wps_b
-                        ]
-                        strategies_b.append({
-                            "name": f"Variante {label} ({profile})",
-                            "route_type": req_b.get("route_type", "loop"),
-                            "profile": profile,
-                            "requires_geocoding": False,
-                            "estimated_km": req_b.get("target_km", 60.0),
-                            "rationale": f"Profilo {profile} sui waypoint del Planner",
-                            "waypoints": waypoints_b,
-                            "free_text_overrides": [],
-                        })
-
-                    with st.status(t("builder.status_generating"), expanded=True) as _bld_status:
-                        _bld_log = _TalkingLog(st.empty())
-
-                        def _on_bld_progress(_msg: str, _log=_bld_log) -> None:
-                            _log.step(_msg)
-
-                        try:
-                            memory_b = load_user_memory()
-                            _zona_b = (merged_req_b.get("start") or {}).get("name")
-                            _obstacles_b = db.get_active_obstacles(zona=_zona_b)
-                            merged_req_b = merge_memory_with_request(merged_req_b, memory_b, obstacles=_obstacles_b)
-
-                            _bld_status.update(label=t("builder.status_brouter"))
-                            all_candidates_b = generate_candidates(
-                                strategies_b, request=None, route_name=bld_sel,
-                                on_progress=_on_bld_progress,
-                            )
-                            ok_candidates_b = [c for c in all_candidates_b if c["status"] in ("ok", "retried")]
-                            failed_b = [c for c in all_candidates_b if c["status"] == "failed"]
-
-                            if failed_b:
-                                for fc in failed_b:
-                                    st.warning(
-                                        f"{t('builder.warn_candidate_failed').format(id=fc['id'], profile=fc['profile'])} "
-                                        f"`{fc.get('failure_reason', 'errore sconosciuto')}`"
-                                    )
-
-                            if not ok_candidates_b:
-                                _bld_log.finish(t("builder.status_all_failed"))
-                                _bld_status.update(label=t("builder.status_all_failed"), state="error")
-                                st.error(t("builder.err_all_failed"))
-                            else:
-                                _bld_log.step(t("builder.status_scoring"))
-                                _bld_status.update(label=t("builder.status_scoring"))
-                                scored_b = [score_candidate(c["analysis"], merged_req_b) for c in ok_candidates_b]
-
-                                _bld_log.step(t("builder.status_decision"))
-                                _bld_status.update(label=t("builder.status_decision"))
-                                report_b = run_decision(ok_candidates_b, scored_b, merged_req_b)
-
-                                st.session_state["bld_result"] = {
-                                    "route_name": bld_sel,
-                                    "request": merged_req_b,
-                                    "all_candidates": all_candidates_b,
-                                    "candidates": ok_candidates_b,
-                                    "scored": scored_b,
-                                    "decision": report_b.model_dump(),
-                                }
-                                _bld_log.finish(t("builder.status_done").format(n=len(ok_candidates_b)))
-                                _bld_status.update(
-                                    label=t("builder.status_done").format(n=len(ok_candidates_b)),
-                                    state="complete", expanded=False,
+                        if failed_b:
+                            for fc in failed_b:
+                                st.warning(
+                                    f"{t('builder.warn_candidate_failed').format(id=fc['id'], profile=fc['profile'])} "
+                                    f"`{fc.get('failure_reason', 'errore sconosciuto')}`"
                                 )
 
-                                # Accoda un nuovo run in builder_results (lista, accumula
-                                # nel tempo — redesign persistenza) invece di sovrascrivere
-                                # l'unica run precedente.
-                                try:
-                                    rd_b_updated = dict(rd_b)
-                                    _builder_runs = _normalize_builder_results(rd_b)
-                                    _builder_runs.append({
-                                        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                                        "candidates": [
-                                            {
-                                                "id": c["id"],
-                                                "strategy_name": c["strategy_name"],
-                                                "profile": c["profile"],
-                                                "status": c["status"],
-                                                "gpx_path": c.get("gpx_path"),
-                                                "analysis": c.get("analysis"),
-                                                "failure_reason": c.get("failure_reason"),
-                                            }
-                                            for c in all_candidates_b
-                                        ],
-                                        "scored": scored_b,
-                                        "decision": report_b.model_dump(),
-                                    })
-                                    rd_b_updated["builder_results"] = _builder_runs
-                                    json_path = _PLANNED_DIR / f"{bld_sel}.json"
-                                    json_path.write_text(
-                                        json.dumps(rd_b_updated, ensure_ascii=False, indent=2),
-                                        encoding="utf-8",
-                                    )
-                                except Exception:
-                                    pass
-
-                        except Exception as exc:
-                            _bld_log.finish(t("builder.err_builder"))
-                            _bld_status.update(label=t("builder.err_builder"), state="error")
-                            st.error(f"Errore Builder: {exc}")
-                            with st.expander("Traceback completo", expanded=True):
-                                st.code(_tb.format_exc(), language="text")
-
-            # ── Risultati Builder ─────────────────────────────────────────────
-            bld_res = st.session_state.get("bld_result")
-            if bld_res and bld_res.get("route_name") == bld_sel:
-                candidates_b  = bld_res["candidates"]      # only ok/retried
-                all_cands_b   = bld_res.get("all_candidates", candidates_b)
-                scored_b      = bld_res["scored"]
-                decision_b    = bld_res["decision"]
-                req_res_b     = bld_res["request"]
-
-                target_km_b = req_res_b.get("target_km", 60.0) if isinstance(req_res_b, dict) else req_res_b.target_km
-                start_b     = req_res_b.get("start") if isinstance(req_res_b, dict) else {}
-                if isinstance(start_b, dict):
-                    start_lat_b = start_b.get("lat", 43.7136)
-                    start_lon_b = start_b.get("lon", 13.2278)
-                else:
-                    start_lat_b, start_lon_b = 43.7136, 13.2278
-
-                winner_id_b = decision_b.get("winner")
-
-                # Fix 4 (+ fallback BRouter successivo): nota aggregata se uno o più
-                # waypoint soft sono stati inclusi con aggancio grezzo via BRouter
-                # invece che tramite Overpass, per un problema temporaneo del servizio
-                # di geocoding — non sono più esclusi, solo di qualità inferiore.
-                # Stessa lista per tutti i candidati (snap condiviso, Fix 1).
-                _raw_fallback_b = (all_cands_b[0].get("soft_waypoint_issues", {}).get("raw_fallback")
-                                    if all_cands_b else [])
-                if _raw_fallback_b:
-                    st.warning(
-                        t("builder.snap_service_unavailable").format(
-                            n=len(_raw_fallback_b), names=", ".join(_raw_fallback_b)
-                        )
-                    )
-
-                st.divider()
-                st.subheader(t("builder.result_subheader"))
-
-                # Table: scored candidates first, then failed ones
-                pairs_b  = list(zip(candidates_b, scored_b))
-                valid_b  = sorted([(c, s) for c, s in pairs_b if not s["discarded"]],
-                                  key=lambda x: x[1]["total_score"], reverse=True)
-                invalid_b = [(c, s) for c, s in pairs_b if s["discarded"]]
-                ordered_b = valid_b + invalid_b
-                failed_cands_b = [c for c in all_cands_b if c["status"] == "failed"]
-
-                target_unconstrained_b = target_km_b is None or float(target_km_b) <= 0
-
-                rows_b = []
-                for c, s in ordered_b:
-                    dist = c["analysis"]["distance_km"]
-                    is_w = c["id"] == winner_id_b
-                    indicator = "★" if is_w else ("✗" if s["discarded"] else "·")
-                    warn_parts_b = []
-                    if s.get("distance_warning"):
-                        warn_parts_b.append(s["distance_warning"])
-                    oab_pct_b = c["analysis"].get("out_and_back_percent")
-                    if oab_pct_b is not None and oab_pct_b >= OUT_AND_BACK_WARN_THRESHOLD_PCT:
-                        warn_parts_b.append(t("builder.out_and_back_warning").format(pct=oab_pct_b))
-                    if s["discarded"]:
-                        stato = f"{t('builder.status_discarded')} — {s['discard_reason']}"
-                    elif warn_parts_b:
-                        stato = "⚠ " + " · ".join(warn_parts_b)
-                    else:
-                        stato = t("builder.status_valid")
-                    if target_unconstrained_b:
-                        vs_target_disp = "—"
-                    else:
-                        diff = dist - target_km_b
-                        vs_target_disp = f"{'+' if diff >= 0 else ''}{diff:.1f}"
-                    rows_b.append({
-                        "  ": indicator,
-                        t("builder.col_id"): c["id"],
-                        t("builder.col_name"): c["strategy_name"],
-                        t("builder.col_profile"): c["profile"],
-                        t("builder.col_km"): f"{dist:.1f}",
-                        t("builder.col_vs_target"): vs_target_disp,
-                        t("builder.col_elev"): f"{c['analysis']['elevation_gain_m']:.0f}",
-                        t("builder.col_score"): f"{s['total_score']:.1f}",
-                        t("builder.col_status"): stato,
-                    })
-                for c in failed_cands_b:
-                    rows_b.append({
-                        "  ": "✗",
-                        t("builder.col_id"): c["id"],
-                        t("builder.col_name"): c["strategy_name"],
-                        t("builder.col_profile"): c["profile"],
-                        t("builder.col_km"): "—",
-                        t("builder.col_vs_target"): "—",
-                        t("builder.col_elev"): "—",
-                        t("builder.col_score"): "—",
-                        t("builder.col_status"): f"{t('builder.status_error_brouter')} {c.get('failure_reason', '?')[:80]}",
-                    })
-
-                if not rows_b:
-                    st.warning(t("builder.no_candidates"))
-                else:
-                    st.dataframe(rows_b, use_container_width=True, hide_index=True)
-
-                # Map — only when there are ok candidates
-                if ordered_b:
-                    st.subheader(t("builder.explore_subheader"))
-                    view_opts_b = [t("builder.explore_all")] + [
-                        f"{'★ ' if c['id'] == winner_id_b else ('✗ ' if s['discarded'] else '· ')}"
-                        f"{c['id']} — {c['strategy_name']} ({c['analysis']['distance_km']:.1f} km · {s['total_score']:.0f}pt)"
-                        for c, s in ordered_b
-                    ]
-                    sel_view_b = st.radio(
-                        t("builder.explore_radio"), view_opts_b, horizontal=True, key="bld_explore_radio"
-                    )
-
-                    if sel_view_b == view_opts_b[0]:
-                        m_b = _build_multi_map(
-                            candidates_b, scored_b, winner_id_b,
-                            {"lat": start_lat_b, "lon": start_lon_b},
-                        )
-                        st_folium(m_b, width=None, height=520, key="bld_map_multi", use_container_width=True)
-                    else:
-                        idx_b = view_opts_b.index(sel_view_b) - 1
-                        c_b, s_b = ordered_b[idx_b]
-                        if s_b["discarded"]:
-                            st.error(f"✗ Candidato scartato: {s_b['discard_reason']}")
+                        if not ok_candidates_b:
+                            _bld_log.finish(t("builder.status_all_failed"))
+                            _bld_status.update(label=t("builder.status_all_failed"), state="error")
+                            st.error(t("builder.err_all_failed"))
                         else:
-                            col_bm1, col_bm2, col_bm3 = st.columns(3)
-                            col_bm1.metric(t("builder.col_score"), f"{s_b['total_score']:.1f}/100")
-                            col_bm2.metric(t("analizza.metric_distance"), f"{c_b['analysis']['distance_km']:.1f} km")
-                            col_bm3.metric(
-                                t("analizza.metric_elev_up"), f"{c_b['analysis']['elevation_gain_m']:.0f} m",
-                                help=t("analizza.metric_elev_up_help"),
+                            _bld_log.step(t("builder.status_scoring"))
+                            _bld_status.update(label=t("builder.status_scoring"))
+                            scored_b = [score_candidate(c["analysis"], merged_req_b) for c in ok_candidates_b]
+
+                            _bld_log.step(t("builder.status_decision"))
+                            _bld_status.update(label=t("builder.status_decision"))
+                            report_b = run_decision(ok_candidates_b, scored_b, merged_req_b)
+
+                            st.session_state["bld_result"] = {
+                                "route_name": bld_sel,
+                                "request": merged_req_b,
+                                "all_candidates": all_candidates_b,
+                                "candidates": ok_candidates_b,
+                                "scored": scored_b,
+                                "decision": report_b.model_dump(),
+                            }
+                            _bld_log.finish(t("builder.status_done").format(n=len(ok_candidates_b)))
+                            _bld_status.update(
+                                label=t("builder.status_done").format(n=len(ok_candidates_b)),
+                                state="complete", expanded=False,
                             )
-                            if s_b.get("distance_warning"):
-                                st.warning(f"⚠ {s_b['distance_warning']}")
-                            for _removed_name in c_b["analysis"].get("removed_waypoints", []):
-                                st.info(t("builder.out_and_back_removed").format(name=_removed_name))
-                            _oab_pct_single = c_b["analysis"].get("out_and_back_percent") or 0.0
-                            if _oab_pct_single >= _OUT_AND_BACK_INFO_THRESHOLD_PCT:
-                                for _attr in c_b["analysis"].get("out_and_back_attributions", []):
-                                    st.info(
-                                        t("builder.out_and_back_attribution").format(
-                                            name=_attr["waypoint_name"], km=_attr["overlap_km"]
-                                        )
+
+                            # Accoda un nuovo run in builder_results (lista, accumula
+                            # nel tempo — redesign persistenza) invece di sovrascrivere
+                            # l'unica run precedente.
+                            try:
+                                rd_b_updated = dict(rd_b)
+                                _builder_runs = _normalize_builder_results(rd_b)
+                                _builder_runs.append({
+                                    "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                    "candidates": [
+                                        {
+                                            "id": c["id"],
+                                            "strategy_name": c["strategy_name"],
+                                            "profile": c["profile"],
+                                            "status": c["status"],
+                                            "gpx_path": c.get("gpx_path"),
+                                            "analysis": c.get("analysis"),
+                                            "failure_reason": c.get("failure_reason"),
+                                        }
+                                        for c in all_candidates_b
+                                    ],
+                                    "scored": scored_b,
+                                    "decision": report_b.model_dump(),
+                                })
+                                rd_b_updated["builder_results"] = _builder_runs
+                                json_path = _PLANNED_DIR / f"{bld_sel}.json"
+                                json_path.write_text(
+                                    json.dumps(rd_b_updated, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                            except Exception:
+                                pass
+
+                    except Exception as exc:
+                        _bld_log.finish(t("builder.err_builder"))
+                        _bld_status.update(label=t("builder.err_builder"), state="error")
+                        st.error(f"Errore Builder: {exc}")
+                        with st.expander("Traceback completo", expanded=True):
+                            st.code(_tb.format_exc(), language="text")
+
+        # ── Risultati Builder ─────────────────────────────────────────────
+        bld_res = st.session_state.get("bld_result")
+        if bld_res and bld_res.get("route_name") == bld_sel:
+            candidates_b  = bld_res["candidates"]      # only ok/retried
+            all_cands_b   = bld_res.get("all_candidates", candidates_b)
+            scored_b      = bld_res["scored"]
+            decision_b    = bld_res["decision"]
+            req_res_b     = bld_res["request"]
+
+            target_km_b = req_res_b.get("target_km", 60.0) if isinstance(req_res_b, dict) else req_res_b.target_km
+            start_b     = req_res_b.get("start") if isinstance(req_res_b, dict) else {}
+            if isinstance(start_b, dict):
+                start_lat_b = start_b.get("lat", 43.7136)
+                start_lon_b = start_b.get("lon", 13.2278)
+            else:
+                start_lat_b, start_lon_b = 43.7136, 13.2278
+
+            winner_id_b = decision_b.get("winner")
+
+            # Fix 4 (+ fallback BRouter successivo): nota aggregata se uno o più
+            # waypoint soft sono stati inclusi con aggancio grezzo via BRouter
+            # invece che tramite Overpass, per un problema temporaneo del servizio
+            # di geocoding — non sono più esclusi, solo di qualità inferiore.
+            # Stessa lista per tutti i candidati (snap condiviso, Fix 1).
+            _raw_fallback_b = (all_cands_b[0].get("soft_waypoint_issues", {}).get("raw_fallback")
+                                if all_cands_b else [])
+            if _raw_fallback_b:
+                st.warning(
+                    t("builder.snap_service_unavailable").format(
+                        n=len(_raw_fallback_b), names=", ".join(_raw_fallback_b)
+                    )
+                )
+
+            st.divider()
+            st.subheader(t("builder.result_subheader"))
+
+            # Table: scored candidates first, then failed ones
+            pairs_b  = list(zip(candidates_b, scored_b))
+            valid_b  = sorted([(c, s) for c, s in pairs_b if not s["discarded"]],
+                              key=lambda x: x[1]["total_score"], reverse=True)
+            invalid_b = [(c, s) for c, s in pairs_b if s["discarded"]]
+            ordered_b = valid_b + invalid_b
+            failed_cands_b = [c for c in all_cands_b if c["status"] == "failed"]
+
+            target_unconstrained_b = target_km_b is None or float(target_km_b) <= 0
+
+            rows_b = []
+            for c, s in ordered_b:
+                dist = c["analysis"]["distance_km"]
+                is_w = c["id"] == winner_id_b
+                indicator = "★" if is_w else ("✗" if s["discarded"] else "·")
+                warn_parts_b = []
+                if s.get("distance_warning"):
+                    warn_parts_b.append(s["distance_warning"])
+                oab_pct_b = c["analysis"].get("out_and_back_percent")
+                if oab_pct_b is not None and oab_pct_b >= OUT_AND_BACK_WARN_THRESHOLD_PCT:
+                    warn_parts_b.append(t("builder.out_and_back_warning").format(pct=oab_pct_b))
+                if s["discarded"]:
+                    stato = f"{t('builder.status_discarded')} — {s['discard_reason']}"
+                elif warn_parts_b:
+                    stato = "⚠ " + " · ".join(warn_parts_b)
+                else:
+                    stato = t("builder.status_valid")
+                if target_unconstrained_b:
+                    vs_target_disp = "—"
+                else:
+                    diff = dist - target_km_b
+                    vs_target_disp = f"{'+' if diff >= 0 else ''}{diff:.1f}"
+                rows_b.append({
+                    "  ": indicator,
+                    t("builder.col_id"): c["id"],
+                    t("builder.col_name"): c["strategy_name"],
+                    t("builder.col_profile"): c["profile"],
+                    t("builder.col_km"): f"{dist:.1f}",
+                    t("builder.col_vs_target"): vs_target_disp,
+                    t("builder.col_elev"): f"{c['analysis']['elevation_gain_m']:.0f}",
+                    t("builder.col_score"): f"{s['total_score']:.1f}",
+                    t("builder.col_status"): stato,
+                })
+            for c in failed_cands_b:
+                rows_b.append({
+                    "  ": "✗",
+                    t("builder.col_id"): c["id"],
+                    t("builder.col_name"): c["strategy_name"],
+                    t("builder.col_profile"): c["profile"],
+                    t("builder.col_km"): "—",
+                    t("builder.col_vs_target"): "—",
+                    t("builder.col_elev"): "—",
+                    t("builder.col_score"): "—",
+                    t("builder.col_status"): f"{t('builder.status_error_brouter')} {c.get('failure_reason', '?')[:80]}",
+                })
+
+            if not rows_b:
+                st.warning(t("builder.no_candidates"))
+            else:
+                st.dataframe(rows_b, use_container_width=True, hide_index=True)
+
+            # Map — only when there are ok candidates
+            if ordered_b:
+                st.subheader(t("builder.explore_subheader"))
+                view_opts_b = [t("builder.explore_all")] + [
+                    f"{'★ ' if c['id'] == winner_id_b else ('✗ ' if s['discarded'] else '· ')}"
+                    f"{c['id']} — {c['strategy_name']} ({c['analysis']['distance_km']:.1f} km · {s['total_score']:.0f}pt)"
+                    for c, s in ordered_b
+                ]
+                sel_view_b = st.radio(
+                    t("builder.explore_radio"), view_opts_b, horizontal=True, key="bld_explore_radio"
+                )
+
+                if sel_view_b == view_opts_b[0]:
+                    m_b = _build_multi_map(
+                        candidates_b, scored_b, winner_id_b,
+                        {"lat": start_lat_b, "lon": start_lon_b},
+                    )
+                    st_folium(m_b, width=None, height=520, key="bld_map_multi", use_container_width=True)
+                else:
+                    idx_b = view_opts_b.index(sel_view_b) - 1
+                    c_b, s_b = ordered_b[idx_b]
+                    if s_b["discarded"]:
+                        st.error(f"✗ Candidato scartato: {s_b['discard_reason']}")
+                    else:
+                        col_bm1, col_bm2, col_bm3 = st.columns(3)
+                        col_bm1.metric(t("builder.col_score"), f"{s_b['total_score']:.1f}/100")
+                        col_bm2.metric(t("analizza.metric_distance"), f"{c_b['analysis']['distance_km']:.1f} km")
+                        col_bm3.metric(
+                            t("analizza.metric_elev_up"), f"{c_b['analysis']['elevation_gain_m']:.0f} m",
+                            help=t("analizza.metric_elev_up_help"),
+                        )
+                        if s_b.get("distance_warning"):
+                            st.warning(f"⚠ {s_b['distance_warning']}")
+                        for _removed_name in c_b["analysis"].get("removed_waypoints", []):
+                            st.info(t("builder.out_and_back_removed").format(name=_removed_name))
+                        _oab_pct_single = c_b["analysis"].get("out_and_back_percent") or 0.0
+                        if _oab_pct_single >= _OUT_AND_BACK_INFO_THRESHOLD_PCT:
+                            for _attr in c_b["analysis"].get("out_and_back_attributions", []):
+                                st.info(
+                                    t("builder.out_and_back_attribution").format(
+                                        name=_attr["waypoint_name"], km=_attr["overlap_km"]
                                     )
-                        m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
-                        st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
-                        gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")
+                                )
+                    m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
+                    st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
+                    gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")
+                    st.download_button(
+                        label=f"{t('builder.btn_download')} {c_b['id']} {c_b['strategy_name']}",
+                        data=gpx_bytes_b,
+                        file_name=f"{bld_sel}_{c_b['id']}.gpx",
+                        mime="application/gpx+xml",
+                        key=f"bld_dl_{c_b['id']}",
+                    )
+
+                    # ── Analisi salite (Parte 2 — oggettiva) ────────────────
+                    climbs_b = c_b["analysis"].get("climbs") or []
+                    profile_b = c_b["analysis"].get("elevation_profile") or {}
+                    st.markdown(f"**{t('climbs.header')}**")
+                    fig_climb_b = _render_climb_profile_chart(profile_b)
+                    if fig_climb_b is not None:
+                        st.pyplot(fig_climb_b, use_container_width=True)
+                    if climbs_b:
+                        st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_b)))
+                        st.dataframe(
+                            _climbs_table_rows(climbs_b, top_n=5),
+                            use_container_width=True, hide_index=True,
+                        )
+                    else:
+                        st.caption(t("climbs.no_climbs"))
+
+            # Decision Agent
+            st.divider()
+            if winner_id_b:
+                rationale_b = decision_b.get("rationale", "")
+                if rationale_b:
+                    st.markdown(f"{t('builder.decision_motivation')} {rationale_b}")
+                winner_c_b = next((c for c in candidates_b if c["id"] == winner_id_b), None)
+                winner_s_b = next((s for c, s in zip(candidates_b, scored_b) if c["id"] == winner_id_b), None)
+                if winner_c_b:
+                    st.success(
+                        t("builder.winner_label").format(
+                            id=winner_id_b,
+                            name=winner_c_b["strategy_name"],
+                            profile=winner_c_b["profile"],
+                            km=winner_c_b["analysis"]["distance_km"],
+                            elev=winner_c_b["analysis"]["elevation_gain_m"],
+                        )
+                        + (f"  ·  Score: {winner_s_b['total_score']:.1f}/100" if winner_s_b else "")
+                    )
+                    if winner_c_b.get("gpx_path"):
+                        winner_gpx = _gpx_bytes_with_name(
+                            winner_c_b["gpx_path"], f"{bld_sel}_{winner_id_b}"
+                        )
                         st.download_button(
-                            label=f"{t('builder.btn_download')} {c_b['id']} {c_b['strategy_name']}",
-                            data=gpx_bytes_b,
-                            file_name=f"{bld_sel}_{c_b['id']}.gpx",
+                            label=f"{t('builder.winner_dl')} {winner_id_b} {winner_c_b['strategy_name']}",
+                            data=winner_gpx,
+                            file_name=f"{bld_sel}_{winner_id_b}.gpx",
                             mime="application/gpx+xml",
-                            key=f"bld_dl_{c_b['id']}",
+                            key="bld_dl_winner",
                         )
-
-                        # ── Analisi salite (Parte 2 — oggettiva) ────────────────
-                        climbs_b = c_b["analysis"].get("climbs") or []
-                        profile_b = c_b["analysis"].get("elevation_profile") or {}
-                        st.markdown(f"**{t('climbs.header')}**")
-                        fig_climb_b = _render_climb_profile_chart(profile_b)
-                        if fig_climb_b is not None:
-                            st.pyplot(fig_climb_b, use_container_width=True)
-                        if climbs_b:
-                            st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_b)))
-                            st.dataframe(
-                                _climbs_table_rows(climbs_b, top_n=5),
-                                use_container_width=True, hide_index=True,
-                            )
-                        else:
-                            st.caption(t("climbs.no_climbs"))
-
-                # Decision Agent
-                st.divider()
-                if winner_id_b:
-                    rationale_b = decision_b.get("rationale", "")
-                    if rationale_b:
-                        st.markdown(f"{t('builder.decision_motivation')} {rationale_b}")
-                    winner_c_b = next((c for c in candidates_b if c["id"] == winner_id_b), None)
-                    winner_s_b = next((s for c, s in zip(candidates_b, scored_b) if c["id"] == winner_id_b), None)
-                    if winner_c_b:
-                        st.success(
-                            t("builder.winner_label").format(
-                                id=winner_id_b,
-                                name=winner_c_b["strategy_name"],
-                                profile=winner_c_b["profile"],
-                                km=winner_c_b["analysis"]["distance_km"],
-                                elev=winner_c_b["analysis"]["elevation_gain_m"],
-                            )
-                            + (f"  ·  Score: {winner_s_b['total_score']:.1f}/100" if winner_s_b else "")
-                        )
-                        if winner_c_b.get("gpx_path"):
-                            winner_gpx = _gpx_bytes_with_name(
-                                winner_c_b["gpx_path"], f"{bld_sel}_{winner_id_b}"
-                            )
-                            st.download_button(
-                                label=f"{t('builder.winner_dl')} {winner_id_b} {winner_c_b['strategy_name']}",
-                                data=winner_gpx,
-                                file_name=f"{bld_sel}_{winner_id_b}.gpx",
-                                mime="application/gpx+xml",
-                                key="bld_dl_winner",
-                            )
-                else:
-                    q_b    = decision_b.get("question_for_user", "")
-                    opts_b = decision_b.get("options", [])
-                    rat_b  = decision_b.get("rationale", "")
-                    if rat_b:
-                        st.warning(f"**Decision Agent:** {rat_b}")
-                    if q_b:
-                        st.info(f"{t('builder.decision_choice')} {q_b}")
-                    if opts_b:
-                        st.radio(t("builder.decision_option"), opts_b, key="bld_opt_radio")
+            else:
+                q_b    = decision_b.get("question_for_user", "")
+                opts_b = decision_b.get("options", [])
+                rat_b  = decision_b.get("rationale", "")
+                if rat_b:
+                    st.warning(f"**Decision Agent:** {rat_b}")
+                if q_b:
+                    st.info(f"{t('builder.decision_choice')} {q_b}")
+                if opts_b:
+                    st.radio(t("builder.decision_option"), opts_b, key="bld_opt_radio")
 
 
-# ─── Tab: GPX Optimizer ────────────────────────────────────────────────────────
-with tab_optimizer:
-    st.subheader(t("optimizer.subheader"))
-    st.caption(t("optimizer.caption"))
+# ─── GPX Optimizer — corpo condiviso ────────────────────────────────────────
+# Due punti di accesso, stesso strumento sottostante (design concordato,
+# Parte 5): il tab di primo livello (workspace, scorciatoia "usa il
+# vincitore" se una route è aperta) e Utility (sempre upload manuale, per
+# ottimizzare file esterni non legati a nessuna route — comportamento
+# identico a quello storico). key_prefix tiene separati i widget key tra le
+# due istanze, altrimenti Streamlit rifiuterebbe le key duplicate.
+def _render_gpx_optimizer(key_prefix: str, open_route_name: str | None = None) -> None:
     st.info(t("optimizer.explainer"))
 
-    opt_uploaded = st.file_uploader(t("optimizer.uploader_label"), type=["gpx"], key="opt_uploader")
+    _winner_key = f"_{key_prefix}_opt_use_winner"
+    if open_route_name:
+        _winner = _find_route_winner_gpx(open_route_name)
+        if _winner:
+            _wpath, _wid, _wprofile = _winner
+            if st.button(
+                t("optimizer.use_winner_btn").format(name=open_route_name, id=_wid, profile=_wprofile),
+                key=f"{key_prefix}_opt_use_winner_btn",
+            ):
+                st.session_state[_winner_key] = str(_wpath)
+                st.rerun()
 
+    opt_uploaded = st.file_uploader(
+        t("optimizer.uploader_label"), type=["gpx"], key=f"{key_prefix}_opt_uploader",
+    )
+
+    # L'upload manuale ha sempre precedenza sulla scorciatoia "usa il
+    # vincitore" (se presenti entrambi nello stesso rerun, capita solo se
+    # l'utente carica un file dopo aver già cliccato la scorciatoia).
+    _source_bytes = None
+    _source_name = None
     if opt_uploaded is not None:
+        st.session_state.pop(_winner_key, None)
+        _source_bytes = opt_uploaded.getvalue()
+        _source_name = opt_uploaded.name
+    elif st.session_state.get(_winner_key):
+        _wpath = st.session_state[_winner_key]
         try:
-            opt_raw = opt_uploaded.getvalue()
-            opt_gpx_parsed = gpxpy.parse(opt_raw.decode("utf-8"))
+            with open(_wpath, "rb") as f:
+                _source_bytes = f.read()
+            _source_name = Path(_wpath).name
+            st.caption(t("optimizer.using_winner_caption").format(name=_source_name))
+        except OSError:
+            st.session_state.pop(_winner_key, None)
+
+    if _source_bytes is not None:
+        try:
+            opt_gpx_parsed = gpxpy.parse(_source_bytes.decode("utf-8"))
 
             opt_can_proceed = True
             if is_already_optimized(opt_gpx_parsed):
                 st.warning(t("optimizer.already_optimized"))
-                opt_force = st.checkbox(t("optimizer.force_reoptimize"), key="opt_force_reopt")
+                opt_force = st.checkbox(t("optimizer.force_reoptimize"), key=f"{key_prefix}_opt_force_reopt")
                 opt_can_proceed = opt_force
 
-            opt_default_name = opt_gpx_parsed.name or Path(opt_uploaded.name).stem
-            if st.session_state.get("opt_last_file") != opt_uploaded.file_id:
-                st.session_state["opt_last_file"] = opt_uploaded.file_id
-                st.session_state["opt_route_name"] = opt_default_name
-            opt_route_name = st.text_input(t("optimizer.route_name_label"), key="opt_route_name")
+            opt_default_name = opt_gpx_parsed.name or Path(_source_name).stem
+            _last_key = f"{key_prefix}_opt_last_file"
+            _name_key = f"{key_prefix}_opt_route_name"
+            if st.session_state.get(_last_key) != _source_name:
+                st.session_state[_last_key] = _source_name
+                st.session_state[_name_key] = opt_default_name
+            opt_route_name = st.text_input(t("optimizer.route_name_label"), key=_name_key)
 
-            if st.button(t("optimizer.btn_run"), key="opt_btn_run", disabled=not opt_can_proceed):
+            if st.button(t("optimizer.btn_run"), key=f"{key_prefix}_opt_btn_run", disabled=not opt_can_proceed):
                 with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False, mode="wb") as tmp_in:
-                    tmp_in.write(opt_raw)
+                    tmp_in.write(_source_bytes)
                     opt_in_path = tmp_in.name
                 with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False) as tmp_out:
                     opt_out_path = tmp_out.name
@@ -1769,7 +2254,7 @@ with tab_optimizer:
                         data=opt_out_bytes,
                         file_name=f"{opt_route_name}_edge840.gpx",
                         mime="application/gpx+xml",
-                        key="opt_dl_btn",
+                        key=f"{key_prefix}_opt_dl_btn",
                     )
                 finally:
                     for _p in (opt_in_path, opt_out_path):
@@ -1777,6 +2262,13 @@ with tab_optimizer:
                         except OSError: pass
         except Exception as e:
             st.error(f"{t('optimizer.parse_error')} {e}")
+
+
+# ─── Tab: GPX Optimizer ────────────────────────────────────────────────────────
+with tab_optimizer:
+    st.subheader(t("optimizer.subheader"))
+    st.caption(t("optimizer.caption"))
+    _render_gpx_optimizer("ws", open_route_name=_open_route_name())
 
 
 # ─── Tab: 🔋 Analisi Giro ─────────────────────────────────────────────────────
@@ -2523,9 +3015,9 @@ with tab_post_ride:
 with tab_utility:
     st.caption(t("utility.caption"))
 
-    _util_geo, _util_filemgmt, _util_viewgpx, _util_debug = st.tabs([
+    _util_geo, _util_optimizer, _util_viewgpx, _util_debug = st.tabs([
         t("utility.sub_geo"),
-        t("utility.sub_filemgmt"),
+        t("utility.sub_optimizer"),
         t("utility.sub_viewgpx"),
         t("utility.sub_debug"),
     ])
@@ -2720,104 +3212,17 @@ with tab_utility:
                             st.session_state["geo_rev"] = f"Errore: {exc}"
                     st.rerun()
 
-    # ── Sotto-tab: Gestione file ──────────────────────────────────────────────
-    with _util_filemgmt:
-        st.caption(t("utility.filemgmt_caption"))
-
-        st.subheader(t("debug.routes_mgmt_header"))
-
-        def _fmt_bytes(n: int) -> str:
-            if n >= 1_000_000:
-                return f"{n / 1_000_000:.1f} MB"
-            return f"{n / 1000:.1f} KB"
-
-        # ── Route pianificate (routes/planned/*.json) ────────────────────────
-        with st.expander(t("debug.routes_mgmt_planned_expander"), expanded=False):
-            _mgmt_routes = _load_saved_routes()
-            if not _mgmt_routes:
-                st.caption(t("debug.no_routes"))
-            else:
-                for _rname, _rdata in _mgmt_routes.items():
-                    _confirm_key = f"dbg_confirm_del_route_{_rname}"
-                    _rcol1, _rcol2, _rcol3 = st.columns([4, 1, 1])
-                    with _rcol1:
-                        st.markdown(
-                            f"**{_rname}** — {t('debug.routes_mgmt_created')} {_rdata.get('created_at', '—')}"
-                        )
-                    with _rcol2:
-                        if st.button(
-                            "📂", key=f"dbg_load_route_{_rname}", help=t("debug.routes_mgmt_load_help"),
-                        ):
-                            st.session_state["_pl_load_route_pending"] = _rname
-                            st.rerun()
-                    with _rcol3:
-                        if st.button("🗑️", key=f"dbg_del_route_{_rname}", help=t("debug.routes_mgmt_delete_help")):
-                            st.session_state[_confirm_key] = True
-                            st.rerun()
-
-                    if st.session_state.get(_confirm_key):
-                        st.warning(t("debug.routes_mgmt_confirm_msg").format(name=_rname))
-                        _rcc1, _rcc2 = st.columns(2)
-                        with _rcc1:
-                            if st.button(
-                                t("debug.confirm_delete_btn"), key=f"dbg_del_route_yes_{_rname}", type="primary"
-                            ):
-                                (_PLANNED_DIR / f"{_rname}.json").unlink(missing_ok=True)
-                                st.session_state.pop(_confirm_key, None)
-                                st.rerun()
-                        with _rcc2:
-                            if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_route_no_{_rname}"):
-                                st.session_state.pop(_confirm_key, None)
-                                st.rerun()
-
-        # ── Cartelle GPX generate (routes/generated/*/) ──────────────────────
-        with st.expander(t("debug.gpx_mgmt_expander"), expanded=False):
-            _gen_dir = Path("routes/generated")
-            _gen_folders = sorted(
-                (p for p in _gen_dir.iterdir() if p.is_dir()),
-                key=lambda p: p.name,
-                reverse=True,
-            ) if _gen_dir.exists() else []
-
-            if not _gen_folders:
-                st.caption(t("debug.gpx_mgmt_no_folders"))
-            else:
-                _gen_stats = []
-                for _folder in _gen_folders:
-                    _gpx_files = list(_folder.glob("*.gpx"))
-                    _gen_stats.append((len(_gpx_files), sum(f.stat().st_size for f in _gpx_files)))
-
-                st.caption(
-                    t("debug.gpx_mgmt_total_size").format(size=_fmt_bytes(sum(b for _, b in _gen_stats)))
-                )
-
-                for _folder, (_n_files, _n_bytes) in zip(_gen_folders, _gen_stats):
-                    _confirm_key = f"dbg_confirm_del_gpx_{_folder.name}"
-                    _gcol1, _gcol2 = st.columns([5, 1])
-                    with _gcol1:
-                        st.markdown(
-                            f"**{_folder.name}** — "
-                            f"{t('debug.gpx_mgmt_folder_info').format(n=_n_files, size=_fmt_bytes(_n_bytes))}"
-                        )
-                    with _gcol2:
-                        if st.button("🗑️", key=f"dbg_del_gpx_{_folder.name}", help=t("debug.gpx_mgmt_delete_help")):
-                            st.session_state[_confirm_key] = True
-                            st.rerun()
-
-                    if st.session_state.get(_confirm_key):
-                        st.warning(t("debug.gpx_mgmt_confirm_msg").format(name=_folder.name, n=_n_files))
-                        _gcc1, _gcc2 = st.columns(2)
-                        with _gcc1:
-                            if st.button(
-                                t("debug.confirm_delete_btn"), key=f"dbg_del_gpx_yes_{_folder.name}", type="primary"
-                            ):
-                                shutil.rmtree(_folder, ignore_errors=True)
-                                st.session_state.pop(_confirm_key, None)
-                                st.rerun()
-                        with _gcc2:
-                            if st.button(t("debug.cancel_delete_btn"), key=f"dbg_del_gpx_no_{_folder.name}"):
-                                st.session_state.pop(_confirm_key, None)
-                                st.rerun()
+    # ── Sotto-tab: GPX Optimizer ───────────────────────────────────────────────
+    # Stesso strumento del tab di primo livello (vedi _render_gpx_optimizer),
+    # qui sempre senza scorciatoia "usa il vincitore" — per ottimizzare file
+    # esterni non legati a nessuna route, comportamento identico a quello
+    # storico. La vecchia "Gestione file" (carica/elimina route, cartelle GPX)
+    # è stata ritirata da qui: superata dal tab File — Le mie route (stessa
+    # cosa ma con cascata reale e rinomina) e File orfani (stessa cosa ma con
+    # filtro sicuro sui soli orfani, invece di elencare tutto indiscriminatamente).
+    with _util_optimizer:
+        st.caption(t("utility.optimizer_caption"))
+        _render_gpx_optimizer("util", open_route_name=None)
 
     # ── Sotto-tab: Visualizza GPX ─────────────────────────────────────────────
     with _util_viewgpx:

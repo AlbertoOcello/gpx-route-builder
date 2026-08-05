@@ -3,12 +3,53 @@ it:
     title: "GPX Route Builder (by A. Ocello)"
     page_title: "GPX Route Builder (by A. Ocello)"
   tabs:
+    file: "📂 File"
     planner: "📐 Planner"
     builder: "🏗️ Builder"
     optimizer: "🧭 GPX Optimizer"
     ride: "🔋 Analisi Giro"
     utility: "🛠️ Utility"
     post_ride: "🏁 Post Ride"
+
+  # ── File (navigazione "documento aperto") ───────────────────────────────────
+  file:
+    caption: "Apri una route esistente per continuare a lavorarci, o creane una nuova."
+    currently_open: "Route aperta: **{name}**"
+    new_header: "🆕 Nuovo"
+    new_btn: "🆕 Nuova pianificazione"
+    new_unsaved_warning: "Hai una pianificazione non salvata, verrà persa. Continuare?"
+    new_confirm_btn: "Sì, continua"
+    open_header: "📂 Apri una route"
+    open_select: "Route pianificata"
+    open_btn: "Apri"
+    recent_header: "🕓 Recenti"
+    myroutes_header: "🗂️ Le mie route"
+    myroutes_summary: >-
+      Creata/modificata {created} · {builder} run Builder · {ride} analisi
+      Ride Analysis · {compare} confronti Post Ride · {feedback} feedback
+    rename_btn: "Rinomina"
+    delete_btn: "Elimina"
+    rename_prompt: "Nuovo nome"
+    rename_confirm_btn: "✏️ Rinomina"
+    rename_empty_error: "Il nome non può essere vuoto."
+    rename_success: "Route rinominata da **{old}** a **{new}**. I GPX già generati restano col vecchio nome."
+    delete_confirm_msg: >-
+      Eliminare **{name}** cancellerà **{builder}** run Builder, **{ride}**
+      analisi Ride Analysis, **{compare}** confronti Post Ride, **{feedback}**
+      feedback e **{files}** file GPX/report collegati su disco, oltre al
+      file della route stesso. L'operazione non è reversibile. Continuare?
+    delete_success: "Route **{name}** eliminata."
+    orphans_header: "🧹 File orfani"
+    orphans_none: "Nessun file orfano trovato — tutte le cartelle GPX e i report sono collegati a una route salvata."
+    orphans_intro: "Non più referenziati da nessuna route salvata:"
+    orphan_dir_row: "📁 **{name}** — {n} file GPX · {size} · {date}"
+    orphan_report_row: "📄 **{name}** — {size} · {date}"
+    orphan_confirm_msg: "Eliminare **{name}** per sempre? L'operazione non è reversibile."
+
+  # ── Placeholder condiviso dai tab workspace vincolati a una route aperta ────
+  workspace:
+    no_route_title: "Nessuna route aperta"
+    no_route_hint: "Apri una route esistente dal tab **📂 File**, oppure usa la scorciatoia qui sotto."
 
   # ── Planner ──────────────────────────────────────────────────────────────────
   planner:
@@ -150,6 +191,7 @@ it:
     no_routes: "Nessuna route pianificata ancora. Usa la tab **📐 Planner** per crearne una."
     select_route: "Route pianificata"
     select_placeholder: "— seleziona —"
+    stale_open_route: "La route aperta \"{name}\" non è più stata trovata su disco (rinominata o eliminata altrove) — apri una route dal tab File."
     expander_summary: "📋 Riepilogo route"
     metric_target: "Target"
     metric_target_free: "Nessun vincolo"
@@ -245,6 +287,8 @@ it:
       popup Garmin. Il risultato è un **nuovo file derivato**: il GPX
       caricato resta intatto.
     uploader_label: "Carica GPX da ottimizzare"
+    use_winner_btn: "🏆 Usa il vincitore di \"{name}\" (candidato {id}, {profile})"
+    using_winner_caption: "Sorgente: vincitore dell'ultima run Builder — {name}"
     already_optimized: "Questo file risulta già ottimizzato (marcatore gpxoptimizer:v1 trovato)."
     force_reoptimize: "Ottimizza comunque"
     route_name_label: "Nome route"
@@ -409,12 +453,12 @@ it:
 
   # ── Utility ──────────────────────────────────────────────────────────────────
   utility:
-    caption: "Strumenti di supporto: geolocalizzazione, gestione file e diagnostica."
+    caption: "Strumenti di supporto: geolocalizzazione, ottimizzazione GPX e diagnostica."
     sub_geo: "📍 Geolocalizza"
-    sub_filemgmt: "🗑️ Gestione file"
+    sub_optimizer: "🧭 GPX Optimizer"
     sub_viewgpx: "🗺️ Visualizza GPX"
     sub_debug: "🔧 Debug"
-    filemgmt_caption: "Cancella vecchie route pianificate o cartelle GPX generate per liberare spazio."
+    optimizer_caption: "Ottimizza un file GPX esterno, non legato a nessuna route (upload manuale)."
     viewgpx_caption: "Carica un file GPX per vederne statistiche e mappa."
 
   # ── Post Ride ────────────────────────────────────────────────────────────────
@@ -500,12 +544,53 @@ en:
     title: "GPX Route Builder (by A. Ocello)"
     page_title: "GPX Route Builder (by A. Ocello)"
   tabs:
+    file: "📂 File"
     planner: "📐 Planner"
     builder: "🏗️ Builder"
     optimizer: "🧭 GPX Optimizer"
     ride: "🔋 Ride Analysis"
     utility: "🛠️ Utility"
     post_ride: "🏁 Post Ride"
+
+  # ── File (open-document navigation) ─────────────────────────────────────────
+  file:
+    caption: "Open an existing route to keep working on it, or create a new one."
+    currently_open: "Open route: **{name}**"
+    new_header: "🆕 New"
+    new_btn: "🆕 New plan"
+    new_unsaved_warning: "You have an unsaved plan in progress, it will be lost. Continue?"
+    new_confirm_btn: "Yes, continue"
+    open_header: "📂 Open a route"
+    open_select: "Planned route"
+    open_btn: "Open"
+    recent_header: "🕓 Recent"
+    myroutes_header: "🗂️ My routes"
+    myroutes_summary: >-
+      Created/modified {created} · {builder} Builder runs · {ride} Ride
+      Analysis analyses · {compare} Post Ride comparisons · {feedback} feedback
+    rename_btn: "Rename"
+    delete_btn: "Delete"
+    rename_prompt: "New name"
+    rename_confirm_btn: "✏️ Rename"
+    rename_empty_error: "Name cannot be empty."
+    rename_success: "Route renamed from **{old}** to **{new}**. Already-generated GPX files keep the old name."
+    delete_confirm_msg: >-
+      Deleting **{name}** will remove **{builder}** Builder runs, **{ride}**
+      Ride Analysis analyses, **{compare}** Post Ride comparisons, **{feedback}**
+      feedback entries and **{files}** linked GPX/report files on disk, plus
+      the route file itself. This cannot be undone. Continue?
+    delete_success: "Route **{name}** deleted."
+    orphans_header: "🧹 Orphan files"
+    orphans_none: "No orphan files found — every GPX folder and report is linked to a saved route."
+    orphans_intro: "No longer referenced by any saved route:"
+    orphan_dir_row: "📁 **{name}** — {n} GPX files · {size} · {date}"
+    orphan_report_row: "📄 **{name}** — {size} · {date}"
+    orphan_confirm_msg: "Permanently delete **{name}**? This cannot be undone."
+
+  # ── Placeholder shared by workspace tabs bound to an open route ────────────
+  workspace:
+    no_route_title: "No route open"
+    no_route_hint: "Open an existing route from the **📂 File** tab, or use the shortcut below."
 
   # ── Planner ──────────────────────────────────────────────────────────────────
   planner:
@@ -647,6 +732,7 @@ en:
     no_routes: "No planned routes yet. Use the **📐 Planner** tab to create one."
     select_route: "Planned route"
     select_placeholder: "— select —"
+    stale_open_route: "The open route \"{name}\" was no longer found on disk (renamed or deleted elsewhere) — open a route from the File tab."
     expander_summary: "📋 Route summary"
     metric_target: "Target"
     metric_target_free: "Unconstrained"
@@ -741,6 +827,8 @@ en:
       name/position markers, no turn-cues or Garmin popups. The result is a
       **new derived file**: the uploaded GPX stays intact.
     uploader_label: "Upload GPX to optimize"
+    use_winner_btn: "🏆 Use the winner of \"{name}\" (candidate {id}, {profile})"
+    using_winner_caption: "Source: winner of the last Builder run — {name}"
     already_optimized: "This file appears to be already optimized (gpxoptimizer:v1 marker found)."
     force_reoptimize: "Optimize anyway"
     route_name_label: "Route name"
@@ -905,12 +993,12 @@ en:
 
   # ── Utility ──────────────────────────────────────────────────────────────────
   utility:
-    caption: "Support tools: geolocation, file management, and diagnostics."
+    caption: "Support tools: geolocation, GPX optimization, and diagnostics."
     sub_geo: "📍 Geolocate"
-    sub_filemgmt: "🗑️ File management"
+    sub_optimizer: "🧭 GPX Optimizer"
     sub_viewgpx: "🗺️ View GPX"
     sub_debug: "🔧 Debug"
-    filemgmt_caption: "Delete old planned routes or generated GPX folders to free up space."
+    optimizer_caption: "Optimize an external GPX file, not linked to any route (manual upload)."
     viewgpx_caption: "Upload a GPX file to see its stats and map."
 
   # ── Post Ride ────────────────────────────────────────────────────────────────
