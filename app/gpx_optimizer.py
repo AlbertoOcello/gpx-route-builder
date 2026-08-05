@@ -14,6 +14,8 @@ import gpxpy
 
 from geopy.distance import geodesic
 
+from gpx_analyzer import gpx_creator_string
+
 log = logging.getLogger(__name__)
 
 OPTIMIZER_MARKER = "gpxoptimizer:v1"
@@ -225,6 +227,7 @@ def optimize_gpx(
     for track in gpx.tracks:
         track.name = optimized_name
     gpx.keywords = OPTIMIZER_MARKER
+    gpx.creator = f"{gpx_creator_string()} — optimized"
 
     with open(output_path, "w", encoding="utf-8") as f:
         f.write(gpx.to_xml())

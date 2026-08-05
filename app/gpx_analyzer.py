@@ -2,9 +2,31 @@
 Analyzer base per file GPX: distanza, dislivello, loop/endpoint check.
 """
 import math
+import os
+from pathlib import Path
 
 import gpxpy
 from geopy.distance import geodesic
+
+
+def gpx_creator_string() -> str:
+    """
+    Stringa per l'attributo <gpx creator="..."> (metadato standard GPX,
+    sull'elemento radice — non <metadata>). Stessa fonte di verità di
+    main.py._app_version()/_build_commit() (file VERSION alla root del repo,
+    env GIT_COMMIT "baked" nell'immagine Docker al build) — non duplicata qui
+    come nuova sorgente, solo riletta: gpx_analyzer.py non può importare da
+    main.py (main.py importa da qui, non viceversa) né gpx_optimizer.py/
+    candidate_generator.py, entrambi scrittori di GPX, dipendono da main.py.
+    """
+    try:
+        version = (Path(__file__).parent.parent / "VERSION").read_text().strip()
+    except OSError:
+        version = "dev"
+    commit = os.environ.get("GIT_COMMIT", "unknown")
+    commit = "dev" if commit == "unknown" else commit
+    return f"GPX Route Builder v{version} (build {commit})"
+
 
 # ── Rilevamento tratti andata/ritorno sovrapposti ("a lecca-lecca") ───────────
 # Un percorso può chiudersi correttamente (start==end) ed essere comunque "falso":
@@ -43,13 +65,20 @@ def _find_out_and_back_runs(
     più vicino tra i punti che sono lontani almeno min_gap_m *lungo il
     tracciato* (non in linea d'aria): un tornante stretto ha punti vicini anche
     in cumulativa, quindi resta escluso; un vero tratto di ritorno ha punti
-    vicini in spazio ma lontani in cumulativa. Conta solo run consecutivi di
-    sovrapposizione lunghi almeno min_run_m, per escludere incroci puntuali
-    (percorso a otto, breve tratto in comune tra due anse).
+    vicini in spazio ma lontani in cumulativa.
 
-    Ogni "spuntone" andata/ritorno produce DUE run speculari (la gamba di andata
-    e quella di ritorno). Li accoppia (ordinati per posizione, esclusa
-    l'eventuale coppia di chiusura anello start≈end).
+    Ogni "spuntone" andata/ritorno produce DUE run speculari (la gamba di
+    andata e quella di ritorno) — vengono accoppiati per posizione PRIMA di
+    applicare la soglia min_run_m, e la soglia si applica alla percorrenza
+    COMBINATA della coppia (andata + ritorno), non a ciascuna gamba
+    singolarmente: vicino al vertice di uno spuntone il matching punto-punto
+    può interrompersi per un breve tratto (drift naturale della strada),
+    spezzando la sovrapposizione in due gambe più corte che, prese
+    singolarmente, potrebbero cadere sotto soglia pur essendo insieme ben
+    oltre. La chiusura d'anello (start≈end, non è una gamba di uno spuntone
+    su un via-point) resta filtrata individualmente, come le altre coppie
+    scartate: esclude incroci puntuali (percorso a otto, breve tratto in
+    comune tra due anse).
 
     Ritorna (percent, cum, paired) dove paired è una lista di (leg_a, leg_b)
     con leg_a/leg_b = (start_idx, end_idx, run_len_m); leg_a è la gamba di
@@ -77,7 +106,7 @@ def _find_out_and_back_runs(
                 overlap[i] = True
                 break
 
-    runs: list[tuple[int, int, float]] = []  # (start_idx, end_idx, run_len_m)
+    raw_runs: list[tuple[int, int, float]] = []  # (start_idx, end_idx, run_len_m) — non ancora filtrati
     run_start = None
     for i in range(n):
         if overlap[i]:
@@ -85,23 +114,21 @@ def _find_out_and_back_runs(
                 run_start = i
         else:
             if run_start is not None:
-                run_len = cum[i - 1] - cum[run_start]
-                if run_len >= min_run_m:
-                    runs.append((run_start, i - 1, run_len))
+                raw_runs.append((run_start, i - 1, cum[i - 1] - cum[run_start]))
                 run_start = None
     if run_start is not None:
-        run_len = cum[n - 1] - cum[run_start]
-        if run_len >= min_run_m:
-            runs.append((run_start, n - 1, run_len))
+        raw_runs.append((run_start, n - 1, cum[n - 1] - cum[run_start]))
 
-    overlapped_m = sum(r[2] for r in runs)
+    # Chiusura anello (start≈end): non è la gamba di uno spuntone, resta
+    # filtrata individualmente. Il resto viene accoppiato per posizione PRIMA
+    # del filtro min_run_m (vedi docstring).
+    closure = [r for r in raw_runs if (r[0] == 0 or r[1] == n - 1) and r[2] >= min_run_m]
+    others = sorted((r for r in raw_runs if r[0] != 0 and r[1] != n - 1), key=lambda r: r[0])
+    candidate_pairs = [(others[i], others[i + 1]) for i in range(0, len(others) - 1, 2)]
+    paired = [(leg_a, leg_b) for leg_a, leg_b in candidate_pairs if leg_a[2] + leg_b[2] >= min_run_m]
+
+    overlapped_m = sum(r[2] for r in closure) + sum(leg_a[2] + leg_b[2] for leg_a, leg_b in paired)
     percent = round(min(100.0, 100.0 * overlapped_m / total_m), 1)
-
-    # Esclude la coppia di chiusura anello (start≈end, non è uno spuntone su
-    # un waypoint) e accoppia i run rimanenti in ordine di posizione.
-    closure = [r for r in runs if r[0] == 0 or r[1] == n - 1]
-    others = sorted((r for r in runs if r not in closure), key=lambda r: r[0])
-    paired = [(others[i], others[i + 1]) for i in range(0, len(others) - 1, 2)]
 
     return percent, cum, paired
 
@@ -200,7 +227,13 @@ def cut_out_and_back_deviations(
 
         cut_made = False
         for leg_a, leg_b in paired:
-            deviation_m = leg_a[2] + leg_b[2]
+            cut_start, cut_end = leg_a[0], leg_b[1]
+            # Percorrenza reale bivio→rientro (non la somma delle sole porzioni
+            # "matchate" delle due gambe, leg_a[2]+leg_b[2]): quest'ultima
+            # sottostima lo spuntone perché esclude il tratto vicino al vertice
+            # dove il matching punto-punto si interrompe — tratto che il taglio
+            # rimuove comunque (cut_start→cut_end lo include per intero).
+            deviation_m = cum[cut_end] - cum[cut_start]
             if deviation_m < min_deviation_m:
                 continue
 
@@ -215,7 +248,6 @@ def cut_out_and_back_deviations(
             if protected:
                 continue
 
-            cut_start, cut_end = leg_a[0], leg_b[1]
             cuts.append({
                 "apex_lat": apex_lat,
                 "apex_lon": apex_lon,

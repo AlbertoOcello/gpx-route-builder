@@ -19,7 +19,7 @@ import gpxpy
 from geopy.distance import geodesic
 
 from brouter_client import get_route
-from gpx_analyzer import analyze_gpx, cut_out_and_back_in_gpx
+from gpx_analyzer import analyze_gpx, cut_out_and_back_in_gpx, gpx_creator_string
 from area_resolver import OverpassUnavailable, resolve_area_traversal, snap_to_nearest_road
 
 log = logging.getLogger(__name__)
@@ -121,7 +121,7 @@ def _apply_loop_fix(strategy: dict) -> dict:
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
 def _is_soft_via(wp: dict) -> bool:
-    return wp.get("role") == "via" and wp.get("source") == "user" and not wp.get("mandatory")
+    return wp.get("role") == "via" and not wp.get("mandatory")
 
 
 def _snap_key(wp: dict) -> tuple:
@@ -221,12 +221,12 @@ def _waypoints_to_lonlat(strategy: dict, snaps: dict[tuple, dict]) -> list[tuple
     Converte i waypoint (già in ordine start→via…→end) in lista (lon, lat) per BRouter.
     Solleva ValueError se un waypoint incluso non ha coordinate (geocoding incompleto).
 
-    Start ed end sono sempre inclusi. Un waypoint "via" con source == "user" e
-    mandatory non True è "soft": è un riferimento di zona già incorporato a
-    monte nella scelta della sequenza da parte del Planner AI, non un punto che
-    BRouter deve toccare esattamente. Lo snap alla strada più vicina è già stato
-    risolto una volta sola per l'intera generazione da _resolve_soft_snaps
-    (condiviso tra i 3 candidati) — qui si legge solo il risultato precomputato.
+    Start ed end sono sempre inclusi. Un waypoint "via" con mandatory non True è
+    "soft" — a prescindere da chi lo ha proposto (utente o Planner AI): è un
+    riferimento di zona, non un punto che BRouter deve toccare esattamente. Lo
+    snap alla strada più vicina è già stato risolto una volta sola per l'intera
+    generazione da _resolve_soft_snaps (condiviso tra i 3 candidati) — qui si
+    legge solo il risultato precomputato.
     """
     result = []
     for wp in strategy["waypoints"]:
@@ -354,6 +354,7 @@ def _set_gpx_name(gpx_path: Path, strategy: dict, label: str) -> None:
         gpx.name = name
         for track in gpx.tracks:
             track.name = name
+        gpx.creator = gpx_creator_string()
 
         with open(gpx_path, "w", encoding="utf-8") as f:
             f.write(gpx.to_xml())
