@@ -344,9 +344,20 @@ def _expected_end(strategy: dict) -> tuple[float, float] | None:
     return (float(end["lon"]), float(end["lat"])) if end else None
 
 
-def _set_gpx_name(gpx_path: Path, strategy: dict, label: str) -> None:
-    """Il Garmin Edge 840 legge il nome route da <trk><name>, non dal filename."""
-    name = strategy.get("name") or f"Route {label}"
+def _set_gpx_name(gpx_path: Path, route_name: str | None, label: str) -> None:
+    """
+    Il Garmin Edge 840 legge il nome route da <trk><name>, non dal filename.
+
+    Usa il nome REALE della route (quella già salvata, selezionata nel
+    Builder) — non l'etichetta della strategia (es. "Variante B
+    (ebike_gravel_easy)", che resta invariata altrove come label descrittiva
+    in UI/risultati, vedi strategy["name"]). Stesso formato "{route}_{label}"
+    già usato per il filename esterno al download (main.py), così il file su
+    disco ha da subito il nome definitivo — non serve più ricalcolarlo al
+    volo ad ogni download (main.py._gpx_bytes_with_name resta comunque come
+    rete di sicurezza per i file generati prima di questo fix).
+    """
+    name = f"{route_name}_{label}" if route_name else f"Route {label}"
     try:
         with open(gpx_path, "r", encoding="utf-8") as f:
             gpx = gpxpy.parse(f)
@@ -410,6 +421,7 @@ def _generate_one(
     attempt: int,
     snaps: dict[tuple, dict],
     snap_issues_summary: dict,
+    route_name: str | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> dict:
     def _emit(message: str) -> None:
@@ -438,7 +450,7 @@ def _generate_one(
         get_route(lonlat, profile=strategy["profile"], output_path=str(gpx_path))
 
         # 2b. Imposta il nome della route nel GPX (BRouter scrive un default fisso)
-        _set_gpx_name(gpx_path, strategy, label)
+        _set_gpx_name(gpx_path, route_name, label)
 
         # 2c. Fix A: taglia le deviazioni andata/ritorno non protette PRIMA di
         # analizzare — il candidato va valutato sul percorso già tagliato, non
@@ -492,7 +504,7 @@ def _generate_one(
                 return _generate_one(
                     alt, label, run_dir, request=None, attempt=2,
                     snaps=snaps, snap_issues_summary=snap_issues_summary,
-                    on_progress=on_progress,
+                    route_name=route_name, on_progress=on_progress,
                 )
 
         return {
@@ -511,11 +523,17 @@ def _generate_one(
 def generate_candidates(
     strategies: list[dict],
     request: dict | None = None,
+    route_name: str | None = None,
     on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
     """
     strategies:  CandidateRoute geocodificati (output di geocode_candidate).
     request:     RouteRequest originale — necessario per retry via Planner (SRS §6.3).
+    route_name:  nome della route già salvata da cui provengono le strategie
+                 (es. "Genga_1") — scritto nel tag <name>/<trk><name> del GPX
+                 sorgente su disco (stesso formato "{route_name}_{label}" del
+                 filename di download). None solo per chiamate che non hanno
+                 ancora una route salvata a monte (fallback su "Route {label}").
     on_progress: callback opzionale (message: str) -> None, chiamato ad ogni
                  passo significativo (snap waypoint, retry Overpass, generazione
                  di ciascun candidato) — per la UI (log "parlante" nel Builder).
@@ -553,7 +571,7 @@ def generate_candidates(
         result = _generate_one(
             strategy, label, run_dir, request=request, attempt=1,
             snaps=snaps, snap_issues_summary=snap_issues_summary,
-            on_progress=on_progress,
+            route_name=route_name, on_progress=on_progress,
         )
         results.append(result)
 

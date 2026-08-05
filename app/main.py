@@ -1430,7 +1430,8 @@ with tab_builder:
 
                             _bld_status.update(label=t("builder.status_brouter"))
                             all_candidates_b = generate_candidates(
-                                strategies_b, request=None, on_progress=_on_bld_progress,
+                                strategies_b, request=None, route_name=bld_sel,
+                                on_progress=_on_bld_progress,
                             )
                             ok_candidates_b = [c for c in all_candidates_b if c["status"] in ("ok", "retried")]
                             failed_b = [c for c in all_candidates_b if c["status"] == "failed"]
