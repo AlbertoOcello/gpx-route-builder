@@ -14,6 +14,7 @@ import io
 import json
 import logging
 import math
+import time
 from datetime import datetime
 
 import gpxpy
@@ -314,8 +315,35 @@ def run_analysis(gpx_stats: dict, profile: dict, lang: str) -> dict:
         ]
 
     prompt = "\n".join(lines)
-    raw = ai_client.generate_json(system, prompt, max_tokens=1200 + 150 * len(climbs))
-    return json.loads(raw)
+    max_tokens = 1200 + 150 * len(climbs)
+
+    _MAX_ATTEMPTS = 3  # 1 tentativo + 2 retry
+    last_exc: json.JSONDecodeError | None = None
+    for attempt in range(1, _MAX_ATTEMPTS + 1):
+        raw = ai_client.generate_json(system, prompt, max_tokens=max_tokens)
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError as exc:
+            # Glitch di campionamento del modello su risposte JSON lunghe/ripetitive
+            # (osservato empiricamente: caratteri spuri iniettati dentro array come
+            # climbs_analysis, 0-12% delle run, più frequente con molte salite) —
+            # non un problema di prompt: una nuova generazione pulita risolve quasi
+            # sempre. Non si tenta di "riparare" il JSON malformato: troppo fragile,
+            # rischia di introdurre dati sbagliati silenziosamente.
+            last_exc = exc
+            _log.warning(
+                "[ride_analysis] JSON non valido al tentativo %d/%d (%s) — risposta grezza:\n%s",
+                attempt, _MAX_ATTEMPTS, exc, raw,
+            )
+            if attempt < _MAX_ATTEMPTS:
+                time.sleep(1.0)
+
+    msg = (
+        f"L'analisi AI ha prodotto una risposta non valida dopo {_MAX_ATTEMPTS} tentativi — riprova."
+        if lang == "it" else
+        f"The AI analysis produced an invalid response after {_MAX_ATTEMPTS} attempts — please retry."
+    )
+    raise RuntimeError(msg) from last_exc
 
 
 def merge_climbs_analysis(gpx_climbs: list[dict], climbs_analysis: list[dict] | None) -> list[dict]:
