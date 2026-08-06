@@ -1058,6 +1058,8 @@ with tab_file:
 with tab_planner:
     st.subheader(t("planner.subheader"))
     st.caption(t("planner.caption"))
+    if _open_route_name():
+        st.success(t("planner.open_route_banner").format(name=_open_route_name()))
 
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
     # solo un'assegnazione esplicita a session_state[key] fatta prima del
@@ -1324,16 +1326,14 @@ with tab_planner:
                 free_text=pl_free_text.strip(),
             )
 
-        col_btn1, col_btn2, col_btn3 = st.columns(3)
+        col_btn1, col_btn2 = st.columns(2)
         with col_btn1:
+            # Un solo bottone per prima generazione e rigenerazione dopo
+            # modifiche — "Pianifica" e "Rigenera" eseguivano lo stesso
+            # branch identico (_pl_build_request → _run_planner_generation),
+            # nessuna logica reale da distinguere.
             plan_btn = st.button(t("planner.btn_plan"), type="primary", key="btn_pl_plan")
         with col_btn2:
-            regen_btn = st.button(
-                t("planner.btn_regen"),
-                key="btn_pl_regen",
-                disabled="pl_result" not in st.session_state,
-            )
-        with col_btn3:
             accept_btn = st.button(
                 t("planner.btn_accept"),
                 key="btn_pl_accept",
@@ -1478,6 +1478,12 @@ with tab_planner:
                 if st.button(t("debug.confirm_delete_btn"), key="btn_pl_update_yes", type="primary"):
                     try:
                         _delete_route_artifacts(_existing_for_update)
+                        # I candidati Builder in sessione referenziano i GPX appena
+                        # cancellati sopra — senza questo pop, il tab Builder
+                        # ri-renderizzerebbe il vecchio bld_result (stesso route_name,
+                        # nessun controllo di freschezza) puntando a file non più
+                        # su disco.
+                        st.session_state.pop("bld_result", None)
                         res = st.session_state["pl_result"]
                         saved_path = _save_planned_route(
                             route_name=_pl_update_pending,
@@ -1587,7 +1593,7 @@ with tab_planner:
                 _pl_status.update(label=t("planner.status_error"), state="error")
                 st.error(f"Errore Planner: {exc}")
 
-    if plan_btn or regen_btn:
+    if plan_btn:
         # Safety net: nome arrivo scritto ma coordinate mai geocodificate (né
         # col bottone 📍 né a mano) — bloccare qui, non lasciar passare valori
         # vuoti/None fino a _pl_build_request come se fosse un end valido.
@@ -1725,6 +1731,8 @@ with tab_planner:
 with tab_builder:
     st.subheader(t("builder.subheader"))
     st.caption(t("builder.caption"))
+    if _open_route_name():
+        st.success(t("builder.open_route_banner").format(name=_open_route_name()))
 
     # Builder lavora sempre e solo sulla route corrente aperta (navigazione
     # "documento aperto") — niente più tendina di riselezione propria, che
@@ -2078,11 +2086,18 @@ with tab_builder:
                 )
 
                 if sel_view_b == view_opts_b[0]:
-                    m_b = _build_multi_map(
-                        candidates_b, scored_b, winner_id_b,
-                        {"lat": start_lat_b, "lon": start_lon_b},
-                    )
-                    st_folium(m_b, width=None, height=520, key="bld_map_multi", use_container_width=True)
+                    try:
+                        m_b = _build_multi_map(
+                            candidates_b, scored_b, winner_id_b,
+                            {"lat": start_lat_b, "lon": start_lon_b},
+                        )
+                    except FileNotFoundError:
+                        # bld_result in sessione punta a GPX non più su disco
+                        # (route aggiornata/rigenerata altrove) — non ancora
+                        # coperto da un'invalidazione esplicita in questo punto.
+                        st.warning(t("builder.stale_results_warning"))
+                    else:
+                        st_folium(m_b, width=None, height=520, key="bld_map_multi", use_container_width=True)
                 else:
                     idx_b = view_opts_b.index(sel_view_b) - 1
                     c_b, s_b = ordered_b[idx_b]
@@ -2108,16 +2123,20 @@ with tab_builder:
                                         name=_attr["waypoint_name"], km=_attr["overlap_km"]
                                     )
                                 )
-                    m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
-                    st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
-                    gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")
-                    st.download_button(
-                        label=f"{t('builder.btn_download')} {c_b['id']} {c_b['strategy_name']}",
-                        data=gpx_bytes_b,
-                        file_name=f"{bld_sel}_{c_b['id']}.gpx",
-                        mime="application/gpx+xml",
-                        key=f"bld_dl_{c_b['id']}",
-                    )
+                    try:
+                        m_b = _build_map(c_b["gpx_path"], start_lat_b, start_lon_b)
+                        gpx_bytes_b = _gpx_bytes_with_name(c_b["gpx_path"], f"{bld_sel}_{c_b['id']}")
+                    except FileNotFoundError:
+                        st.warning(t("builder.stale_results_warning"))
+                    else:
+                        st_folium(m_b, width=None, height=520, key=f"bld_map_{c_b['id']}", use_container_width=True)
+                        st.download_button(
+                            label=f"{t('builder.btn_download')} {c_b['id']} {c_b['strategy_name']}",
+                            data=gpx_bytes_b,
+                            file_name=f"{bld_sel}_{c_b['id']}.gpx",
+                            mime="application/gpx+xml",
+                            key=f"bld_dl_{c_b['id']}",
+                        )
 
                     # ── Analisi salite (Parte 2 — oggettiva) ────────────────
                     climbs_b = c_b["analysis"].get("climbs") or []
@@ -2155,16 +2174,20 @@ with tab_builder:
                         + (f"  ·  Score: {winner_s_b['total_score']:.1f}/100" if winner_s_b else "")
                     )
                     if winner_c_b.get("gpx_path"):
-                        winner_gpx = _gpx_bytes_with_name(
-                            winner_c_b["gpx_path"], f"{bld_sel}_{winner_id_b}"
-                        )
-                        st.download_button(
-                            label=f"{t('builder.winner_dl')} {winner_id_b} {winner_c_b['strategy_name']}",
-                            data=winner_gpx,
-                            file_name=f"{bld_sel}_{winner_id_b}.gpx",
-                            mime="application/gpx+xml",
-                            key="bld_dl_winner",
-                        )
+                        try:
+                            winner_gpx = _gpx_bytes_with_name(
+                                winner_c_b["gpx_path"], f"{bld_sel}_{winner_id_b}"
+                            )
+                        except FileNotFoundError:
+                            st.warning(t("builder.stale_results_warning"))
+                        else:
+                            st.download_button(
+                                label=f"{t('builder.winner_dl')} {winner_id_b} {winner_c_b['strategy_name']}",
+                                data=winner_gpx,
+                                file_name=f"{bld_sel}_{winner_id_b}.gpx",
+                                mime="application/gpx+xml",
+                                key="bld_dl_winner",
+                            )
             else:
                 q_b    = decision_b.get("question_for_user", "")
                 opts_b = decision_b.get("options", [])

@@ -57,6 +57,7 @@ it:
     caption: >-
       Il Planner Claude ordina i tuoi waypoint geograficamente e ne aggiunge
       di propri se necessario. Il Builder (Fase 2) genererà le tracce reali.
+    open_route_banner: "Route aperta: **{name}**"
     start_label: "**Partenza**"
     end_label: "**Punto di arrivo**"
     form:
@@ -95,7 +96,6 @@ it:
     geo_not_found: "non trovato — prova un nome più preciso o inserisci le coordinate manualmente"
     end_not_geocoded: "Hai scritto un nome per il punto di arrivo ma non hai geocodificato le coordinate — premi 📍 o inseriscile manualmente prima di continuare"
     btn_plan: "🗺️ Pianifica waypoint"
-    btn_regen: "🔄 Rigenera"
     btn_reset: "🔄 Reset"
     btn_accept: "✅ Accetta route"
     naming_header: "**Dai un nome a questa route:**"
@@ -188,10 +188,12 @@ it:
     caption: >-
       Scegli una route pianificata dal Planner, configura il profilo BRouter
       e genera le 3 varianti GPX reali con scoring e scelta automatica.
+    open_route_banner: "Route aperta: **{name}**"
     no_routes: "Nessuna route pianificata ancora. Usa la tab **📐 Planner** per crearne una."
     select_route: "Route pianificata"
     select_placeholder: "— seleziona —"
     stale_open_route: "La route aperta \"{name}\" non è più stata trovata su disco (rinominata o eliminata altrove) — apri una route dal tab File."
+    stale_results_warning: "⚠️ Dati non più disponibili per questo candidato (la pianificazione è stata aggiornata) — genera di nuovo per vedere i risultati aggiornati."
     expander_summary: "📋 Riepilogo route"
     metric_target: "Target"
     metric_target_free: "Nessun vincolo"
@@ -598,6 +600,7 @@ en:
     caption: >-
       The Claude Planner sorts your waypoints geographically and adds its own
       where needed. The Builder (Phase 2) will generate the actual tracks.
+    open_route_banner: "Open route: **{name}**"
     start_label: "**Start**"
     end_label: "**End point**"
     form:
@@ -636,7 +639,6 @@ en:
     geo_not_found: "not found — try a more specific name or enter coordinates manually"
     end_not_geocoded: "You typed a name for the end point but haven't geocoded the coordinates — press 📍 or enter them manually before continuing"
     btn_plan: "🗺️ Plan waypoints"
-    btn_regen: "🔄 Regenerate"
     btn_reset: "🔄 Reset"
     btn_accept: "✅ Accept route"
     naming_header: "**Give this route a name:**"
@@ -729,10 +731,12 @@ en:
     caption: >-
       Choose a planned route from the Planner, configure the BRouter profile
       and generate the 3 real GPX variants with scoring and automatic selection.
+    open_route_banner: "Open route: **{name}**"
     no_routes: "No planned routes yet. Use the **📐 Planner** tab to create one."
     select_route: "Planned route"
     select_placeholder: "— select —"
     stale_open_route: "The open route \"{name}\" was no longer found on disk (renamed or deleted elsewhere) — open a route from the File tab."
+    stale_results_warning: "⚠️ Data no longer available for this candidate (the plan was updated) — generate again to see the updated results."
     expander_summary: "📋 Route summary"
     metric_target: "Target"
     metric_target_free: "Unconstrained"
