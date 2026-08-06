@@ -1977,7 +1977,30 @@ with tab_builder:
                             st.code(_tb.format_exc(), language="text")
 
         # ── Risultati Builder ─────────────────────────────────────────────
+        # Navigazione "documento aperto" (v2.0): aprire una route deve mostrare
+        # quello che esiste già su di essa, non richiedere di rigenerare. Se in
+        # sessione non c'è ancora un risultato per QUESTA route (mai generato in
+        # questo giro, oppure si è appena passati a un'altra route aperta), lo
+        # ricostruiamo dall'ultimo run salvato su disco (builder_results) — stessa
+        # forma di st.session_state["bld_result"] scritta dalla generazione live,
+        # cosi il rendering sotto è invariato sia che i dati vengano da un click
+        # "Genera" appena fatto sia che vengano da un run di una sessione precedente.
         bld_res = st.session_state.get("bld_result")
+        if not bld_res or bld_res.get("route_name") != bld_sel:
+            _saved_runs_b = _normalize_builder_results(rd_b)
+            if _saved_runs_b:
+                _last_run_b = _saved_runs_b[-1]
+                _all_c_b = _last_run_b.get("candidates", [])
+                _ok_c_b = [c for c in _all_c_b if c.get("status") in ("ok", "retried")]
+                bld_res = {
+                    "route_name": bld_sel,
+                    "request": req_b,
+                    "all_candidates": _all_c_b,
+                    "candidates": _ok_c_b,
+                    "scored": _last_run_b.get("scored", []),
+                    "decision": _last_run_b.get("decision", {}),
+                }
+                st.session_state["bld_result"] = bld_res
         if bld_res and bld_res.get("route_name") == bld_sel:
             candidates_b  = bld_res["candidates"]      # only ok/retried
             all_cands_b   = bld_res.get("all_candidates", candidates_b)
