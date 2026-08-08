@@ -119,6 +119,13 @@ _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
 # collegati restano volatili (solo session_state + download), come deciso.
 _RIDE_REPORTS_DIR = Path("routes/ride_reports")
 
+# GPX dei percorsi realmente pedalati caricati nel Builder come "Opzione D"
+# (es. export da Garmin) — persistiti allo stesso modo dei GPX generati dal
+# Builder/report Ride Analysis, referenziati da actual_rides nel JSON della
+# route. Campo indipendente da builder_results: non tocca né è toccato dalla
+# cascata di cancellazione "Aggiorna [nome]" (vedi _save_planned_route).
+_ACTUAL_RIDES_DIR = Path("routes/actual_rides")
+
 # Soglia (bassa, informativa) per mostrare quale waypoint ha causato uno spuntone
 # andata/ritorno — più bassa di OUT_AND_BACK_WARN_THRESHOLD_PCT (20%, warning
 # vero e proprio): qui vogliamo informare anche su casi minori, tono neutro.
@@ -218,8 +225,12 @@ def _build_multi_map(
     scored: list,
     winner_id: str | None,
     start: dict,
+    actual_rides: list | None = None,
 ) -> folium.Map:
-    """Mappa con tutti i candidati sovrapposti: verde=scelto, blu=valido, grigio=scartato."""
+    """Mappa con tutti i candidati sovrapposti: verde=scelto, blu=valido, grigio=scartato.
+    actual_rides (Opzione D, percorsi realmente pedalati) sono overlay puramente
+    informativi — mai scelti/scartati, colore arancio dedicato per distinguerli
+    a colpo d'occhio dai candidati A/B/C generati da BRouter."""
     m = folium.Map(location=[start["lat"], start["lon"]], zoom_start=12, scrollWheelZoom=False)
     folium.Marker(
         [start["lat"], start["lon"]],
@@ -250,6 +261,15 @@ def _build_multi_map(
             poly_kw["dash_array"] = dash
         folium.PolyLine(coords, **poly_kw).add_to(fg)
         fg.add_to(m)
+
+    for _d_idx, ar in enumerate(actual_rides or []):
+        d_coords = _gpx_coords(ar["gpx_path"])
+        d_label = f"D{_d_idx + 1} — {t('builder.actual_ride_map_label')} ({ar.get('original_filename', '—')})"
+        fg_d = folium.FeatureGroup(name=d_label, show=True)
+        folium.PolyLine(
+            d_coords, color="#ff7f0e", weight=3.5, opacity=0.9, dash_array="4 6", tooltip=d_label,
+        ).add_to(fg_d)
+        fg_d.add_to(m)
 
     folium.LayerControl(collapsed=False).add_to(m)
     return m
@@ -306,6 +326,77 @@ def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
         })
     return rows
+
+
+def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_lat: float, start_lon: float) -> None:
+    """
+    Vista ricca per un percorso realmente pedalato (Opzione D) — mappa, stats,
+    profilo altimetrico, salite. Stessa resa di un candidato A/B/C ma senza
+    punteggio: non è mai un candidato tra cui scegliere. Condivisa dai due
+    punti d'ingresso nel tab Builder (route con o senza run Builder attivi).
+    """
+    analysis_d = ar_d.get("analysis", {})
+    st.caption(t("builder.actual_ride_caption").format(filename=ar_d.get("original_filename", "—")))
+    col_dm1, col_dm2 = st.columns(2)
+    col_dm1.metric(t("analizza.metric_distance"), f"{analysis_d.get('distance_km', 0):.1f} km")
+    col_dm2.metric(
+        t("analizza.metric_elev_up"), f"{analysis_d.get('elevation_gain_m', 0):.0f} m",
+        help=t("analizza.metric_elev_up_help"),
+    )
+    try:
+        m_d = _build_map(ar_d["gpx_path"], start_lat, start_lon)
+        gpx_bytes_d = _gpx_bytes_with_name(ar_d["gpx_path"], f"{route_name}_D{d_idx + 1}")
+    except FileNotFoundError:
+        st.warning(t("builder.stale_results_warning"))
+    else:
+        st_folium(m_d, width=None, height=520, key=f"bld_map_actual_{d_idx}", use_container_width=True)
+        st.download_button(
+            label=f"{t('builder.btn_download')} D{d_idx + 1}",
+            data=gpx_bytes_d,
+            file_name=f"{route_name}_D{d_idx + 1}.gpx",
+            mime="application/gpx+xml",
+            key=f"bld_dl_actual_{d_idx}",
+        )
+
+    climbs_d = analysis_d.get("climbs") or []
+    profile_d = analysis_d.get("elevation_profile") or {}
+    st.markdown(f"**{t('climbs.header')}**")
+    fig_climb_d = _render_climb_profile_chart(profile_d)
+    if fig_climb_d is not None:
+        st.pyplot(fig_climb_d, use_container_width=True)
+    if climbs_d:
+        st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_d)))
+        st.dataframe(_climbs_table_rows(climbs_d, top_n=5), use_container_width=True, hide_index=True)
+    else:
+        st.caption(t("climbs.no_climbs"))
+
+
+def _render_actual_ride_uploader(route_name: str, widget_key: str) -> None:
+    """
+    Upload di un percorso realmente pedalato come "Opzione D" — mai incluso
+    in candidates_b/scored_b/run_decision, resta sempre fuori dal ranking
+    per costruzione (lista separata in session_state["bld_actual_rides"]).
+    Condiviso dai due punti d'ingresso nel tab Builder (route con o senza
+    run Builder attivi) — widget_key li tiene distinti per Streamlit.
+    """
+    with st.expander(t("builder.actual_ride_uploader_label"), expanded=False):
+        _actual_ride_file = st.file_uploader(
+            t("builder.actual_ride_uploader_label"),
+            type=["gpx"], key=widget_key,
+            label_visibility="collapsed",
+        )
+        if (_actual_ride_file is not None
+                and st.session_state.get("_bld_actual_ride_last_upload") != _actual_ride_file.file_id):
+            try:
+                _record_d = _save_actual_ride(route_name, _actual_ride_file.read(), _actual_ride_file.name)
+            except Exception as exc:
+                st.error(f"{t('builder.actual_ride_upload_error')}: {exc}")
+            else:
+                st.session_state.setdefault("bld_actual_rides", [])
+                st.session_state["bld_actual_rides"].append(_record_d)
+                st.session_state["_bld_actual_ride_last_upload"] = _actual_ride_file.file_id
+                st.success(t("builder.actual_ride_uploaded"))
+                st.rerun()
 
 
 def _climbs_analysis_table_rows(merged_climbs: list[dict], is_ebike: bool) -> list[dict]:
@@ -749,6 +840,21 @@ def _find_route_winner_gpx(route_name: str) -> tuple[Path, str, str] | None:
     return None
 
 
+def _current_actual_rides(route_name: str, fallback: list) -> list:
+    """
+    Valore più aggiornato di actual_rides per una route: se il Builder ha
+    già caricato/idratato actual_rides per QUESTA route in sessione
+    (st.session_state["bld_actual_rides"], vedi tab Builder), quella lista
+    può contenere upload fatti in questo stesso giro e non ancora scritti su
+    disco — va preferita al fallback (tipicamente il valore letto da disco)
+    per non perderli al primo salvataggio successivo dal Planner.
+    """
+    if (st.session_state.get("_bld_actual_rides_route") == route_name
+            and "bld_actual_rides" in st.session_state):
+        return st.session_state["bld_actual_rides"]
+    return fallback
+
+
 def _save_planned_route(
     route_name: str,
     request: RouteRequest,
@@ -768,8 +874,25 @@ def _save_planned_route(
     "Aggiorna [nome]" esplicito (vedi _delete_route_artifacts), mai da un
     salvataggio Planner qualunque — chi chiama questa funzione su una route
     già esistente deve aver già gestito quell'azzeramento a monte.
+
+    actual_rides (percorsi realmente pedalati caricati nel Builder come
+    Opzione D) fa eccezione: non è mai azzerata da questa funzione, nemmeno
+    nel ramo "Aggiorna" — i giri reali restano validi indipendentemente da
+    quante volte la pianificazione viene rigenerata, quindi va sempre
+    riportata dal JSON esistente (se presente), o dalla sessione se più
+    aggiornata (upload fatto nel Builder in questo giro, vedi
+    _current_actual_rides), invece di essere inclusa nel payload "fresco"
+    qui sotto.
     """
     _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
+    path = _PLANNED_DIR / f"{route_name}.json"
+    existing_actual_rides = []
+    if path.exists():
+        try:
+            existing_actual_rides = json.loads(path.read_text(encoding="utf-8")).get("actual_rides", [])
+        except Exception:
+            pass
+    existing_actual_rides = _current_actual_rides(route_name, existing_actual_rides)
     payload = {
         "route_name": route_name,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -784,8 +907,8 @@ def _save_planned_route(
         "comparison_history": [],
         "ride_analysis_history": [],
         "feedback_history": [],
+        "actual_rides": existing_actual_rides,
     }
-    path = _PLANNED_DIR / f"{route_name}.json"
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
 
@@ -811,6 +934,33 @@ def _analyze_gpx_bytes(raw: bytes) -> tuple[list, list, dict]:
         try: os.unlink(tmp_path)
         except OSError: pass
     return pts, coords, analysis
+
+
+def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> dict:
+    """
+    Persiste su disco un GPX di un percorso realmente pedalato caricato nel
+    Builder come "Opzione D" e ne pre-calcola l'analisi (stesso motore
+    A/B/C, gpx_analyzer.analyze_gpx) — così il rendering non deve
+    ricalcolarla a ogni rerun. Ritorna il record da appendere ad
+    actual_rides, non scrive ancora il JSON della route (stesso
+    comportamento già in uso per builder_results: prima session_state, poi
+    persistito al salvataggio route).
+    """
+    _ACTUAL_RIDES_DIR.mkdir(parents=True, exist_ok=True)
+    _, coords = _parse_gpx_bytes(raw)
+    ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    safe_route = re.sub(r"[^\w\-]", "_", route_name)
+    gpx_path = _ACTUAL_RIDES_DIR / f"{safe_route}_{ts}.gpx"
+    gpx_path.write_bytes(raw)
+    closure_m = geodesic(coords[0], coords[-1]).meters if len(coords) >= 2 else 0.0
+    auto_rt = "loop" if closure_m < 500 else "out_and_back"
+    analysis = analyze_gpx(str(gpx_path), route_type=auto_rt)
+    return {
+        "uploaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "original_filename": original_filename,
+        "gpx_path": str(gpx_path),
+        "analysis": analysis,
+    }
 
 
 # ─── Tab: File ────────────────────────────────────────────────────────────────
@@ -1758,6 +1908,18 @@ with tab_builder:
         req_b = rd_b.get("request", {})
         wps_b = rd_b.get("ordered_waypoints", [])
 
+        # Percorsi realmente pedalati caricati come "Opzione D" — campo
+        # indipendente da bld_result/builder_results, mai svuotato dalla
+        # cascata "Aggiorna" (vedi _save_planned_route). Auto-caricati dal
+        # JSON su disco al primo render per QUESTA route aperta. Vive fuori
+        # dal blocco "bld_res" sottostante apposta: deve restare visibile
+        # anche se la route non ha (più) nessun run Builder — es. subito
+        # dopo una cascata di cancellazione che azzera solo builder_results.
+        if st.session_state.get("_bld_actual_rides_route") != bld_sel:
+            st.session_state["bld_actual_rides"] = list(rd_b.get("actual_rides", []))
+            st.session_state["_bld_actual_rides_route"] = bld_sel
+        actual_rides_b = st.session_state.get("bld_actual_rides", [])
+
         # ── Riepilogo readonly ────────────────────────────────────────────
         with st.expander(t("builder.expander_summary"), expanded=True):
             narrative_b = rd_b.get("route_narrative", "")
@@ -1942,6 +2104,14 @@ with tab_builder:
                             # l'unica run precedente.
                             try:
                                 rd_b_updated = dict(rd_b)
+                                # actual_rides (Opzione D) non passa da questo salvataggio
+                                # live dei run Builder per costruzione — ma se in sessione
+                                # ce n'è una versione più aggiornata (upload appena fatto,
+                                # non ancora su disco), va comunque preservata qui invece
+                                # di essere sovrascritta col valore stale di rd_b.
+                                rd_b_updated["actual_rides"] = _current_actual_rides(
+                                    bld_sel, rd_b.get("actual_rides", [])
+                                )
                                 _builder_runs = _normalize_builder_results(rd_b)
                                 _builder_runs.append({
                                     "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -2096,23 +2266,34 @@ with tab_builder:
             else:
                 st.dataframe(rows_b, use_container_width=True, hide_index=True)
 
-            # Map — only when there are ok candidates
-            if ordered_b:
+            # Map — only when there are ok candidates or an uploaded real ride
+            if ordered_b or actual_rides_b:
                 st.subheader(t("builder.explore_subheader"))
+
+                _render_actual_ride_uploader(bld_sel, "bld_actual_ride_uploader")
+
+                n_ordered_b = len(ordered_b)
                 view_opts_b = [t("builder.explore_all")] + [
                     f"{'★ ' if c['id'] == winner_id_b else ('✗ ' if s['discarded'] else '· ')}"
                     f"{c['id']} — {c['strategy_name']} ({c['analysis']['distance_km']:.1f} km · {s['total_score']:.0f}pt)"
                     for c, s in ordered_b
+                ] + [
+                    t("builder.actual_ride_option_label").format(
+                        idx=_i + 1, date=(_ar.get("uploaded_at") or "—")[:16].replace("T", " "),
+                    )
+                    for _i, _ar in enumerate(actual_rides_b)
                 ]
                 sel_view_b = st.radio(
                     t("builder.explore_radio"), view_opts_b, horizontal=True, key="bld_explore_radio"
                 )
+                sel_idx_b = view_opts_b.index(sel_view_b) - 1
 
                 if sel_view_b == view_opts_b[0]:
                     try:
                         m_b = _build_multi_map(
                             candidates_b, scored_b, winner_id_b,
                             {"lat": start_lat_b, "lon": start_lon_b},
+                            actual_rides=actual_rides_b,
                         )
                     except FileNotFoundError:
                         # bld_result in sessione punta a GPX non più su disco
@@ -2121,8 +2302,8 @@ with tab_builder:
                         st.warning(t("builder.stale_results_warning"))
                     else:
                         st_folium(m_b, width=None, height=520, key="bld_map_multi", use_container_width=True)
-                else:
-                    idx_b = view_opts_b.index(sel_view_b) - 1
+                elif sel_idx_b < n_ordered_b:
+                    idx_b = sel_idx_b
                     c_b, s_b = ordered_b[idx_b]
                     if s_b["discarded"]:
                         st.error(f"✗ Candidato scartato: {s_b['discard_reason']}")
@@ -2176,6 +2357,12 @@ with tab_builder:
                         )
                     else:
                         st.caption(t("climbs.no_climbs"))
+                else:
+                    # ── Opzione D: percorso realmente pedalato — stessa vista
+                    # ricca di A/B/C (mappa, profilo, salite, stats) ma senza
+                    # punteggio: non è mai un candidato tra cui scegliere.
+                    d_idx = sel_idx_b - n_ordered_b
+                    _render_actual_ride_detail(actual_rides_b[d_idx], d_idx, bld_sel, start_lat_b, start_lon_b)
 
             # Decision Agent
             st.divider()
@@ -2221,6 +2408,45 @@ with tab_builder:
                     st.info(f"{t('builder.decision_choice')} {q_b}")
                 if opts_b:
                     st.radio(t("builder.decision_option"), opts_b, key="bld_opt_radio")
+        elif actual_rides_b:
+            # Nessun run Builder ancora — o appena azzerato da una cascata
+            # "Aggiorna" — ma ci sono percorsi reali caricati: restano
+            # visibili ed esplorabili indipendentemente (mai persi, vedi
+            # _save_planned_route), stessa vista ricca di quando esistono
+            # anche candidati A/B/C.
+            st.divider()
+            st.subheader(t("builder.explore_subheader"))
+
+            start_b = req_b.get("start") if isinstance(req_b, dict) else {}
+            if isinstance(start_b, dict):
+                start_lat_b = start_b.get("lat", 43.7136)
+                start_lon_b = start_b.get("lon", 13.2278)
+            else:
+                start_lat_b, start_lon_b = 43.7136, 13.2278
+
+            _render_actual_ride_uploader(bld_sel, "bld_actual_ride_uploader_noresults")
+
+            if len(actual_rides_b) == 1:
+                _render_actual_ride_detail(actual_rides_b[0], 0, bld_sel, start_lat_b, start_lon_b)
+            else:
+                d_view_opts = [t("builder.explore_all")] + [
+                    t("builder.actual_ride_option_label").format(
+                        idx=_i + 1, date=(_ar.get("uploaded_at") or "—")[:16].replace("T", " "),
+                    )
+                    for _i, _ar in enumerate(actual_rides_b)
+                ]
+                d_sel_view = st.radio(
+                    t("builder.explore_radio"), d_view_opts, horizontal=True, key="bld_explore_radio_d_only"
+                )
+                if d_sel_view == d_view_opts[0]:
+                    m_d_all = _build_multi_map(
+                        [], [], None, {"lat": start_lat_b, "lon": start_lon_b},
+                        actual_rides=actual_rides_b,
+                    )
+                    st_folium(m_d_all, width=None, height=520, key="bld_map_multi_d_only", use_container_width=True)
+                else:
+                    _d_idx2 = d_view_opts.index(d_sel_view) - 1
+                    _render_actual_ride_detail(actual_rides_b[_d_idx2], _d_idx2, bld_sel, start_lat_b, start_lon_b)
 
 
 # ─── GPX Optimizer — corpo condiviso ────────────────────────────────────────
