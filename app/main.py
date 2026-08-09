@@ -1437,53 +1437,6 @@ with tab_planner:
             help=t("planner.form.waypoints_help"),
         )
 
-        # ── Mini-mappa di geolocalizzazione (stessa logica di Utility →
-        # Geolocalizza, qui però il click aggiunge direttamente una riga di
-        # coordinate grezze — sempre mandatory, vedi _parse_pl_waypoint_line —
-        # invece di limitarsi a mostrarle da copiare a mano). doubleClickZoom
-        # disattivato apposta: altrimenti un doppio click aggiungerebbe SI il
-        # waypoint ma zoomerebbe comunque la mappa (comportamento nativo
-        # Leaflet), vanificando la persistenza dello zoom qui sotto.
-        # Sempre visibile (non in un expander): probabilmente lo strumento
-        # più usato del Planner, non deve richiedere un click in più per
-        # essere raggiunto.
-        with st.container():
-            st.markdown(f"**{t('planner.geo_map_expander')}**")
-            st.caption(t("planner.geo_map_caption"))
-            _pl_geo_last = st.session_state.get("pl_geo_last_click")
-            _pl_geo_zoom = st.session_state.get("pl_geo_zoom") or 12
-            _pl_geo_ctr = list(_pl_geo_last) if _pl_geo_last else [pl_start_lat, pl_start_lon]
-            m_pl_geo = folium.Map(
-                location=_pl_geo_ctr, zoom_start=_pl_geo_zoom,
-                scrollWheelZoom=False, doubleClickZoom=False,
-            )
-            if _pl_geo_last:
-                folium.Marker(
-                    list(_pl_geo_last),
-                    tooltip=t("planner.geo_map_last_added"),
-                    icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
-                ).add_to(m_pl_geo)
-            _pl_geo_map_data = st_folium(
-                m_pl_geo,
-                width=None,
-                height=520,
-                returned_objects=["last_clicked", "zoom"],
-                key="pl_geo_map",
-                use_container_width=True,
-            )
-            # Salva lo zoom corrente per il prossimo rerun — stesso fix applicato
-            # a Utility → Geolocalizza (vedi commento lì per il motivo del bug).
-            if _pl_geo_map_data and _pl_geo_map_data.get("zoom") is not None:
-                st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
-
-            _pl_geo_clicked = _pl_geo_map_data.get("last_clicked") if _pl_geo_map_data else None
-            if _pl_geo_clicked:
-                _new_c = (round(float(_pl_geo_clicked["lat"]), 7), round(float(_pl_geo_clicked["lng"]), 7))
-                if st.session_state.get("pl_geo_last_click") != _new_c:
-                    st.session_state["pl_geo_last_click"] = _new_c
-                    st.session_state["_pl_geo_add_pending"] = f"{_new_c[0]:.5f},{_new_c[1]:.5f}"
-                    st.rerun()
-
         # SS%/SP% rimossi dalla UI: dipendono da osm_enricher.py, mai collegato
         # alla pipeline live (vedi models.py) — mostrare un controllo che non ha
         # alcun effetto sarebbe fuorviante. Restano come default nel modello dati.
@@ -1926,13 +1879,54 @@ with tab_planner:
                 st.markdown(t("planner.result_user_prompt"))
                 st.code(res["user_prompt"], language="text")
         else:
-            # Niente più una seconda mappa statica "punto di partenza" qui:
-            # duplicava/affiancava la mini-mappa di geolocalizzazione ora
-            # sempre visibile in col_form (stessa area, stesso marker di
-            # partenza), risultando confusionaria — due mappe leaflet quasi
-            # identiche una sopra l'altra. Quella mini-mappa resta l'unico
-            # punto della UI per vedere/selezionare punti prima di pianificare.
+            # Niente più la vecchia mappa statica "punto di partenza": al suo
+            # posto, nella stessa colonna larga, la mini-mappa di
+            # geolocalizzazione (stessa logica di Utility → Geolocalizza, ma
+            # il click aggiunge direttamente una riga di coordinate grezze —
+            # sempre mandatory, vedi _parse_pl_waypoint_line — invece di
+            # limitarsi a mostrarle da copiare a mano). Va qui e non nella
+            # colonna stretta del form: è l'unica mappa del Planner prima di
+            # pianificare, merita lo spazio largo. doubleClickZoom disattivato
+            # apposta: altrimenti un doppio click aggiungerebbe SI il
+            # waypoint ma zoomerebbe comunque la mappa (comportamento nativo
+            # Leaflet), vanificando la persistenza dello zoom qui sotto.
             st.info(t("planner.no_result_yet_hint"))
+
+            st.markdown(f"**{t('planner.geo_map_expander')}**")
+            _pl_geo_last = st.session_state.get("pl_geo_last_click")
+            _pl_geo_zoom = st.session_state.get("pl_geo_zoom") or 12
+            _pl_geo_ctr = list(_pl_geo_last) if _pl_geo_last else [pl_start_lat, pl_start_lon]
+            m_pl_geo = folium.Map(
+                location=_pl_geo_ctr, zoom_start=_pl_geo_zoom,
+                scrollWheelZoom=False, doubleClickZoom=False,
+            )
+            if _pl_geo_last:
+                folium.Marker(
+                    list(_pl_geo_last),
+                    tooltip=t("planner.geo_map_last_added"),
+                    icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
+                ).add_to(m_pl_geo)
+            _pl_geo_map_data = st_folium(
+                m_pl_geo,
+                width=None,
+                height=520,
+                returned_objects=["last_clicked", "zoom"],
+                key="pl_geo_map",
+                use_container_width=True,
+            )
+            st.caption(t("planner.geo_map_caption"))
+            # Salva lo zoom corrente per il prossimo rerun — stesso fix applicato
+            # a Utility → Geolocalizza (vedi commento lì per il motivo del bug).
+            if _pl_geo_map_data and _pl_geo_map_data.get("zoom") is not None:
+                st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
+
+            _pl_geo_clicked = _pl_geo_map_data.get("last_clicked") if _pl_geo_map_data else None
+            if _pl_geo_clicked:
+                _new_c = (round(float(_pl_geo_clicked["lat"]), 7), round(float(_pl_geo_clicked["lng"]), 7))
+                if st.session_state.get("pl_geo_last_click") != _new_c:
+                    st.session_state["pl_geo_last_click"] = _new_c
+                    st.session_state["_pl_geo_add_pending"] = f"{_new_c[0]:.5f},{_new_c[1]:.5f}"
+                    st.rerun()
 
 
 # ─── Tab: Builder ─────────────────────────────────────────────────────────────
