@@ -2022,9 +2022,19 @@ with tab_planner:
             if _pl_geo_map_data:
                 if _pl_geo_map_data.get("zoom") is not None:
                     st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
-                _pl_geo_bounds = _pl_geo_map_data.get("bounds")
-                if _pl_geo_bounds and _pl_geo_bounds.get("_southWest") and _pl_geo_bounds.get("_northEast"):
-                    _sw, _ne = _pl_geo_bounds["_southWest"], _pl_geo_bounds["_northEast"]
+                _pl_geo_bounds = _pl_geo_map_data.get("bounds") or {}
+                _sw = _pl_geo_bounds.get("_southWest") or {}
+                _ne = _pl_geo_bounds.get("_northEast") or {}
+                # Bug reale trovato coi log live: streamlit-folium riporta a volte
+                # bounds con _southWest/_northEast presenti ma lat/lng=None (es.
+                # sul render immediatamente successivo a un'interazione, prima che
+                # il componente abbia dimensioni valide) — sommare None crashava
+                # lo script con un'eccezione non gestita, mostrando un errore
+                # lampo a ogni pan/zoom prima che il rerun successivo si
+                # autocorreggesse. Ora si aggiorna il centro solo se tutti e
+                # quattro i valori sono numeri reali.
+                if (_sw.get("lat") is not None and _sw.get("lng") is not None
+                        and _ne.get("lat") is not None and _ne.get("lng") is not None):
                     st.session_state["pl_geo_center"] = [
                         (_sw["lat"] + _ne["lat"]) / 2,
                         (_sw["lng"] + _ne["lng"]) / 2,
