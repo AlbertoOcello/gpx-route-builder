@@ -965,6 +965,40 @@ def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> di
     }
 
 
+def _save_actual_ride_only_route(route_name: str, actual_ride_record: dict) -> Path:
+    """
+    Crea una route "solo Opzione D": nessuna pianificazione — niente
+    Planner/Builder coinvolti, per tenere in memoria un giro pedalato
+    libero mai pianificato con l'app (tab File → "Salva percorso reale
+    come nuova route"). Deliberatamente non deriva waypoint/narrativa/
+    candidati A/B/C dal GPX: la chiave "request" è omessa del tutto (non
+    None, non {}) — ogni lettore in questo file legge già
+    route_data.get("request", {}) seguito da altri .get() con default,
+    quindi la sua assenza è gestita ovunque senza toccare altro codice
+    (verificato: Planner "Carica nel Planner", riepilogo Builder, tab
+    File "Le mie route", Utility → Debug).
+    """
+    _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
+    path = _PLANNED_DIR / f"{route_name}.json"
+    payload = {
+        "route_name": route_name,
+        "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "route_narrative": "",
+        "ordered_waypoints": [],
+        "system_prompt": "",
+        "user_prompt": "",
+        "warnings": [],
+        "search_queries": [],
+        "builder_results": [],
+        "comparison_history": [],
+        "ride_analysis_history": [],
+        "feedback_history": [],
+        "actual_rides": [actual_ride_record],
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 # ─── Tab: File ────────────────────────────────────────────────────────────────
 # Punto di ingresso/gestione route, sempre accessibile (navigazione tipo
 # "documento aperto" — non solo schermata di avvio). File orfani arriva
@@ -1039,6 +1073,42 @@ with tab_file:
                     _open_route_pending(_rcname)
                     st.rerun()
 
+    # ── Salva percorso reale come nuova route ─────────────────────────────
+    # Crea una route "solo Opzione D", senza passare da Planner/Builder —
+    # per un giro pedalato libero, mai pianificato con l'app. Deliberatamente
+    # non deriva nulla dal GPX (vedi _save_actual_ride_only_route): niente
+    # narrativa AI, niente candidati A/B/C rigenerati da BRouter che
+    # potrebbero divergere dal percorso reale.
+    st.divider()
+    st.markdown(t("file.save_actual_header"))
+    st.caption(t("file.save_actual_caption"))
+    _sar_file = st.file_uploader(
+        t("file.save_actual_uploader_label"), type=["gpx"], key="file_sar_uploader",
+    )
+    _sar_name = st.text_input(t("file.save_actual_name_label"), key="file_sar_name")
+    if st.button(t("file.save_actual_btn"), key="file_sar_confirm_btn", type="primary"):
+        if _sar_file is None:
+            st.error(t("file.save_actual_missing_file"))
+        elif not _sar_name.strip():
+            st.error(t("file.rename_empty_error"))
+        else:
+            _sar_slug = re.sub(r"[^\w\-]", "_", _sar_name.strip()) or "route"
+            if _sar_slug in _load_saved_routes():
+                st.error(t("planner.save_new_name_conflict").format(name=_sar_slug))
+            else:
+                try:
+                    _sar_record = _save_actual_ride(_sar_slug, _sar_file.read(), _sar_file.name)
+                    _sar_path = _save_actual_ride_only_route(_sar_slug, _sar_record)
+                except Exception as exc:
+                    st.error(f"{t('builder.actual_ride_upload_error')}: {exc}")
+                else:
+                    # La route appena creata diventa quella "aperta" (navigazione
+                    # documento aperto) — stesso comportamento di "Salva come
+                    # nuova route" nel Planner.
+                    st.session_state["pl_loaded_route_name"] = _sar_slug
+                    st.success(f"{t('file.save_actual_success').format(name=_sar_slug)} `{_sar_path}`")
+                    st.rerun()
+
     # ── Le mie route ───────────────────────────────────────────────────────
     st.divider()
     st.markdown(t("file.myroutes_header"))
@@ -1048,6 +1118,7 @@ with tab_file:
         for _mname, _mdata in _file_routes.items():
             _mcounts = _count_route_artifacts(_mdata)
             _mcompares = len(_mdata.get("comparison_history", []))
+            _mactual = len(_mdata.get("actual_rides", []))
             with st.container(border=True):
                 _mc1, _mc2, _mc3, _mc4 = st.columns([3, 1, 1, 1])
                 with _mc1:
@@ -1059,6 +1130,7 @@ with tab_file:
                             ride=_mcounts["ride_analyses"],
                             compare=_mcompares,
                             feedback=_mcounts["feedbacks"],
+                            actual=_mactual,
                         )
                     )
                 with _mc2:
@@ -1303,7 +1375,15 @@ with tab_planner:
             st.session_state.pop("pl_result", None)
             st.session_state.pop("pl_naming_active", None)
             st.session_state.pop("pl_name_suggestion", None)
-            st.info(t("planner.loaded_from_route").format(name=_pl_load_name))
+            # Route "solo Opzione D" (tab File → "Salva percorso reale come
+            # nuova route"): niente request salvata per costruzione — il form
+            # sopra si popola già con i default (vedi _load_req = {}), ma
+            # senza un messaggio dedicato l'utente potrebbe pensare a un bug
+            # invece che a una scelta di design.
+            if "request" not in _load_data:
+                st.info(t("planner.loaded_actual_only_route").format(name=_pl_load_name))
+            else:
+                st.info(t("planner.loaded_from_route").format(name=_pl_load_name))
 
     col_form, col_map = st.columns([1, 2], gap="large")
 

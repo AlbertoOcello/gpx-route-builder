@@ -23,10 +23,22 @@ it:
     open_select: "Route pianificata"
     open_btn: "Apri"
     recent_header: "🕓 Recenti"
+    save_actual_header: "📥 Salva percorso reale come nuova route"
+    save_actual_caption: >-
+      Crea una route contenente solo un percorso reale caricato (Opzione D),
+      senza passare da Planner/Builder — utile per un giro pedalato libero,
+      mai pianificato con l'app. Nessun waypoint/narrativa/candidato A/B/C
+      viene derivato dal GPX.
+    save_actual_uploader_label: "File GPX del percorso reale"
+    save_actual_name_label: "Nome della nuova route"
+    save_actual_btn: "📥 Salva come nuova route"
+    save_actual_missing_file: "Carica prima un file GPX."
+    save_actual_success: "Route **{name}** creata con il percorso reale caricato."
     myroutes_header: "🗂️ Le mie route"
     myroutes_summary: >-
       Creata/modificata {created} · {builder} run Builder · {ride} analisi
-      Ride Analysis · {compare} confronti Post Ride · {feedback} feedback
+      Ride Analysis · {compare} confronti Post Ride · {feedback} feedback ·
+      {actual} percorsi reali
     rename_btn: "Rinomina"
     delete_btn: "Elimina"
     rename_prompt: "Nuovo nome"
@@ -152,6 +164,7 @@ it:
     no_result_yet_hint: "Compila il form a sinistra, usa la mappa qui sotto per aggiungere waypoint di precisione, poi clicca **Pianifica waypoint** — qui comparirà la route generata."
     route_saved: "Route salvata in"
     loaded_from_route: "📂 Caricata la route '{name}' — modificala e rigenera, poi salva con \"Aggiorna {name}\" o \"Salva come nuova route\"."
+    loaded_actual_only_route: "📂 '{name}' non ha una pianificazione — contiene solo un percorso reale caricato (Opzione D). Vai al tab Builder per vederlo, oppure pianifica qui una route da zero e salvala con un nome diverso."
     col_ord: "Ord."
     col_role: "Ruolo"
     col_name: "Nome"
@@ -576,10 +589,22 @@ en:
     open_select: "Planned route"
     open_btn: "Open"
     recent_header: "🕓 Recent"
+    save_actual_header: "📥 Save real ride as new route"
+    save_actual_caption: >-
+      Creates a route containing only an uploaded real ride (Option D),
+      without going through Planner/Builder — useful for a free ride you
+      pedaled that was never planned with the app. No waypoint/narrative/
+      A/B/C candidate is derived from the GPX.
+    save_actual_uploader_label: "GPX file of the real ride"
+    save_actual_name_label: "New route name"
+    save_actual_btn: "📥 Save as new route"
+    save_actual_missing_file: "Upload a GPX file first."
+    save_actual_success: "Route **{name}** created with the uploaded real ride."
     myroutes_header: "🗂️ My routes"
     myroutes_summary: >-
       Created/modified {created} · {builder} Builder runs · {ride} Ride
-      Analysis analyses · {compare} Post Ride comparisons · {feedback} feedback
+      Analysis analyses · {compare} Post Ride comparisons · {feedback}
+      feedback · {actual} real rides
     rename_btn: "Rename"
     delete_btn: "Delete"
     rename_prompt: "New name"
@@ -705,6 +730,7 @@ en:
     no_result_yet_hint: "Fill in the form on the left, use the map below to add precise waypoints, then click **Plan waypoints** — the generated route will appear here."
     route_saved: "Route saved in"
     loaded_from_route: "📂 Loaded route '{name}' — edit and regenerate, then save with \"Update {name}\" or \"Save as new route\"."
+    loaded_actual_only_route: "📂 '{name}' has no planning — it only contains an uploaded real ride (Option D). Go to the Builder tab to see it, or plan a route here from scratch and save it under a different name."
     col_ord: "Ord."
     col_role: "Role"
     col_name: "Name"
