@@ -1975,9 +1975,20 @@ with tab_planner:
             st.markdown(f"**{t('planner.geo_map_expander')}**")
             _pl_geo_last = st.session_state.get("pl_geo_last_click")
             _pl_geo_zoom = st.session_state.get("pl_geo_zoom") or 12
-            _pl_geo_ctr = list(_pl_geo_last) if _pl_geo_last else [pl_start_lat, pl_start_lon]
+            # Bug "lo zoom si annulla/la mappa si sposta al punto di partenza":
+            # il centro veniva ricalcolato SOLO da pl_geo_last_click (o dal
+            # via di partenza se nessun click era ancora avvenuto) — ma
+            # "zoom" è tra i returned_objects, quindi ANCHE un semplice
+            # click sui controlli +/- (senza mai cliccare sulla mappa)
+            # genera un rerun completo, che ricostruiva la mappa ricentrata
+            # sul punto di partenza invece che dove l'utente si trovava
+            # davvero. Ora il centro corrente viene letto da "bounds"
+            # (l'unico modo con cui streamlit-folium riporta la vista live —
+            # non espone un "center" diretto tra i returned_objects) e
+            # salvato in session_state ad ogni interazione, zoom incluso.
+            _pl_geo_center = st.session_state.get("pl_geo_center") or [pl_start_lat, pl_start_lon]
             m_pl_geo = folium.Map(
-                location=_pl_geo_ctr, zoom_start=_pl_geo_zoom,
+                location=_pl_geo_center, zoom_start=_pl_geo_zoom,
                 scrollWheelZoom=False, doubleClickZoom=False,
             )
             if _pl_geo_last:
@@ -1990,15 +2001,34 @@ with tab_planner:
                 m_pl_geo,
                 width=None,
                 height=520,
-                returned_objects=["last_clicked", "zoom"],
+                # zoom=/center= (non solo zoom_start=/location= dentro
+                # folium.Map) sono il meccanismo che streamlit-folium
+                # documenta per aggiornare la vista SENZA ricaricare/
+                # rimontare la mappa — passare solo zoom_start/location
+                # forzava un remount a ogni rerun, che è la causa reale
+                # dell'instabilità: il valore appena letto da session_state
+                # è di un rerun "indietro" rispetto all'interazione che ha
+                # innescato QUESTO rerun, quindi un remount visualizzava
+                # per un istante la vista vecchia prima di riallinearsi,
+                # percepito come "lo zoom si annulla".
+                zoom=_pl_geo_zoom,
+                center=tuple(_pl_geo_center),
+                returned_objects=["last_clicked", "zoom", "bounds"],
                 key="pl_geo_map",
                 use_container_width=True,
             )
             st.caption(t("planner.geo_map_caption"))
-            # Salva lo zoom corrente per il prossimo rerun — stesso fix applicato
-            # a Utility → Geolocalizza (vedi commento lì per il motivo del bug).
-            if _pl_geo_map_data and _pl_geo_map_data.get("zoom") is not None:
-                st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
+            # Salva zoom E centro correnti per il prossimo rerun.
+            if _pl_geo_map_data:
+                if _pl_geo_map_data.get("zoom") is not None:
+                    st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
+                _pl_geo_bounds = _pl_geo_map_data.get("bounds")
+                if _pl_geo_bounds and _pl_geo_bounds.get("_southWest") and _pl_geo_bounds.get("_northEast"):
+                    _sw, _ne = _pl_geo_bounds["_southWest"], _pl_geo_bounds["_northEast"]
+                    st.session_state["pl_geo_center"] = [
+                        (_sw["lat"] + _ne["lat"]) / 2,
+                        (_sw["lng"] + _ne["lng"]) / 2,
+                    ]
 
             _pl_geo_clicked = _pl_geo_map_data.get("last_clicked") if _pl_geo_map_data else None
             if _pl_geo_clicked:
@@ -3616,6 +3646,14 @@ with tab_utility:
                 m_geo,
                 width=None,
                 height=520,
+                # zoom=/center= (non solo zoom_start=/location= dentro
+                # folium.Map) sono il meccanismo che streamlit-folium usa
+                # per aggiornare la vista senza rimontare la mappa — stesso
+                # fix applicato alla mini-mappa del Planner (vedi lì per il
+                # dettaglio: passare solo zoom_start/location forza un
+                # remount a ogni rerun, percepito come zoom instabile).
+                zoom=geo_z,
+                center=tuple(geo_ctr),
                 returned_objects=["last_clicked", "zoom"],
                 key="geo_map",
                 use_container_width=True,
