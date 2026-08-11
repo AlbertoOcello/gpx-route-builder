@@ -1278,6 +1278,50 @@ with tab_file:
                         st.rerun()
 
 
+@st.fragment
+def _render_planner_geo_map(pl_start_lat: float, pl_start_lon: float) -> None:
+    # In un fragment: zoom/pan/click sul componente rieseguono SOLO questa
+    # funzione, non l'intero script (che altrimenti ricostruirebbe anche la
+    # mappa di Utility → Geolocalizza e tutto il resto dell'app a ogni singola
+    # interazione — la causa principale della lentezza/instabilità percepita).
+    # st.rerun() qui sotto usa comunque lo scope di default 'app' (necessario:
+    # il flag "_pl_geo_add_pending" va processato in cima allo script, PRIMA
+    # che il widget pl_wps venga istanziato, quindi fuori da questo fragment).
+    st.markdown(f"**{t('planner.geo_map_expander')}**")
+    _pl_geo_last = st.session_state.get("pl_geo_last_click")
+    _pl_geo_zoom = st.session_state.get("pl_geo_zoom") or 12
+    _pl_geo_ctr = list(_pl_geo_last) if _pl_geo_last else [pl_start_lat, pl_start_lon]
+    m_pl_geo = folium.Map(
+        location=_pl_geo_ctr, zoom_start=_pl_geo_zoom,
+        scrollWheelZoom=False, doubleClickZoom=False,
+    )
+    if _pl_geo_last:
+        folium.Marker(
+            list(_pl_geo_last),
+            tooltip=t("planner.geo_map_last_added"),
+            icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
+        ).add_to(m_pl_geo)
+    _pl_geo_map_data = st_folium(
+        m_pl_geo,
+        width=None,
+        height=520,
+        returned_objects=["last_clicked", "zoom"],
+        key="pl_geo_map",
+        use_container_width=True,
+    )
+    st.caption(t("planner.geo_map_caption"))
+    if _pl_geo_map_data and _pl_geo_map_data.get("zoom") is not None:
+        st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
+
+    _pl_geo_clicked = _pl_geo_map_data.get("last_clicked") if _pl_geo_map_data else None
+    if _pl_geo_clicked:
+        _new_c = (round(float(_pl_geo_clicked["lat"]), 7), round(float(_pl_geo_clicked["lng"]), 7))
+        if st.session_state.get("pl_geo_last_click") != _new_c:
+            st.session_state["pl_geo_last_click"] = _new_c
+            st.session_state["_pl_geo_add_pending"] = f"{_new_c[0]:.5f},{_new_c[1]:.5f}"
+            st.rerun()
+
+
 # ─── Tab: Planner ─────────────────────────────────────────────────────────────
 with tab_planner:
     st.subheader(t("planner.subheader"))
@@ -1971,82 +2015,7 @@ with tab_planner:
             # waypoint ma zoomerebbe comunque la mappa (comportamento nativo
             # Leaflet), vanificando la persistenza dello zoom qui sotto.
             st.info(t("planner.no_result_yet_hint"))
-
-            st.markdown(f"**{t('planner.geo_map_expander')}**")
-            _pl_geo_last = st.session_state.get("pl_geo_last_click")
-            _pl_geo_zoom = st.session_state.get("pl_geo_zoom") or 12
-            # Bug "lo zoom si annulla/la mappa si sposta al punto di partenza":
-            # il centro veniva ricalcolato SOLO da pl_geo_last_click (o dal
-            # via di partenza se nessun click era ancora avvenuto) — ma
-            # "zoom" è tra i returned_objects, quindi ANCHE un semplice
-            # click sui controlli +/- (senza mai cliccare sulla mappa)
-            # genera un rerun completo, che ricostruiva la mappa ricentrata
-            # sul punto di partenza invece che dove l'utente si trovava
-            # davvero. Ora il centro corrente viene letto da "bounds"
-            # (l'unico modo con cui streamlit-folium riporta la vista live —
-            # non espone un "center" diretto tra i returned_objects) e
-            # salvato in session_state ad ogni interazione, zoom incluso.
-            _pl_geo_center = st.session_state.get("pl_geo_center") or [pl_start_lat, pl_start_lon]
-            m_pl_geo = folium.Map(
-                location=_pl_geo_center, zoom_start=_pl_geo_zoom,
-                scrollWheelZoom=False, doubleClickZoom=False,
-            )
-            if _pl_geo_last:
-                folium.Marker(
-                    list(_pl_geo_last),
-                    tooltip=t("planner.geo_map_last_added"),
-                    icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
-                ).add_to(m_pl_geo)
-            _pl_geo_map_data = st_folium(
-                m_pl_geo,
-                width=None,
-                height=520,
-                # zoom=/center= (non solo zoom_start=/location= dentro
-                # folium.Map) sono il meccanismo che streamlit-folium
-                # documenta per aggiornare la vista SENZA ricaricare/
-                # rimontare la mappa — passare solo zoom_start/location
-                # forzava un remount a ogni rerun, che è la causa reale
-                # dell'instabilità: il valore appena letto da session_state
-                # è di un rerun "indietro" rispetto all'interazione che ha
-                # innescato QUESTO rerun, quindi un remount visualizzava
-                # per un istante la vista vecchia prima di riallinearsi,
-                # percepito come "lo zoom si annulla".
-                zoom=_pl_geo_zoom,
-                center=tuple(_pl_geo_center),
-                returned_objects=["last_clicked", "zoom", "bounds"],
-                key="pl_geo_map",
-                use_container_width=True,
-            )
-            st.caption(t("planner.geo_map_caption"))
-            # Salva zoom E centro correnti per il prossimo rerun.
-            if _pl_geo_map_data:
-                if _pl_geo_map_data.get("zoom") is not None:
-                    st.session_state["pl_geo_zoom"] = _pl_geo_map_data["zoom"]
-                _pl_geo_bounds = _pl_geo_map_data.get("bounds") or {}
-                _sw = _pl_geo_bounds.get("_southWest") or {}
-                _ne = _pl_geo_bounds.get("_northEast") or {}
-                # Bug reale trovato coi log live: streamlit-folium riporta a volte
-                # bounds con _southWest/_northEast presenti ma lat/lng=None (es.
-                # sul render immediatamente successivo a un'interazione, prima che
-                # il componente abbia dimensioni valide) — sommare None crashava
-                # lo script con un'eccezione non gestita, mostrando un errore
-                # lampo a ogni pan/zoom prima che il rerun successivo si
-                # autocorreggesse. Ora si aggiorna il centro solo se tutti e
-                # quattro i valori sono numeri reali.
-                if (_sw.get("lat") is not None and _sw.get("lng") is not None
-                        and _ne.get("lat") is not None and _ne.get("lng") is not None):
-                    st.session_state["pl_geo_center"] = [
-                        (_sw["lat"] + _ne["lat"]) / 2,
-                        (_sw["lng"] + _ne["lng"]) / 2,
-                    ]
-
-            _pl_geo_clicked = _pl_geo_map_data.get("last_clicked") if _pl_geo_map_data else None
-            if _pl_geo_clicked:
-                _new_c = (round(float(_pl_geo_clicked["lat"]), 7), round(float(_pl_geo_clicked["lng"]), 7))
-                if st.session_state.get("pl_geo_last_click") != _new_c:
-                    st.session_state["pl_geo_last_click"] = _new_c
-                    st.session_state["_pl_geo_add_pending"] = f"{_new_c[0]:.5f},{_new_c[1]:.5f}"
-                    st.rerun()
+            _render_planner_geo_map(pl_start_lat, pl_start_lon)
 
 
 # ─── Tab: Builder ─────────────────────────────────────────────────────────────
@@ -3468,6 +3437,109 @@ with tab_post_ride:
                         st.error(f"Errore salvataggio feedback: {exc}")
 
 
+@st.fragment
+def _render_geolocate_map() -> None:
+    st.caption(t("geo.map_caption"))
+
+    geo_results   = st.session_state.get("geo_results", [])
+    geo_sel       = st.session_state.get("geo_sel")
+    geo_clicked   = st.session_state.get("geo_clicked")
+
+    # Centro e zoom iniziali — lo zoom, se l'utente lo ha già cambiato
+    # manualmente (session_state["geo_map_zoom"], letto dal valore
+    # ritornato da st_folium sotto), ha sempre priorità sui livelli
+    # "di scena" qui sotto: senza questo, ogni nuovo click/selezione
+    # sovrascriveva lo zoom con un valore fisso, azzerando l'ingrandimento
+    # manuale dell'utente a ogni interazione (bug segnalato).
+    _geo_persisted_zoom = st.session_state.get("geo_map_zoom")
+    if geo_sel is not None and geo_results:
+        r_sel   = geo_results[geo_sel]
+        geo_ctr = [r_sel["lat"], r_sel["lon"]]
+        geo_z   = _geo_persisted_zoom or 13
+    elif geo_clicked:
+        geo_ctr = list(geo_clicked)
+        geo_z   = _geo_persisted_zoom or 13
+    elif geo_results:
+        geo_ctr = [geo_results[0]["lat"], geo_results[0]["lon"]]
+        geo_z   = _geo_persisted_zoom or 10
+    else:
+        geo_ctr = [43.55, 13.10]   # Centro Marche
+        geo_z   = _geo_persisted_zoom or 9
+
+    m_geo = folium.Map(location=geo_ctr, zoom_start=geo_z, scrollWheelZoom=False)
+
+    # Marcatori risultati ricerca
+    for i, r in enumerate(geo_results):
+        is_sel = i == geo_sel
+        folium.Marker(
+            [r["lat"], r["lon"]],
+            tooltip=(
+                f"{'▶ ' if is_sel else ''}"
+                f"[{_geo_type_badge(r)}] {_geo_short(r['display_name'], 2)}"
+            ),
+            popup=folium.Popup(
+                f"<b>{_geo_short(r['display_name'], 2)}</b><br>"
+                f"rank={r['place_rank']} · {r['class_']}/{r['type_']}<br>"
+                f"<small>{r['display_name']}</small>",
+                max_width=280,
+            ),
+            icon=folium.Icon(
+                color="red"  if is_sel else "blue",
+                icon="star"  if is_sel else "circle",
+                prefix="fa",
+            ),
+        ).add_to(m_geo)
+
+    # Marcatore punto cliccato
+    if geo_clicked:
+        rev = st.session_state.get("geo_rev", "")
+        folium.Marker(
+            list(geo_clicked),
+            tooltip=f"📍 {_geo_short(rev, 2) if rev else 'click'}",
+            popup=folium.Popup(
+                f"<b>{geo_clicked[0]:.5f}, {geo_clicked[1]:.5f}</b><br>"
+                f"<small>{rev}</small>",
+                max_width=280,
+            ),
+            icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
+        ).add_to(m_geo)
+
+    map_data_geo = st_folium(
+        m_geo,
+        width=None,
+        height=520,
+        # zoom=/center= (non solo zoom_start=/location= dentro
+        # folium.Map) sono il meccanismo che streamlit-folium usa
+        # per aggiornare la vista senza rimontare la mappa — stesso
+        # fix applicato alla mini-mappa del Planner (vedi lì per il
+        # dettaglio: passare solo zoom_start/location forza un
+        # remount a ogni rerun, percepito come zoom instabile).
+        zoom=geo_z,
+        center=tuple(geo_ctr),
+        returned_objects=["last_clicked", "zoom"],
+        key="geo_map",
+        use_container_width=True,
+    )
+
+    # Salva lo zoom corrente per il prossimo rerun (vedi commento sopra).
+    if map_data_geo and map_data_geo.get("zoom") is not None:
+        st.session_state["geo_map_zoom"] = map_data_geo["zoom"]
+
+    # Gestisci click sulla mappa
+    if map_data_geo and map_data_geo.get("last_clicked"):
+        lc = map_data_geo["last_clicked"]
+        new_c = (round(float(lc["lat"]), 7), round(float(lc["lng"]), 7))
+        if st.session_state.get("geo_clicked") != new_c:
+            st.session_state["geo_clicked"] = new_c
+            with st.spinner(t("geo.reverse_spinner")):
+                try:
+                    addr = reverse_geocode_address(new_c[0], new_c[1])
+                    st.session_state["geo_rev"] = addr or t("geo.no_address")
+                except Exception as exc:
+                    st.session_state["geo_rev"] = f"Errore: {exc}"
+            st.rerun()
+
+
 # ─── Tab: Utility ─────────────────────────────────────────────────────────────
 with tab_utility:
     st.caption(t("utility.caption"))
@@ -3587,105 +3659,7 @@ with tab_utility:
 
         # ── Colonna destra: mappa interattiva ─────────────────────────────────────
         with col_geo_r:
-            st.caption(t("geo.map_caption"))
-
-            geo_results   = st.session_state.get("geo_results", [])
-            geo_sel       = st.session_state.get("geo_sel")
-            geo_clicked   = st.session_state.get("geo_clicked")
-
-            # Centro e zoom iniziali — lo zoom, se l'utente lo ha già cambiato
-            # manualmente (session_state["geo_map_zoom"], letto dal valore
-            # ritornato da st_folium sotto), ha sempre priorità sui livelli
-            # "di scena" qui sotto: senza questo, ogni nuovo click/selezione
-            # sovrascriveva lo zoom con un valore fisso, azzerando l'ingrandimento
-            # manuale dell'utente a ogni interazione (bug segnalato).
-            _geo_persisted_zoom = st.session_state.get("geo_map_zoom")
-            if geo_sel is not None and geo_results:
-                r_sel   = geo_results[geo_sel]
-                geo_ctr = [r_sel["lat"], r_sel["lon"]]
-                geo_z   = _geo_persisted_zoom or 13
-            elif geo_clicked:
-                geo_ctr = list(geo_clicked)
-                geo_z   = _geo_persisted_zoom or 13
-            elif geo_results:
-                geo_ctr = [geo_results[0]["lat"], geo_results[0]["lon"]]
-                geo_z   = _geo_persisted_zoom or 10
-            else:
-                geo_ctr = [43.55, 13.10]   # Centro Marche
-                geo_z   = _geo_persisted_zoom or 9
-
-            m_geo = folium.Map(location=geo_ctr, zoom_start=geo_z, scrollWheelZoom=False)
-
-            # Marcatori risultati ricerca
-            for i, r in enumerate(geo_results):
-                is_sel = i == geo_sel
-                folium.Marker(
-                    [r["lat"], r["lon"]],
-                    tooltip=(
-                        f"{'▶ ' if is_sel else ''}"
-                        f"[{_geo_type_badge(r)}] {_geo_short(r['display_name'], 2)}"
-                    ),
-                    popup=folium.Popup(
-                        f"<b>{_geo_short(r['display_name'], 2)}</b><br>"
-                        f"rank={r['place_rank']} · {r['class_']}/{r['type_']}<br>"
-                        f"<small>{r['display_name']}</small>",
-                        max_width=280,
-                    ),
-                    icon=folium.Icon(
-                        color="red"  if is_sel else "blue",
-                        icon="star"  if is_sel else "circle",
-                        prefix="fa",
-                    ),
-                ).add_to(m_geo)
-
-            # Marcatore punto cliccato
-            if geo_clicked:
-                rev = st.session_state.get("geo_rev", "")
-                folium.Marker(
-                    list(geo_clicked),
-                    tooltip=f"📍 {_geo_short(rev, 2) if rev else 'click'}",
-                    popup=folium.Popup(
-                        f"<b>{geo_clicked[0]:.5f}, {geo_clicked[1]:.5f}</b><br>"
-                        f"<small>{rev}</small>",
-                        max_width=280,
-                    ),
-                    icon=folium.Icon(color="green", icon="crosshairs", prefix="fa"),
-                ).add_to(m_geo)
-
-            map_data_geo = st_folium(
-                m_geo,
-                width=None,
-                height=520,
-                # zoom=/center= (non solo zoom_start=/location= dentro
-                # folium.Map) sono il meccanismo che streamlit-folium usa
-                # per aggiornare la vista senza rimontare la mappa — stesso
-                # fix applicato alla mini-mappa del Planner (vedi lì per il
-                # dettaglio: passare solo zoom_start/location forza un
-                # remount a ogni rerun, percepito come zoom instabile).
-                zoom=geo_z,
-                center=tuple(geo_ctr),
-                returned_objects=["last_clicked", "zoom"],
-                key="geo_map",
-                use_container_width=True,
-            )
-
-            # Salva lo zoom corrente per il prossimo rerun (vedi commento sopra).
-            if map_data_geo and map_data_geo.get("zoom") is not None:
-                st.session_state["geo_map_zoom"] = map_data_geo["zoom"]
-
-            # Gestisci click sulla mappa
-            if map_data_geo and map_data_geo.get("last_clicked"):
-                lc = map_data_geo["last_clicked"]
-                new_c = (round(float(lc["lat"]), 7), round(float(lc["lng"]), 7))
-                if st.session_state.get("geo_clicked") != new_c:
-                    st.session_state["geo_clicked"] = new_c
-                    with st.spinner(t("geo.reverse_spinner")):
-                        try:
-                            addr = reverse_geocode_address(new_c[0], new_c[1])
-                            st.session_state["geo_rev"] = addr or t("geo.no_address")
-                        except Exception as exc:
-                            st.session_state["geo_rev"] = f"Errore: {exc}"
-                    st.rerun()
+            _render_geolocate_map()
 
     # ── Sotto-tab: GPX Optimizer ───────────────────────────────────────────────
     # Stesso strumento del tab di primo livello (vedi _render_gpx_optimizer),
