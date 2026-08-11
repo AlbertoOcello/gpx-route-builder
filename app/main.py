@@ -1290,8 +1290,16 @@ def _render_planner_geo_map(pl_start_lat: float, pl_start_lon: float) -> None:
     st.markdown(f"**{t('planner.geo_map_expander')}**")
     _pl_geo_last = st.session_state.get("pl_geo_last_click")
     _pl_geo_ctr = list(_pl_geo_last) if _pl_geo_last else [pl_start_lat, pl_start_lon]
+    # zoom_start: streamlit-folium non espone un modo per leggere lo zoom
+    # live del browser senza tornare a tracciare "zoom" tra i returned_objects
+    # (che reintroduce un rerun a ogni tick, il problema appena risolto) — un
+    # remount qui è comunque inevitabile quando si aggiunge un nuovo marker
+    # (cambia l'HTML/hash del componente). Zoom fisso e ravvicinato (16, non
+    # 12) sul punto appena cliccato: non preserva esattamente lo zoom da cui
+    # si arrivava, ma evita il salto vistoso a una vista panoramica.
+    _pl_geo_zoom_start = 16 if _pl_geo_last else 12
     m_pl_geo = folium.Map(
-        location=_pl_geo_ctr, zoom_start=12,
+        location=_pl_geo_ctr, zoom_start=_pl_geo_zoom_start,
         scrollWheelZoom=False, doubleClickZoom=False,
     )
     if _pl_geo_last:
