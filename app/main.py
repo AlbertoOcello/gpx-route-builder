@@ -1339,8 +1339,16 @@ def _render_planner_geo_map(pl_start_lat: float, pl_start_lon: float) -> None:
 with tab_planner:
     st.subheader(t("planner.subheader"))
     st.caption(t("planner.caption"))
-    if _open_route_name():
-        st.success(t("planner.open_route_banner").format(name=_open_route_name()))
+    # Il banner "route aperta" compare sempre, anche per una route nuova
+    # non ancora salvata (coerente col modello "documento aperto": c'è
+    # sempre un documento corrente, salvato o no — come "Senza titolo" in
+    # un editor di testo). Prima veniva mostrato solo se _open_route_name()
+    # era valorizzato, quindi spariva del tutto su "Nuovo".
+    st.success(
+        t("planner.open_route_banner").format(name=_open_route_name())
+        if _open_route_name()
+        else t("planner.new_route_label")
+    )
 
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
     # solo un'assegnazione esplicita a session_state[key] fatta prima del

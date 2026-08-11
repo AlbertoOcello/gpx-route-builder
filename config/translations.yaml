@@ -70,6 +70,7 @@ it:
       Il Planner Claude ordina i tuoi waypoint geograficamente e ne aggiunge
       di propri se necessario. Il Builder (Fase 2) genererà le tracce reali.
     open_route_banner: "Route aperta: **{name}**"
+    new_route_label: "Nuova route (non salvata)"
     start_label: "**Partenza**"
     end_label: "**Punto di arrivo**"
     form:
@@ -636,6 +637,7 @@ en:
       The Claude Planner sorts your waypoints geographically and adds its own
       where needed. The Builder (Phase 2) will generate the actual tracks.
     open_route_banner: "Open route: **{name}**"
+    new_route_label: "New route (unsaved)"
     start_label: "**Start**"
     end_label: "**End point**"
     form:
