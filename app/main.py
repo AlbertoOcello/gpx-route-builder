@@ -1007,9 +1007,14 @@ with tab_file:
     st.subheader(t("tabs.file"))
     st.caption(t("file.caption"))
 
+    # Stesso banner sempre-visibile del Planner (vedi lì): "documento
+    # aperto" c'è sempre, salvato o no.
     _file_open_now = _open_route_name()
-    if _file_open_now:
-        st.success(t("file.currently_open").format(name=_file_open_now))
+    st.success(
+        t("file.currently_open").format(name=_file_open_now)
+        if _file_open_now
+        else t("planner.new_route_label")
+    )
 
     # ── Nuovo ──────────────────────────────────────────────────────────────
     st.markdown(t("file.new_header"))
@@ -1376,6 +1381,11 @@ with tab_planner:
         st.session_state["pl_avoid"] = ""
         st.session_state["pl_free"] = ""
         st.session_state.pop("pl_loaded_route_name", None)
+        # Pin verde della mini-mappa: apparteneva alla route/sessione
+        # precedente, altrimenti resterebbe visibile (e usato come centro/
+        # zoom di partenza) anche su un "Nuovo" che non ha nulla a che
+        # vedere con quel punto.
+        st.session_state.pop("pl_geo_last_click", None)
 
     # Punto aggiunto dalla mini-mappa di geolocalizzazione (vedi sotto,
     # sezione waypoint) — stesso motivo del pattern sopra: pl_wps è già un
@@ -1440,6 +1450,9 @@ with tab_planner:
             st.session_state.pop("pl_result", None)
             st.session_state.pop("pl_naming_active", None)
             st.session_state.pop("pl_name_suggestion", None)
+            # Stesso motivo del reset "Nuovo": il pin verde apparteneva alla
+            # route aperta prima di questo caricamento, non a quella nuova.
+            st.session_state.pop("pl_geo_last_click", None)
             # Route "solo Opzione D" (tab File → "Salva percorso reale come
             # nuova route"): niente request salvata per costruzione — il form
             # sopra si popola già con i default (vedi _load_req = {}), ma
