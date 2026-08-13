@@ -57,6 +57,16 @@ it:
     orphan_dir_row: "📁 **{name}** — {n} file GPX · {size} · {date}"
     orphan_report_row: "📄 **{name}** — {size} · {date}"
     orphan_confirm_msg: "Eliminare **{name}** per sempre? L'operazione non è reversibile."
+    history_expander: "📊 Storico collegamenti ({n})"
+
+  # ── Tracciabilità run Builder (Parte 1) — etichette condivise da Ride
+  # Analysis, Post Ride e File → Le mie route per mostrare a quale run/
+  # candidato Builder si riferisce un'analisi/confronto/feedback ─────────────
+  history:
+    ref_untracked: "run non tracciato"
+    ref_with_candidate: "riferita al run del {date}, candidato {candidate}"
+    ref_no_candidate: "riferita al run del {date}"
+    ref_not_latest: "◦ non è il run più recente"
 
   # ── Placeholder condiviso dai tab workspace vincolati a una route aperta ────
   workspace:
@@ -248,6 +258,13 @@ it:
       potrebbe non essere ottimale. Riprova a rigenerare se non ti soddisfa.
     err_all_failed: "❌ Nessun candidato generato con successo. Controlla i messaggi di warning sopra per i dettagli."
     err_builder: "❌ Errore Builder"
+    linked_analyses: "🔗 {n} analisi/confronti/feedback collegati a questo run"
+    regen_warning: >-
+      Questa route ha **{n}** analisi collegate al run attuale. Generandone
+      uno nuovo, quelle analisi resteranno legate al run precedente — non
+      verranno aggiornate automaticamente. Continuare?
+    regen_confirm_btn: "✅ Continua"
+    regen_cancel_btn: "✗ Annulla"
     result_subheader: "Risultati"
     no_candidates: "Nessun candidato disponibile — tutti i tentativi sono falliti."
     explore_subheader: "Esplora candidati"
@@ -353,6 +370,7 @@ it:
     route_detected: "Route identificata: **{name}** ({note})"
     no_plan: "Carica il GPX pianificato per identificare la route e abilitare il confronto."
     no_tracks: "Uno o entrambi i file GPX non contengono tracce."
+    cmp_linked_to_run: "🔗 Confronto {ref}"
     compare_metrics_header: "#### Confronto metriche"
     col_metric: "**Metrica**"
     col_planned: "**Pianificato**"
@@ -403,6 +421,7 @@ it:
     fb_notes_placeholder: "Commenti opzionali..."
     btn_fb_save: "Salva feedback"
     fb_saved: "Feedback salvato."
+    fb_linked_to_run: "🔗 Feedback {ref}"
     fb_obstacles: " {n} segnaposto 'problema' aggiunti a **known_obstacles** — il Builder li eviterà nelle prossime generazioni."
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
@@ -560,6 +579,7 @@ it:
     download_name: "analisi_giro.html"
     route_link: "🗺️ Route collegata (opzionale)"
     route_link_none: "— Nessuna —"
+    linked_to_run: "🔗 Analisi {ref}"
     need_gpx: "⬆️ Carica un file GPX per procedere."
     need_profile: "👤 Seleziona o crea e salva un profilo per procedere."
     ebike_na: "N/D — non eBike"
@@ -624,6 +644,16 @@ en:
     orphan_dir_row: "📁 **{name}** — {n} GPX files · {size} · {date}"
     orphan_report_row: "📄 **{name}** — {size} · {date}"
     orphan_confirm_msg: "Permanently delete **{name}**? This cannot be undone."
+    history_expander: "📊 Linked history ({n})"
+
+  # ── Builder run traceability (Part 1) — labels shared by Ride Analysis,
+  # Post Ride and File → My routes to show which Builder run/candidate an
+  # analysis/comparison/feedback entry refers to ────────────────────────────
+  history:
+    ref_untracked: "untracked run"
+    ref_with_candidate: "refers to the run of {date}, candidate {candidate}"
+    ref_no_candidate: "refers to the run of {date}"
+    ref_not_latest: "◦ not the most recent run"
 
   # ── Placeholder shared by workspace tabs bound to an open route ────────────
   workspace:
@@ -815,6 +845,13 @@ en:
       regenerating if it doesn't satisfy you.
     err_all_failed: "❌ No candidates generated successfully. Check the warning messages above for details."
     err_builder: "❌ Builder error"
+    linked_analyses: "🔗 {n} analyses/comparisons/feedback linked to this run"
+    regen_warning: >-
+      This route has **{n}** analyses linked to the current run. Generating a
+      new one will leave those analyses linked to the previous run — they
+      won't be updated automatically. Continue?
+    regen_confirm_btn: "✅ Continue"
+    regen_cancel_btn: "✗ Cancel"
     result_subheader: "Results"
     no_candidates: "No candidates available — all attempts failed."
     explore_subheader: "Explore candidates"
@@ -919,6 +956,7 @@ en:
     route_detected: "Route identified: **{name}** ({note})"
     no_plan: "Load the planned GPX to identify the route and enable comparison."
     no_tracks: "One or both GPX files contain no tracks."
+    cmp_linked_to_run: "🔗 Comparison {ref}"
     compare_metrics_header: "#### Metrics comparison"
     col_metric: "**Metric**"
     col_planned: "**Planned**"
@@ -969,6 +1007,7 @@ en:
     fb_notes_placeholder: "Optional comments..."
     btn_fb_save: "Save feedback"
     fb_saved: "Feedback saved."
+    fb_linked_to_run: "🔗 Feedback {ref}"
     fb_obstacles: " {n} 'problem' markers added to **known_obstacles** — the Builder will avoid them in future generations."
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
@@ -1126,6 +1165,7 @@ en:
     download_name: "ride_analysis.html"
     route_link: "🗺️ Linked route (optional)"
     route_link_none: "— None —"
+    linked_to_run: "🔗 Analysis {ref}"
     need_gpx: "⬆️ Upload a GPX file to proceed."
     need_profile: "👤 Select or create and save a profile to proceed."
     ebike_na: "N/A — not an eBike"

@@ -685,6 +685,82 @@ def _normalize_builder_results(data: dict) -> list[dict]:
     return list(br)
 
 
+def _latest_builder_run(route_data: dict) -> dict | None:
+    """Ultimo run Builder salvato per questa route — None se nessuno ancora."""
+    runs = _normalize_builder_results(route_data)
+    return runs[-1] if runs else None
+
+
+def _infer_builder_ref(route_name: str, route_data: dict, gpx_stem: str) -> tuple[str | None, str | None]:
+    """
+    (builder_run_id, candidate_id) da collegare a un'analisi/confronto/feedback
+    fatto su un GPX riconducibile a questa route — best-effort: il nome del
+    file scaricato ("{route_name}_{candidate_id}.gpx") non incorpora il
+    timestamp del run che l'ha generato (routes/generated/{timestamp}/ è
+    interno, mai esposto nel filename), quindi assumiamo che si riferisca
+    all'ultimo run Builder salvato per questa route (il caso comune: genera →
+    scarica/analizza subito) — stessa assunzione già fatta per la selezione
+    candidato in Post Ride → Feedback. builder_run_id è il "generated_at" del
+    run: non esiste un id dedicato, il timestamp è già la chiave stabile
+    usata per identificare un run all'interno di builder_results.
+    """
+    last_run = _latest_builder_run(route_data)
+    if not last_run:
+        return None, None
+    builder_run_id = last_run.get("generated_at")
+    candidate_id = None
+    m = re.match(rf"^{re.escape(route_name)}_([A-Za-z])$", gpx_stem or "")
+    if m:
+        cid = m.group(1).upper()
+        if cid in {c.get("id") for c in last_run.get("candidates", [])}:
+            candidate_id = cid
+    return builder_run_id, candidate_id
+
+
+def _fmt_run_dt(iso_str: str | None) -> str:
+    """Formatta un 'generated_at'/'recorded_at' ISO in 'YYYY-MM-DD HH:MM' per la UI."""
+    if not iso_str:
+        return "—"
+    return iso_str.replace("T", " ")[:16]
+
+
+def _format_run_ref(route_data: dict, builder_run_id: str | None, candidate_id: str | None) -> str:
+    """
+    Etichetta leggibile del run/candidato Builder a cui un'analisi/confronto/
+    feedback è collegato, con indicatore non invasivo se quel run non è più
+    il più recente in builder_results (vedi Parte 1 tracciabilità run).
+    """
+    if not builder_run_id:
+        return t("history.ref_untracked")
+    if candidate_id:
+        label = t("history.ref_with_candidate").format(date=_fmt_run_dt(builder_run_id), candidate=candidate_id)
+    else:
+        label = t("history.ref_no_candidate").format(date=_fmt_run_dt(builder_run_id))
+    latest = _latest_builder_run(route_data)
+    latest_id = latest.get("generated_at") if latest else None
+    if latest_id and builder_run_id != latest_id:
+        label += " " + t("history.ref_not_latest")
+    return label
+
+
+def _linked_history_count(route_data: dict, builder_run_id: str | None) -> int:
+    """Quante voci in ride_analysis_history/comparison_history/feedback_history
+    sono collegate a questo builder_run_id — 0 se il run non ha id (nessun run
+    ancora) o se nessuna analisi è collegata. Usato sia per mostrare il
+    collegamento nella tab Builder (Parte 1) sia per l'avviso di conferma
+    prima di rigenerare (Parte 2)."""
+    if not builder_run_id:
+        return 0
+    return sum(
+        1 for h in (
+            route_data.get("ride_analysis_history", [])
+            + route_data.get("comparison_history", [])
+            + route_data.get("feedback_history", [])
+        )
+        if h.get("builder_run_id") == builder_run_id
+    )
+
+
 def _count_route_artifacts(route_data: dict) -> dict:
     """
     Conta cosa verrebbe perso da un "Aggiorna [nome]" su questa route —
@@ -1150,6 +1226,33 @@ with tab_file:
                     if st.button("🗑️", key=f"file_my_del_btn_{_mname}", help=t("file.delete_btn")):
                         st.session_state[f"_file_delete_pending_{_mname}"] = True
                         st.rerun()
+
+                # ── Storico collegato a un run Builder specifico (Parte 1 —
+                # tracciabilità: ogni analisi/confronto/feedback sa a quale run
+                # si riferisce, con indicatore se non è più il run più recente).
+                _mride_hist = _mdata.get("ride_analysis_history", [])
+                _mcmp_hist = _mdata.get("comparison_history", [])
+                _mfb_hist = _mdata.get("feedback_history", [])
+                _mhist_total = len(_mride_hist) + len(_mcmp_hist) + len(_mfb_hist)
+                if _mhist_total:
+                    with st.expander(t("file.history_expander").format(n=_mhist_total)):
+                        for _h in _mride_hist:
+                            st.caption(
+                                f"🔋 {_fmt_run_dt(_h.get('recorded_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h.get("candidate_id"))
+                            )
+                        for _h in _mcmp_hist:
+                            st.caption(
+                                f"🏁 {_fmt_run_dt(_h.get('compared_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h.get("candidate_id"))
+                            )
+                        for _h in _mfb_hist:
+                            _h_cand = _h.get("candidate_id")
+                            _h_cand = None if _h_cand in (None, "—") else _h_cand
+                            st.caption(
+                                f"⭐ {_fmt_run_dt(_h.get('recorded_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h_cand)
+                            )
 
                 # ── Rinomina inline ──────────────────────────────────────────
                 if st.session_state.get(f"_file_rename_pending_{_mname}"):
@@ -2149,8 +2252,37 @@ with tab_builder:
             disabled=not profiles_valid or not wps_b,
         )
 
-        # ── Esecuzione Builder ────────────────────────────────────────────
+        # ── Avviso prima di rigenerare (Parte 2) ────────────────────────────
+        # Non blocca mai la rigenerazione, solo un avviso con conferma se il
+        # run più recente ha già analisi/confronti/feedback collegati (Parte
+        # 1) — altrimenti procede subito come oggi, nessun avviso.
+        _bld_pending_key = f"_bld_gen_pending_{bld_sel}"
+        _bld_go_key = f"_bld_gen_go_{bld_sel}"
+
         if bld_gen_btn and profiles_valid and wps_b:
+            _bld_latest_run_id = (_latest_builder_run(rd_b) or {}).get("generated_at")
+            if _linked_history_count(rd_b, _bld_latest_run_id):
+                st.session_state[_bld_pending_key] = True
+            else:
+                st.session_state[_bld_go_key] = True
+            st.rerun()
+
+        if st.session_state.get(_bld_pending_key):
+            _bld_latest_run_id = (_latest_builder_run(rd_b) or {}).get("generated_at")
+            st.warning(t("builder.regen_warning").format(n=_linked_history_count(rd_b, _bld_latest_run_id)))
+            _rg_c1, _rg_c2 = st.columns(2)
+            with _rg_c1:
+                if st.button(t("builder.regen_confirm_btn"), key=f"bld_regen_confirm_{bld_sel}", type="primary"):
+                    st.session_state.pop(_bld_pending_key, None)
+                    st.session_state[_bld_go_key] = True
+                    st.rerun()
+            with _rg_c2:
+                if st.button(t("builder.regen_cancel_btn"), key=f"bld_regen_cancel_{bld_sel}"):
+                    st.session_state.pop(_bld_pending_key, None)
+                    st.rerun()
+
+        # ── Esecuzione Builder ────────────────────────────────────────────
+        if st.session_state.pop(_bld_go_key, False):
             import traceback as _tb
             import httpx as _httpx
 
@@ -2260,6 +2392,7 @@ with tab_builder:
                             _bld_log.step(t("builder.status_decision"))
                             _bld_status.update(label=t("builder.status_decision"))
                             report_b = run_decision(ok_candidates_b, scored_b, merged_req_b)
+                            _generated_at_b = datetime.datetime.now().isoformat(timespec="seconds")
 
                             st.session_state["bld_result"] = {
                                 "route_name": bld_sel,
@@ -2268,6 +2401,7 @@ with tab_builder:
                                 "candidates": ok_candidates_b,
                                 "scored": scored_b,
                                 "decision": report_b.model_dump(),
+                                "generated_at": _generated_at_b,
                             }
                             _bld_log.finish(t("builder.status_done").format(n=len(ok_candidates_b)))
                             _bld_status.update(
@@ -2290,7 +2424,7 @@ with tab_builder:
                                 )
                                 _builder_runs = _normalize_builder_results(rd_b)
                                 _builder_runs.append({
-                                    "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                    "generated_at": _generated_at_b,
                                     "candidates": [
                                         {
                                             "id": c["id"],
@@ -2345,6 +2479,7 @@ with tab_builder:
                     "candidates": _ok_c_b,
                     "scored": _last_run_b.get("scored", []),
                     "decision": _last_run_b.get("decision", {}),
+                    "generated_at": _last_run_b.get("generated_at"),
                 }
                 st.session_state["bld_result"] = bld_res
         if bld_res and bld_res.get("route_name") == bld_sel:
@@ -2363,6 +2498,13 @@ with tab_builder:
                 start_lat_b, start_lon_b = 43.7136, 13.2278
 
             winner_id_b = decision_b.get("winner")
+
+            # Quante analisi/confronti/feedback sono già collegati al run qui
+            # mostrato (Parte 1 — tracciabilità); stesso conteggio usato dalla
+            # Parte 2 per decidere se avvisare prima di rigenerare.
+            _bld_linked_n_shown = _linked_history_count(rd_b, bld_res.get("generated_at"))
+            if _bld_linked_n_shown:
+                st.caption(t("builder.linked_analyses").format(n=_bld_linked_n_shown))
 
             # Fix 4 (+ fallback BRouter successivo): nota aggregata se uno o più
             # waypoint soft sono stati inclusi con aggancio grezzo via BRouter
@@ -2976,6 +3118,7 @@ with tab_ride:
                         st.session_state["ride_result_gpx"] = _gpx_stats
                         st.session_state["ride_result_profile"] = _active_profile
                         st.session_state["ride_result_lang"] = _lang
+                        st.session_state.pop("ride_result_link_caption", None)
 
                         # Solo per candidati collegati a una route pianificata — un
                         # GPX esterno non collegato resta volatile (solo session_state
@@ -2991,6 +3134,10 @@ with tab_ride:
                             _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             _report_path = _RIDE_REPORTS_DIR / f"{_route_sel}_{_ts}.html"
                             _report_path.write_text(_html_hist, encoding="utf-8")
+                            _ra_run_id, _ra_cand_id = _infer_builder_ref(
+                                _route_sel, _saved_routes[_route_sel],
+                                _gpx_stats.get("gpx_filename") or "",
+                            )
                             _save_ride_analysis_to_route(_route_sel, {
                                 "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                                 "report_path": str(_report_path),
@@ -2999,7 +3146,12 @@ with tab_ride:
                                 "avg_hr_bpm": _result.get("avg_hr_bpm"),
                                 "battery_pct_consumed": _result.get("battery_pct_consumed"),
                                 "fatigue_index": _result.get("fatigue_index"),
+                                "builder_run_id": _ra_run_id,
+                                "candidate_id": _ra_cand_id,
                             })
+                            st.session_state["ride_result_link_caption"] = t("ride_analysis.linked_to_run").format(
+                                ref=_format_run_ref(_saved_routes[_route_sel], _ra_run_id, _ra_cand_id)
+                            )
                     except Exception as _e:
                         st.error(f"❌ {_e}")
 
@@ -3010,6 +3162,8 @@ with tab_ride:
             _rl = st.session_state.get("ride_result_lang", active_lang())
 
             st.subheader(t("ride_analysis.results_header"))
+            if st.session_state.get("ride_result_link_caption"):
+                st.caption(st.session_state["ride_result_link_caption"])
             _r_is_ebike = (_rp.get("bike_type") or "").lower() == "ebike"
 
             # Battery row (ebike only)
@@ -3196,18 +3350,27 @@ with tab_post_ride:
                         )
 
                     # Salva confronto nella route JSON (se route identificata)
-                    if _cmp_rname and not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
-                        _save_comparison_to_route(_cmp_rname, {
-                            "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                            "gpx_planned": gpx_plan.name,
-                            "gpx_real": gpx_real.name,
-                            "planned_km": round(analysis_p["distance_km"], 2),
-                            "real_km": round(analysis_r["distance_km"], 2),
-                            "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
-                            "real_elev_gain": round(analysis_r["elevation_gain_m"]),
-                            "max_deviation_m": round(max_dev_m),
-                        })
-                        st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
+                    if _cmp_rname:
+                        _cmp_run_id, _cmp_cand_id = _infer_builder_ref(
+                            _cmp_rname, _saved_r_cmp[_cmp_rname], Path(gpx_plan.name).stem,
+                        )
+                        if not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
+                            _save_comparison_to_route(_cmp_rname, {
+                                "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "gpx_planned": gpx_plan.name,
+                                "gpx_real": gpx_real.name,
+                                "planned_km": round(analysis_p["distance_km"], 2),
+                                "real_km": round(analysis_r["distance_km"], 2),
+                                "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
+                                "real_elev_gain": round(analysis_r["elevation_gain_m"]),
+                                "max_deviation_m": round(max_dev_m),
+                                "builder_run_id": _cmp_run_id,
+                                "candidate_id": _cmp_cand_id,
+                            })
+                            st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
+                        st.caption(t("analizza.cmp_linked_to_run").format(
+                            ref=_format_run_ref(_saved_r_cmp[_cmp_rname], _cmp_run_id, _cmp_cand_id)
+                        ))
 
                     # ── Mappa sovrapposta con click handler ─────────────────
                     st.markdown(t("analizza.map_header"))
@@ -3434,9 +3597,12 @@ with tab_post_ride:
                     try:
                         # Opinione soggettiva sulla route → feedback_history nel JSON
                         # (non SQLite: è specifica di questa route, non trasversale).
+                        # builder_run_id = run da cui è stato scelto fb_candidate_id
+                        # sopra (sempre l'ultimo run al momento del feedback).
                         _save_feedback_to_route(fb_route_sel, {
                             "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                             "candidate_id": fb_candidate_id or "—",
+                            "builder_run_id": builder_res.get("generated_at") if builder_res else None,
                             "rating": fb_rating,
                             "too_traffic": fb_traffic,
                             "too_gravel": fb_gravel,
@@ -3446,6 +3612,13 @@ with tab_post_ride:
                             "would_repeat": fb_repeat,
                             "notes": fb_notes,
                         })
+                        st.session_state["fb_link_caption"] = t("analizza.fb_linked_to_run").format(
+                            ref=_format_run_ref(
+                                rd_fb,
+                                builder_res.get("generated_at") if builder_res else None,
+                                fb_candidate_id,
+                            )
+                        )
 
                         # Segnaposto "problema" → promossi a known_obstacles (SQLite,
                         # trasversale: vale per qualunque route futura con la stessa
@@ -3467,6 +3640,7 @@ with tab_post_ride:
                         if _problems:
                             _msg += t("analizza.fb_obstacles").format(n=len(_problems))
                         st.success(_msg)
+                        st.caption(st.session_state.get("fb_link_caption", ""))
                     except Exception as exc:
                         st.error(f"Errore salvataggio feedback: {exc}")
 
