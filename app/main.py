@@ -372,6 +372,85 @@ def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_la
     else:
         st.caption(t("climbs.no_climbs"))
 
+    # ── Analisi energetica deterministica (opzionale) ───────────────────────
+    # Stessa compute_deterministic_energy_analysis() e stessi label già
+    # costruiti per il tab Ride Analysis — riusati identici qui, non
+    # riscritti. Nessun calcolo/errore se non viene selezionato un profilo
+    # eBike o non vengono compilati i campi batteria: la vista resta quella
+    # di sempre (mappa/stats/salite sopra).
+    st.markdown(f"**{t('builder.actual_ride_energy_header')}**")
+    _profiles_d = db.list_ride_profiles()
+    _none_label_d = t("builder.actual_ride_profile_none")
+    _sel_profile_d = st.selectbox(
+        t("builder.actual_ride_profile_label"),
+        [_none_label_d] + [p["name"] for p in _profiles_d],
+        key=f"bld_actual_profile_sel_{d_idx}",
+    )
+    _active_profile_d = (
+        None if _sel_profile_d == _none_label_d
+        else next((p for p in _profiles_d if p["name"] == _sel_profile_d), None)
+    )
+    _is_ebike_d = bool(
+        _active_profile_d and (_active_profile_d.get("bike_type") or "").lower() == "ebike"
+    )
+
+    if _active_profile_d and _is_ebike_d:
+        _edc1, _edc2 = st.columns(2)
+        _batt_start_d = _edc1.number_input(
+            t("ride_analysis.det_battery_start"),
+            min_value=0, max_value=100, value=100, key=f"bld_actual_batt_start_{d_idx}",
+        )
+        _batt_end_d = _edc2.number_input(
+            t("ride_analysis.det_battery_end"),
+            min_value=0, max_value=100, value=50, key=f"bld_actual_batt_end_{d_idx}",
+        )
+        _wind_codes_d = ["none", "headwind", "tailwind"]
+        _wind_labels_d = [t(f"ride_analysis.wind_{c}") for c in _wind_codes_d]
+        _wind_sel_d = st.selectbox(
+            t("ride_analysis.wind_label"), _wind_labels_d, key=f"bld_actual_wind_{d_idx}",
+        )
+        _wind_condition_d = _wind_codes_d[_wind_labels_d.index(_wind_sel_d)]
+
+        if st.button(t("builder.actual_ride_energy_btn"), key=f"bld_actual_energy_btn_{d_idx}"):
+            try:
+                _det_result_d = ride_analysis.compute_deterministic_energy_analysis(
+                    analysis_d, _active_profile_d, _batt_start_d, _batt_end_d,
+                    wind_condition=_wind_condition_d,
+                )
+                db.update_profile_assist_ratio(_active_profile_d["name"], _det_result_d["assist_ratio"])
+                _save_ride_analysis_to_route(route_name, {
+                    "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                    "is_actual_ride": True,
+                    "actual_ride_index": d_idx,
+                    "gpx_filename": ar_d.get("original_filename"),
+                    "profile_name": _active_profile_d.get("name"),
+                    "battery_start_pct": _batt_start_d,
+                    "battery_end_pct": _batt_end_d,
+                    "wind_condition": _wind_condition_d,
+                    "e_required_wh": _det_result_d["e_required_wh"],
+                    "capacity_used_wh": _det_result_d["capacity_used_wh"],
+                    "capacity_used_pct": _det_result_d["capacity_used_pct"],
+                    "assist_ratio": _det_result_d["assist_ratio"],
+                    "rider_kcal_deterministic": _det_result_d["rider_kcal"],
+                })
+                st.session_state[f"bld_actual_det_result_{d_idx}"] = _det_result_d
+            except Exception as _det_e_d:
+                st.warning(f"{t('ride_analysis.det_error')}: {_det_e_d}")
+
+    _det_result_d = st.session_state.get(f"bld_actual_det_result_{d_idx}")
+    if _det_result_d:
+        st.subheader(t("ride_analysis.det_header"))
+        _edm1, _edm2, _edm3, _edm4 = st.columns(4)
+        _edm1.metric(t("ride_analysis.det_e_required"), f"{_det_result_d['e_required_wh']:.0f} Wh")
+        _edm2.metric(
+            t("ride_analysis.det_capacity_used"),
+            f"{_det_result_d['capacity_used_wh']:.0f} Wh ({_det_result_d['capacity_used_pct']:.0f}%)",
+        )
+        _edm3.metric(t("ride_analysis.det_assist_ratio"), f"{_det_result_d['assist_ratio'] * 100:.0f}%")
+        _edm4.metric(t("ride_analysis.det_rider_kcal"), f"{_det_result_d['rider_kcal']:.0f} kcal")
+        if _det_result_d.get("assist_ratio_anomalous"):
+            st.warning(f"⚠️ {t('ride_analysis.det_anomalous_warning')}")
+
 
 def _render_actual_ride_uploader(route_name: str, widget_key: str) -> None:
     """
@@ -2761,6 +2840,12 @@ with tab_ride:
             else next((p for p in _profiles if p["name"] == _sel), {})
         )
 
+        if _existing.get("assist_ratio_sample_count"):
+            st.caption(t("ride_analysis.profile_avg_assist").format(
+                pct=round((_existing.get("avg_assist_ratio") or 0.0) * 100),
+                n=_existing["assist_ratio_sample_count"],
+            ))
+
         # Form key includes selected profile to reset fields on profile change
         _form_key = f"ride_profile_form_{_sel}"
         with st.form(_form_key):
@@ -2966,6 +3051,38 @@ with tab_ride:
         elif not _active_profile:
             st.info(t("ride_analysis.need_profile"))
 
+        # Analisi deterministica post-ride (Opzione D — percorso realmente
+        # pedalato): richiede un profilo eBike (capacità batteria nota).
+        _active_is_ebike = bool(
+            _active_profile and (_active_profile.get("bike_type") or "").lower() == "ebike"
+        )
+        _is_actual_ride = False
+        _det_battery_start = None
+        _det_battery_end = None
+        _det_wind = "none"
+        if _gpx_stats and _active_profile and _active_is_ebike:
+            _is_actual_ride = st.checkbox(
+                t("ride_analysis.actual_ride_checkbox"),
+                key="ride_is_actual_ride",
+                help=t("ride_analysis.actual_ride_checkbox_help"),
+            )
+            if _is_actual_ride:
+                _dc1, _dc2 = st.columns(2)
+                _det_battery_start = _dc1.number_input(
+                    t("ride_analysis.det_battery_start"),
+                    min_value=0, max_value=100, value=100, key="ride_det_batt_start",
+                )
+                _det_battery_end = _dc2.number_input(
+                    t("ride_analysis.det_battery_end"),
+                    min_value=0, max_value=100, value=50, key="ride_det_batt_end",
+                )
+                _wind_codes = ["none", "headwind", "tailwind"]
+                _wind_labels = [t(f"ride_analysis.wind_{c}") for c in _wind_codes]
+                _wind_sel = st.selectbox(
+                    t("ride_analysis.wind_label"), _wind_labels, key="ride_det_wind",
+                )
+                _det_wind = _wind_codes[_wind_labels.index(_wind_sel)]
+
         if _gpx_stats and _active_profile:
             if st.button(t("ride_analysis.btn_analyze"), type="primary", key="ride_btn_analyze"):
                 with st.spinner(t("ride_analysis.analyzing")):
@@ -2976,6 +3093,26 @@ with tab_ride:
                         st.session_state["ride_result_gpx"] = _gpx_stats
                         st.session_state["ride_result_profile"] = _active_profile
                         st.session_state["ride_result_lang"] = _lang
+
+                        # Calcolo deterministico (non stima AI) — solo se l'utente ha
+                        # dichiarato che questo è un percorso realmente pedalato e ha
+                        # inserito i dati batteria inizio/fine. Non sostituisce/tocca
+                        # _result (stima AI): resta disponibile per il confronto.
+                        _det_result = None
+                        if _is_actual_ride and _det_battery_start is not None and _det_battery_end is not None:
+                            try:
+                                _det_result = ride_analysis.compute_deterministic_energy_analysis(
+                                    _gpx_stats, _active_profile,
+                                    _det_battery_start, _det_battery_end,
+                                    wind_condition=_det_wind,
+                                )
+                                db.update_profile_assist_ratio(
+                                    _active_profile["name"], _det_result["assist_ratio"],
+                                )
+                            except Exception as _det_e:
+                                st.warning(f"{t('ride_analysis.det_error')}: {_det_e}")
+                                _det_result = None
+                        st.session_state["ride_det_result"] = _det_result
 
                         # Solo per candidati collegati a una route pianificata — un
                         # GPX esterno non collegato resta volatile (solo session_state
@@ -2991,7 +3128,7 @@ with tab_ride:
                             _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             _report_path = _RIDE_REPORTS_DIR / f"{_route_sel}_{_ts}.html"
                             _report_path.write_text(_html_hist, encoding="utf-8")
-                            _save_ride_analysis_to_route(_route_sel, {
+                            _history_record = {
                                 "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                                 "report_path": str(_report_path),
                                 "gpx_filename": _gpx_stats.get("gpx_filename"),
@@ -2999,7 +3136,21 @@ with tab_ride:
                                 "avg_hr_bpm": _result.get("avg_hr_bpm"),
                                 "battery_pct_consumed": _result.get("battery_pct_consumed"),
                                 "fatigue_index": _result.get("fatigue_index"),
-                            })
+                            }
+                            if _det_result:
+                                _history_record.update({
+                                    "is_actual_ride": True,
+                                    "profile_name": _active_profile.get("name"),
+                                    "battery_start_pct": _det_battery_start,
+                                    "battery_end_pct": _det_battery_end,
+                                    "wind_condition": _det_wind,
+                                    "e_required_wh": _det_result["e_required_wh"],
+                                    "capacity_used_wh": _det_result["capacity_used_wh"],
+                                    "capacity_used_pct": _det_result["capacity_used_pct"],
+                                    "assist_ratio": _det_result["assist_ratio"],
+                                    "rider_kcal_deterministic": _det_result["rider_kcal"],
+                                })
+                            _save_ride_analysis_to_route(_route_sel, _history_record)
                     except Exception as _e:
                         st.error(f"❌ {_e}")
 
@@ -3011,9 +3162,27 @@ with tab_ride:
 
             st.subheader(t("ride_analysis.results_header"))
             _r_is_ebike = (_rp.get("bike_type") or "").lower() == "ebike"
+            _r_det = st.session_state.get("ride_det_result")
+
+            # Calcolo deterministico (percorso reale) — più affidabile della
+            # stima AI quando disponibile, mostrato prima e con etichetta chiara.
+            if _r_det:
+                st.subheader(t("ride_analysis.det_header"))
+                _dm1, _dm2, _dm3, _dm4 = st.columns(4)
+                _dm1.metric(t("ride_analysis.det_e_required"), f"{_r_det['e_required_wh']:.0f} Wh")
+                _dm2.metric(
+                    t("ride_analysis.det_capacity_used"),
+                    f"{_r_det['capacity_used_wh']:.0f} Wh ({_r_det['capacity_used_pct']:.0f}%)",
+                )
+                _dm3.metric(t("ride_analysis.det_assist_ratio"), f"{_r_det['assist_ratio'] * 100:.0f}%")
+                _dm4.metric(t("ride_analysis.det_rider_kcal"), f"{_r_det['rider_kcal']:.0f} kcal")
+                if _r_det.get("assist_ratio_anomalous"):
+                    st.warning(f"⚠️ {t('ride_analysis.det_anomalous_warning')}")
 
             # Battery row (ebike only)
             if _r_is_ebike:
+                if _r_det:
+                    st.markdown(f"**🤖 {t('ride_analysis.ai_estimate_label')}**")
                 _rb1, _rb2, _rb3 = st.columns(3)
                 _batt_v = _r.get("battery_pct_consumed")
                 _rng_v = _r.get("range_remaining_km")

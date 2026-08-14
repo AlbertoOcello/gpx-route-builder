@@ -368,6 +368,96 @@ def merge_climbs_analysis(gpx_climbs: list[dict], climbs_analysis: list[dict] | 
     return merged
 
 
+# ── Deterministic post-ride energy analysis ─────────────────────────────────────
+# Non basata su stima AI: confronta l'energia meccanica richiesta dal percorso
+# realmente pedalato con quanto dichiarato consumato dalla batteria, per
+# derivare un rapporto di assistenza motore comparabile tra percorsi di
+# lunghezza diversa (assist_ratio) e le calorie bruciate dal ciclista per
+# differenza (rider_kcal). Solo per percorsi reali (Opzione D) con dati
+# batteria inizio/fine — mai usata per candidati Builder A/B/C, che restano
+# sulla stima AI ipotetica di run_analysis().
+
+def compute_deterministic_energy_analysis(
+    gpx_stats: dict,
+    profile: dict,
+    battery_start_pct: float,
+    battery_end_pct: float,
+    wind_condition: str = "none",  # "none" | "headwind" | "tailwind"
+    virtual_grade_pct: float = 1.3,
+    motor_efficiency: float = 0.80,
+    human_efficiency: float = 0.23,
+    g: float = 9.81,
+    wh_per_kcal: float = 1.163,
+    wind_headwind_delta_pct: float = 1.75,
+    wind_tailwind_delta_pct: float = 1.3,
+    assist_ratio_warn_threshold: float = 0.95,
+) -> dict:
+    """
+    Calcola l'energia meccanica richiesta dal percorso (peso totale × g ×
+    dislivello reale+virtuale), la confronta con l'energia batteria dichiarata
+    consumata (capacity_used_pct × wh × efficienza motore) per ottenere
+    assist_ratio, e ne deriva le calorie del ciclista per differenza.
+
+    wind_condition corregge virtual_grade_pct solo per questo calcolo
+    (correzione qualitativa, non persistita come default). assist_ratio non
+    viene troncato anche se >1: è un segnale utile (giornata anomala/vento
+    non dichiarato), non un errore — vedi assist_ratio_anomalous.
+
+    Solleva ValueError se al profilo mancano i dati necessari (capacità
+    batteria, peso bici/ciclista).
+    """
+    capacity_wh = profile.get("wh")
+    bike_weight_kg = profile.get("bike_weight_kg")
+    driver_weight_kg = profile.get("driver_weight_kg")
+    if not capacity_wh:
+        raise ValueError("Capacità batteria (Wh) mancante nel profilo — richiesta per il calcolo deterministico")
+    if not bike_weight_kg or not driver_weight_kg:
+        raise ValueError("Peso bici e/o peso ciclista mancanti nel profilo")
+
+    peso_totale_kg = bike_weight_kg + driver_weight_kg
+    dislivello_reale_m = gpx_stats["elevation_gain_m"]
+    distanza_m = gpx_stats["distance_km"] * 1000
+
+    effective_grade_pct = virtual_grade_pct
+    if wind_condition == "headwind":
+        effective_grade_pct += wind_headwind_delta_pct
+    elif wind_condition == "tailwind":
+        effective_grade_pct = max(0.0, effective_grade_pct - wind_tailwind_delta_pct)
+
+    dislivello_virtuale_m = distanza_m * (effective_grade_pct / 100)
+    e_required_j = peso_totale_kg * g * (dislivello_reale_m + dislivello_virtuale_m)
+    e_required_wh = e_required_j / 3600
+
+    capacity_used_pct = battery_start_pct - battery_end_pct
+    capacity_used_wh = (capacity_used_pct / 100) * capacity_wh
+
+    motor_mechanical_output_wh = capacity_used_wh * motor_efficiency
+    assist_ratio = (motor_mechanical_output_wh / e_required_wh) if e_required_wh else 0.0
+
+    rider_mechanical_output_wh = max(0.0, e_required_wh - motor_mechanical_output_wh)
+    rider_kcal = (rider_mechanical_output_wh / human_efficiency) * wh_per_kcal
+
+    return {
+        "peso_totale_kg": peso_totale_kg,
+        "dislivello_reale_m": dislivello_reale_m,
+        "distanza_m": distanza_m,
+        "virtual_grade_pct_used": effective_grade_pct,
+        "dislivello_virtuale_m": dislivello_virtuale_m,
+        "e_required_wh": e_required_wh,
+        "battery_start_pct": battery_start_pct,
+        "battery_end_pct": battery_end_pct,
+        "capacity_wh": capacity_wh,
+        "capacity_used_pct": capacity_used_pct,
+        "capacity_used_wh": capacity_used_wh,
+        "motor_mechanical_output_wh": motor_mechanical_output_wh,
+        "assist_ratio": assist_ratio,
+        "rider_mechanical_output_wh": rider_mechanical_output_wh,
+        "rider_kcal": rider_kcal,
+        "wind_condition": wind_condition,
+        "assist_ratio_anomalous": assist_ratio >= assist_ratio_warn_threshold,
+    }
+
+
 # ── HTML report ────────────────────────────────────────────────────────────────
 
 def _dash(val: object) -> str:

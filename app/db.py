@@ -176,6 +176,10 @@ def init_db() -> None:
             conn.execute("ALTER TABLE ride_profiles ADD COLUMN riding_style TEXT")
         if "min_battery_pct" not in rp_cols:
             conn.execute("ALTER TABLE ride_profiles ADD COLUMN min_battery_pct REAL")
+        if "avg_assist_ratio" not in rp_cols:
+            conn.execute("ALTER TABLE ride_profiles ADD COLUMN avg_assist_ratio REAL")
+        if "assist_ratio_sample_count" not in rp_cols:
+            conn.execute("ALTER TABLE ride_profiles ADD COLUMN assist_ratio_sample_count INTEGER DEFAULT 0")
 
     _migrate_geocoding_cache()
     _seed_known_avoid_roads()
@@ -441,6 +445,28 @@ def get_ride_profile(profile_id: int) -> dict | None:
 def delete_ride_profile(profile_id: int) -> None:
     with get_conn() as conn:
         conn.execute("DELETE FROM ride_profiles WHERE id = ?", (profile_id,))
+
+
+def update_profile_assist_ratio(profile_name: str, new_ratio: float) -> dict:
+    """Aggiorna la media incrementale di assist_ratio per un profilo dopo un
+    nuovo calcolo deterministico (vedi ride_analysis_agent.compute_deterministic_energy_analysis).
+    Ritorna {"avg_assist_ratio", "assist_ratio_sample_count"} aggiornati."""
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT avg_assist_ratio, assist_ratio_sample_count FROM ride_profiles WHERE name = ?",
+            (profile_name,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"Profilo non trovato: {profile_name}")
+        prev_avg = row["avg_assist_ratio"] or 0.0
+        prev_count = row["assist_ratio_sample_count"] or 0
+        new_count = prev_count + 1
+        new_avg = (prev_avg * prev_count + new_ratio) / new_count
+        conn.execute(
+            "UPDATE ride_profiles SET avg_assist_ratio = ?, assist_ratio_sample_count = ? WHERE name = ?",
+            (new_avg, new_count, profile_name),
+        )
+        return {"avg_assist_ratio": new_avg, "assist_ratio_sample_count": new_count}
 
 
 # Inizializza al primo import
