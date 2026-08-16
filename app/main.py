@@ -3151,6 +3151,15 @@ with tab_ride:
                                     "rider_kcal_deterministic": _det_result["rider_kcal"],
                                 })
                             _save_ride_analysis_to_route(_route_sel, _history_record)
+
+                        # Forza un rerun a fine analisi: _profiles/_existing in
+                        # cima al tab (media storica assist_ratio, vedi sopra)
+                        # sono stati letti PRIMA di questo aggiornamento — senza
+                        # rerun la caption resterebbe indietro di un run, stesso
+                        # gap già risolto altrove (es. salvataggio route nel
+                        # Planner). I risultati (_result/_det_result) sopravvivono
+                        # al rerun perché già in session_state, non in scope locale.
+                        st.rerun()
                     except Exception as _e:
                         st.error(f"❌ {_e}")
 
