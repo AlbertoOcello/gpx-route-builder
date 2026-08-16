@@ -7,6 +7,7 @@ from pathlib import Path
 
 import gpxpy
 from geopy.distance import geodesic
+from shapely.geometry import LineString
 
 
 def gpx_creator_string() -> str:
@@ -721,6 +722,108 @@ def analyze_gpx(gpx_path: str,
         result["endpoint_match_m"] = round(endpoint_match_m, 1)
 
     return result
+
+
+# ── Bozza waypoint da percorso reale (Planner, route "solo Opzione D") ────────
+# Quando una route ha solo un actual_ride e nessuna pianificazione salvata,
+# estrae waypoint rappresentativi dal tracciato reale via semplificazione
+# geometrica (Douglas-Peucker) per precompilare il campo "Desired waypoints"
+# del Planner — punto di partenza esplicitamente escluso qui (resta al
+# form, vedi main.py), così l'utente può anche ricollegare il giro a un
+# punto di partenza diverso.
+_DRAFT_WP_TARGET_MIN = 8
+_DRAFT_WP_TARGET_MAX = 15
+_DRAFT_WP_MIN_SPACING_M = 150.0       # sotto questa distanza reciproca, cluster ridondante
+_DRAFT_WP_ENDPOINT_EXCLUSION_M = 350.0  # sotto questa distanza dallo start/end del tracciato, ridondante con lo start del loop
+_DRAFT_WP_TOLERANCE_LO_DEG = 0.00001   # ~1m — quasi nessuna semplificazione
+_DRAFT_WP_TOLERANCE_HI_DEG = 0.05      # ~5km — semplificazione aggressiva
+_DRAFT_WP_SEARCH_ITERATIONS = 25
+
+
+def extract_draft_waypoints_from_gpx(
+    gpx_path: str,
+    target_min: int = _DRAFT_WP_TARGET_MIN,
+    target_max: int = _DRAFT_WP_TARGET_MAX,
+    min_spacing_m: float = _DRAFT_WP_MIN_SPACING_M,
+    endpoint_exclusion_m: float = _DRAFT_WP_ENDPOINT_EXCLUSION_M,
+) -> list[tuple[float, float]]:
+    """
+    Estrae waypoint rappresentativi da un GPX (percorso realmente pedalato,
+    Opzione D) via semplificazione Douglas-Peucker (shapely
+    LineString.simplify), per precompilare il campo "Desired waypoints" del
+    Planner quando si riparte da una route "solo D" (nessuna pianificazione
+    salvata).
+
+    La tolleranza di semplificazione è tarata con una ricerca binaria (nello
+    stesso sistema di coordinate del GPX, gradi) finché il numero di punti
+    risultanti rientra in [target_min, target_max] — Douglas-Peucker è
+    monotona (più tolleranza → uguali o meno punti sopravvissuti), quindi la
+    ricerca binaria è valida. Se il range non viene mai raggiunto esattamente
+    entro _DRAFT_WP_SEARCH_ITERATIONS iterazioni, ritorna il risultato più
+    vicino al range incontrato durante la ricerca.
+
+    Dopo la semplificazione, filtra: punti reciprocamente più vicini di
+    min_spacing_m (cluster ridondanti che DP a volte lascia vicino a curve
+    strette) e punti entro endpoint_exclusion_m dal punto di partenza/arrivo
+    del tracciato stesso (ridondanti con lo start del loop, che l'utente
+    configura a parte nel form — non toccato da questa funzione).
+
+    Ritorna [(lat, lon), ...] nell'ordine del tracciato — il tracciato
+    stesso (non semplificato) se ha meno di target_min punti.
+    """
+    with open(gpx_path, "r") as f:
+        gpx = gpxpy.parse(f)
+
+    track_points = [
+        (pt.latitude, pt.longitude)
+        for track in gpx.tracks
+        for segment in track.segments
+        for pt in segment.points
+    ]
+    if len(track_points) < target_min:
+        return track_points
+
+    # shapely usa (x, y) = (lon, lat), non (lat, lon).
+    line = LineString([(lon, lat) for lat, lon in track_points])
+
+    lo, hi = _DRAFT_WP_TOLERANCE_LO_DEG, _DRAFT_WP_TOLERANCE_HI_DEG
+    best_coords = list(line.coords)
+    best_diff = abs(len(best_coords) - target_max)
+    for _ in range(_DRAFT_WP_SEARCH_ITERATIONS):
+        mid = (lo + hi) / 2
+        coords = list(line.simplify(mid, preserve_topology=False).coords)
+        n = len(coords)
+
+        diff = 0 if target_min <= n <= target_max else min(abs(n - target_min), abs(n - target_max))
+        if diff < best_diff:
+            best_diff = diff
+            best_coords = coords
+
+        if target_min <= n <= target_max:
+            break
+        elif n > target_max:
+            lo = mid  # troppi punti: serve più tolleranza (semplificazione più aggressiva)
+        else:
+            hi = mid  # troppo pochi punti: serve meno tolleranza
+
+    waypoints = [(lat, lon) for lon, lat in best_coords]
+
+    # Filtro 1: punti troppo vicini al proprio start/end del tracciato reale.
+    start_pt, end_pt = track_points[0], track_points[-1]
+    waypoints = [
+        (lat, lon) for lat, lon in waypoints
+        if geodesic((lat, lon), start_pt).meters >= endpoint_exclusion_m
+        and geodesic((lat, lon), end_pt).meters >= endpoint_exclusion_m
+    ]
+
+    # Filtro 2: punti reciprocamente troppo vicini — greedy in ordine di
+    # tracciato, tiene il primo di ogni gruppo ravvicinato.
+    filtered: list[tuple[float, float]] = []
+    for lat, lon in waypoints:
+        if not filtered or geodesic((lat, lon), filtered[-1]).meters >= min_spacing_m:
+            filtered.append((lat, lon))
+
+    return filtered
 
 
 if __name__ == "__main__":

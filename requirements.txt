@@ -2,6 +2,7 @@ anthropic>=0.112.0
 folium>=0.20.0
 geopy>=2.4.1
 gpxpy>=1.6.2
+shapely>=2.0.0
 httpx>=0.28.1
 pydantic>=2.13.0
 streamlit>=1.58.0

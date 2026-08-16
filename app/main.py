@@ -32,7 +32,12 @@ from brouter_client import ensure_tile, get_route
 from candidate_generator import generate_candidates
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
-from gpx_analyzer import OUT_AND_BACK_WARN_THRESHOLD_PCT, analyze_gpx, cut_range_in_gpx
+from gpx_analyzer import (
+    OUT_AND_BACK_WARN_THRESHOLD_PCT,
+    analyze_gpx,
+    cut_range_in_gpx,
+    extract_draft_waypoints_from_gpx,
+)
 from gpx_optimizer import is_already_optimized, optimize_gpx
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
@@ -1710,6 +1715,14 @@ with tab_planner:
         _sep = "\n" if _existing_wps.strip() else ""
         st.session_state["pl_wps"] = f"{_existing_wps}{_sep}{_pl_geo_add_pending}"
 
+    # Bozza waypoint generata da un percorso reale (route "solo Opzione D",
+    # vedi bottone "🔄 Genera bozza pianificazione dal percorso reale" più
+    # sotto) — stesso motivo/pattern dei due blocchi sopra: sostituisce per
+    # intero pl_wps (non lo start, lasciato al form/default, vedi richiesta).
+    _pl_draft_wps_pending = st.session_state.pop("_pl_draft_wps_pending", None)
+    if _pl_draft_wps_pending is not None:
+        st.session_state["pl_wps"] = _pl_draft_wps_pending
+
     # Carica una route salvata nel form (bottone "📂 Carica nel Planner" in
     # Utility → Gestione file) — stesso pattern del reset sopra: i valori reali
     # al posto dei default, assegnati a session_state PRIMA che i widget pl_
@@ -1897,6 +1910,55 @@ with tab_planner:
                 )
         else:
             pl_end_name, pl_end_lat, pl_end_lon = None, None, None
+
+        # Bozza waypoint da percorso reale — solo per route "solo Opzione D"
+        # (nessuna pianificazione salvata, request assente per costruzione,
+        # vedi _save_actual_ride_only_route): estrae waypoint rappresentativi
+        # dal tracciato reale via semplificazione geometrica
+        # (gpx_analyzer.extract_draft_waypoints_from_gpx) per precompilare il
+        # campo sotto invece di lasciarlo vuoto. Il punto di partenza NON
+        # viene toccato — resta al default/quanto già in session_state, così
+        # l'utente può anche ricollegare il giro a un punto diverso.
+        _pl_open_name_now = st.session_state.get("pl_loaded_route_name")
+        if _pl_open_name_now:
+            _pl_open_data_now = _load_saved_routes().get(_pl_open_name_now, {})
+            _pl_open_actual_rides = _pl_open_data_now.get("actual_rides") or []
+            if "request" not in _pl_open_data_now and _pl_open_actual_rides:
+                with st.container(border=True):
+                    st.markdown(f"**{t('planner.draft_from_ride_header')}**")
+                    st.caption(t("planner.draft_from_ride_caption"))
+                    if len(_pl_open_actual_rides) > 1:
+                        _draft_opts = [
+                            t("builder.actual_ride_option_label").format(
+                                idx=_i + 1,
+                                date=(_ar.get("uploaded_at") or "—")[:16].replace("T", " "),
+                            )
+                            for _i, _ar in enumerate(_pl_open_actual_rides)
+                        ]
+                        _draft_sel = st.selectbox(
+                            t("planner.draft_from_ride_select"), _draft_opts, key="pl_draft_ride_sel",
+                        )
+                        _draft_idx = _draft_opts.index(_draft_sel)
+                    else:
+                        _draft_idx = 0
+                    if st.button(t("planner.draft_from_ride_btn"), key="pl_draft_from_ride_btn"):
+                        try:
+                            _draft_gpx_path = _pl_open_actual_rides[_draft_idx]["gpx_path"]
+                            _draft_wps = extract_draft_waypoints_from_gpx(_draft_gpx_path)
+                            if not _draft_wps:
+                                st.warning(t("planner.draft_from_ride_empty"))
+                            else:
+                                st.session_state["_pl_draft_wps_pending"] = "\n".join(
+                                    f"{lat:.6f},{lon:.6f}!" for lat, lon in _draft_wps
+                                )
+                                st.session_state["_pl_draft_from_ride_msg"] = len(_draft_wps)
+                                st.rerun()
+                        except Exception as _draft_e:
+                            st.error(f"❌ {t('planner.draft_from_ride_error')}: {_draft_e}")
+
+        _pl_draft_msg_n = st.session_state.pop("_pl_draft_from_ride_msg", None)
+        if _pl_draft_msg_n:
+            st.success(t("planner.draft_from_ride_ok").format(n=_pl_draft_msg_n))
 
         pl_user_wps = st.text_area(
             t("planner.form.waypoints"),
