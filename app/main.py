@@ -448,6 +448,20 @@ def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_la
         )
         _edm3.metric(t("ride_analysis.det_assist_ratio"), f"{_det_result_d['assist_ratio'] * 100:.0f}%")
         _edm4.metric(t("ride_analysis.det_rider_kcal"), f"{_det_result_d['rider_kcal']:.0f} kcal")
+        st.caption(
+            t("ride_analysis.det_breakdown_line1").format(
+                battery_wh=f"{_det_result_d['capacity_used_wh']:.0f}",
+                motor_pct=f"{_det_result_d['motor_efficiency'] * 100:.0f}",
+                motor_wh=f"{_det_result_d['motor_mechanical_output_wh']:.0f}",
+            )
+            + "  \n"
+            + t("ride_analysis.det_breakdown_line2").format(
+                required_wh=f"{_det_result_d['e_required_wh']:.0f}",
+                motor_wh=f"{_det_result_d['motor_mechanical_output_wh']:.0f}",
+                rider_wh=f"{_det_result_d['rider_mechanical_output_wh']:.0f}",
+                rider_kcal=f"{_det_result_d['rider_kcal']:.0f}",
+            )
+        )
         if _det_result_d.get("assist_ratio_anomalous"):
             st.warning(f"⚠️ {t('ride_analysis.det_anomalous_warning')}")
 
@@ -3123,6 +3137,7 @@ with tab_ride:
                             _html_hist = ride_analysis.render_html_report(
                                 _result, _gpx_stats, _active_profile, _lang,
                                 route_narrative=_route_narrative,
+                                det_result=_det_result,
                             )
                             _RIDE_REPORTS_DIR.mkdir(parents=True, exist_ok=True)
                             _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -3185,13 +3200,30 @@ with tab_ride:
                 )
                 _dm3.metric(t("ride_analysis.det_assist_ratio"), f"{_r_det['assist_ratio'] * 100:.0f}%")
                 _dm4.metric(t("ride_analysis.det_rider_kcal"), f"{_r_det['rider_kcal']:.0f} kcal")
+                st.caption(
+                    t("ride_analysis.det_breakdown_line1").format(
+                        battery_wh=f"{_r_det['capacity_used_wh']:.0f}",
+                        motor_pct=f"{_r_det['motor_efficiency'] * 100:.0f}",
+                        motor_wh=f"{_r_det['motor_mechanical_output_wh']:.0f}",
+                    )
+                    + "  \n"
+                    + t("ride_analysis.det_breakdown_line2").format(
+                        required_wh=f"{_r_det['e_required_wh']:.0f}",
+                        motor_wh=f"{_r_det['motor_mechanical_output_wh']:.0f}",
+                        rider_wh=f"{_r_det['rider_mechanical_output_wh']:.0f}",
+                        rider_kcal=f"{_r_det['rider_kcal']:.0f}",
+                    )
+                )
                 if _r_det.get("assist_ratio_anomalous"):
                     st.warning(f"⚠️ {t('ride_analysis.det_anomalous_warning')}")
 
             # Battery row (ebike only)
             if _r_is_ebike:
                 if _r_det:
-                    st.markdown(f"**🤖 {t('ride_analysis.ai_estimate_label')}**")
+                    st.warning(
+                        f"**{t('ride_analysis.ai_estimate_label')}**  \n"
+                        f"{t('ride_analysis.ai_estimate_caption')}"
+                    )
                 _rb1, _rb2, _rb3 = st.columns(3)
                 _batt_v = _r.get("battery_pct_consumed")
                 _rng_v = _r.get("range_remaining_km")
@@ -3261,6 +3293,7 @@ with tab_ride:
             _html = ride_analysis.render_html_report(
                 _r, _rg, _rp, _rl,
                 route_narrative=_route_narrative,
+                det_result=_r_det,
             )
             _gpx_base = _rg.get("gpx_filename") or re.sub(r"[^\w]+", "_", (_rg.get("gpx_name") or "analisi")).strip("_").lower() or "analisi"
             st.download_button(

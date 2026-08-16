@@ -584,7 +584,10 @@ it:
     det_assist_ratio: "Rapporto assistenza motore"
     det_rider_kcal: "Calorie ciclista (per differenza)"
     det_anomalous_warning: "Rapporto insolitamente alto — possibile vento forte contrario non dichiarato, o altre condizioni che il modello non cattura."
-    ai_estimate_label: "Stima AI (ipotetica)"
+    det_breakdown_line1: "{battery_wh} Wh batteria × {motor_pct}% efficienza motore = {motor_wh} Wh di lavoro motore"
+    det_breakdown_line2: "{required_wh} Wh richiesti − {motor_wh} Wh motore = {rider_wh} Wh dalle tue gambe (→ {rider_kcal} kcal)"
+    ai_estimate_label: "Stima AI — ipotesi probabilistica, non un calcolo"
+    ai_estimate_caption: "Questi numeri sono una stima basata su profilo e statistiche del percorso — non misurano nulla di reale. Per un calcolo vero, usa \"percorso realmente pedalato\" con i dati di batteria effettivi."
 
 en:
   app:
@@ -1171,4 +1174,7 @@ en:
     det_assist_ratio: "Motor assistance ratio"
     det_rider_kcal: "Rider calories (by difference)"
     det_anomalous_warning: "Unusually high ratio — possibly an undeclared strong headwind, or other conditions the model doesn't capture."
-    ai_estimate_label: "AI estimate (hypothetical)"
+    det_breakdown_line1: "{battery_wh} Wh battery × {motor_pct}% motor efficiency = {motor_wh} Wh of motor work"
+    det_breakdown_line2: "{required_wh} Wh required − {motor_wh} Wh motor = {rider_wh} Wh from your legs (→ {rider_kcal} kcal)"
+    ai_estimate_label: "AI estimate — a probabilistic guess, not a calculation"
+    ai_estimate_caption: "These numbers are an estimate based on your profile and route statistics — they don't measure anything real. For an actual calculation, use \"this is a real ride\" with your actual battery data."

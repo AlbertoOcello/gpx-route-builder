@@ -450,6 +450,7 @@ def compute_deterministic_energy_analysis(
         "capacity_used_pct": capacity_used_pct,
         "capacity_used_wh": capacity_used_wh,
         "motor_mechanical_output_wh": motor_mechanical_output_wh,
+        "motor_efficiency": motor_efficiency,
         "assist_ratio": assist_ratio,
         "rider_mechanical_output_wh": rider_mechanical_output_wh,
         "rider_kcal": rider_kcal,
@@ -473,6 +474,7 @@ def render_html_report(
     profile: dict,
     lang: str,
     route_narrative: str | None = None,
+    det_result: dict | None = None,
 ) -> str:
     """
     Generate a self-contained downloadable HTML report with:
@@ -480,7 +482,12 @@ def render_html_report(
     - Route info (name from GPX metadata, distance, elevation)
     - Planner narrative (between route data and profile, if provided)
     - Complete bike + rider profile
-    - AI analysis results
+    - Deterministic energy calculation (det_result, real-ride only — see
+      compute_deterministic_energy_analysis), when provided
+    - AI analysis results — relabelled as an explicit hypothesis, visually
+      distinct, only when det_result is also present (same contrast as the
+      live UI; with no deterministic result to contrast against, the AI
+      section stays a plain "Results" card, unchanged)
     - Personalised advice
     - Medical disclaimer
     """
@@ -542,6 +549,27 @@ def render_html_report(
         l_c_battery = "Battery"
         l_c_hardest = "💪 The hardest for you"
         l_c_no_climbs = "No significant climb detected on this route."
+        s_det = "📊 Deterministic Calculation (Real Ride)"
+        l_det_e_required = "Energy required by the route"
+        l_det_capacity_used = "Battery energy consumed"
+        l_det_assist_ratio = "Motor assistance ratio"
+        l_det_rider_kcal = "Rider calories (by difference)"
+        l_det_anomalous = (
+            "Unusually high ratio — possibly an undeclared strong headwind, "
+            "or other conditions the model doesn't capture."
+        )
+        det_breakdown_line1_tpl = (
+            "{battery_wh} Wh battery × {motor_pct}% motor efficiency = {motor_wh} Wh of motor work"
+        )
+        det_breakdown_line2_tpl = (
+            "{required_wh} Wh required − {motor_wh} Wh motor = {rider_wh} Wh from your legs (→ {rider_kcal} kcal)"
+        )
+        s_results_ai = "⚠️ AI Estimate — a probabilistic guess, not a calculation"
+        ai_caption_text = (
+            "These numbers are an estimate based on your profile and route statistics — "
+            "they don't measure anything real. For an actual calculation, use \"this is a "
+            "real ride\" with your actual battery data."
+        )
     else:
         title = "🔋 Report Analisi Giro"
         subtitle = "GPX Route Builder — Analisi ciclistica personalizzata"
@@ -594,6 +622,27 @@ def render_html_report(
         l_c_battery = "Batteria"
         l_c_hardest = "💪 La più dura per te"
         l_c_no_climbs = "Nessuna salita rilevante rilevata su questo percorso."
+        s_det = "📊 Calcolo Deterministico (Percorso Reale)"
+        l_det_e_required = "Energia richiesta dal percorso"
+        l_det_capacity_used = "Energia batteria consumata"
+        l_det_assist_ratio = "Rapporto assistenza motore"
+        l_det_rider_kcal = "Calorie ciclista (per differenza)"
+        l_det_anomalous = (
+            "Rapporto insolitamente alto — possibile vento forte contrario non "
+            "dichiarato, o altre condizioni che il modello non cattura."
+        )
+        det_breakdown_line1_tpl = (
+            "{battery_wh} Wh batteria × {motor_pct}% efficienza motore = {motor_wh} Wh di lavoro motore"
+        )
+        det_breakdown_line2_tpl = (
+            "{required_wh} Wh richiesti − {motor_wh} Wh motore = {rider_wh} Wh dalle tue gambe (→ {rider_kcal} kcal)"
+        )
+        s_results_ai = "⚠️ Stima AI — ipotesi probabilistica, non un calcolo"
+        ai_caption_text = (
+            "Questi numeri sono una stima basata su profilo e statistiche del percorso — "
+            "non misurano nulla di reale. Per un calcolo vero, usa \"percorso realmente "
+            "pedalato\" con i dati di batteria effettivi."
+        )
 
     # ── Map section ───────────────────────────────────────────────────────────
     track_points = gpx_stats.get("track_points") or []
@@ -702,6 +751,53 @@ def render_html_report(
     )
     disclaimer_text = _html_mod.escape(analysis.get("disclaimer", ""))
 
+    # ── Deterministic energy section (real-ride only) ──────────────────────────
+    # When present, also relabels the Results card below as an explicit
+    # hypothesis (same contrast as the live UI) — with no deterministic
+    # result to contrast against, Results stays a plain, unlabelled card.
+    det_section = ""
+    results_card_class = "card"
+    results_header = f"📊 {s_results}"
+    ai_caption_html = ""
+    if det_result:
+        det_breakdown_line1 = det_breakdown_line1_tpl.format(
+            battery_wh=f"{det_result['capacity_used_wh']:.0f}",
+            motor_pct=f"{det_result['motor_efficiency'] * 100:.0f}",
+            motor_wh=f"{det_result['motor_mechanical_output_wh']:.0f}",
+        )
+        det_breakdown_line2 = det_breakdown_line2_tpl.format(
+            required_wh=f"{det_result['e_required_wh']:.0f}",
+            motor_wh=f"{det_result['motor_mechanical_output_wh']:.0f}",
+            rider_wh=f"{det_result['rider_mechanical_output_wh']:.0f}",
+            rider_kcal=f"{det_result['rider_kcal']:.0f}",
+        )
+        det_warning_html = (
+            f'<p class="det-warning">⚠️ {_html_mod.escape(l_det_anomalous)}</p>'
+            if det_result.get("assist_ratio_anomalous") else ""
+        )
+        det_section = f"""
+<div class="card">
+  <h2>{s_det}</h2>
+  <div class="metric-row">
+    <div class="metric"><div class="lbl">{l_det_e_required}</div>
+      <div class="val">{det_result['e_required_wh']:.0f} Wh</div></div>
+    <div class="metric"><div class="lbl">{l_det_capacity_used}</div>
+      <div class="val">{det_result['capacity_used_wh']:.0f} Wh ({det_result['capacity_used_pct']:.0f}%)</div></div>
+    <div class="metric"><div class="lbl">{l_det_assist_ratio}</div>
+      <div class="val">{det_result['assist_ratio'] * 100:.0f}%</div></div>
+    <div class="metric"><div class="lbl">{l_det_rider_kcal}</div>
+      <div class="val">{det_result['rider_kcal']:.0f} kcal</div></div>
+  </div>
+  <div class="det-breakdown">
+    <div>{det_breakdown_line1}</div>
+    <div>{det_breakdown_line2}</div>
+  </div>
+  {det_warning_html}
+</div>"""
+        results_card_class = "card ai-card"
+        results_header = s_results_ai
+        ai_caption_html = f'<p class="ai-caption">{_html_mod.escape(ai_caption_text)}</p>'
+
     # ── Climbs table ──────────────────────────────────────────────────────────
     merged_climbs = merge_climbs_analysis(gpx_stats.get("climbs"), analysis.get("climbs_analysis"))
     hardest_idx = analysis.get("hardest_climb_index")
@@ -804,6 +900,11 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 .disclaimer{{background:#fffbe6;border-left:4px solid #f0b429;border-radius:0 8px 8px 0;padding:14px 18px}}
 .disclaimer h2{{color:#b7791f;border:none;margin-bottom:6px;font-size:.95rem}}
 .disclaimer p{{font-size:.87rem;color:#555;line-height:1.6}}
+.ai-card{{background:#fffbe6;border-left:4px solid #f0b429;border-radius:0 8px 8px 0}}
+.ai-card h2{{color:#b7791f;border:none}}
+.ai-caption{{font-size:.82rem;color:#7a5b13;margin-bottom:10px}}
+.det-breakdown{{margin-top:10px;padding:10px 14px;background:#eef7ee;border-radius:8px;font-size:.82rem;color:#2c5f2d;line-height:1.7}}
+.det-warning{{margin-top:8px;font-size:.82rem;color:#b7791f;font-weight:600}}
 .climbs-table{{width:100%;border-collapse:collapse;font-size:.82rem}}
 .climbs-table th{{text-align:left;padding:6px 10px;color:#777;font-size:.72rem;text-transform:uppercase;letter-spacing:.03em;border-bottom:2px solid #e8eef6}}
 .climbs-table td{{padding:6px 10px;border-bottom:1px solid #f0f0f0}}
@@ -854,8 +955,11 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
   </div>
 </div>
 
-<div class="card">
-  <h2>📊 {s_results}</h2>
+{det_section}
+
+<div class="{results_card_class}">
+  <h2>{results_header}</h2>
+  {ai_caption_html}
   {battery_html}
   <div class="metric-row">
     <div class="metric"><div class="lbl">{l_calories}</div><div class="val">{analysis.get("calories_kcal","—")} kcal</div></div>
