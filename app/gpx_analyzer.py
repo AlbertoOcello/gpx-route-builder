@@ -253,9 +253,7 @@ def cut_out_and_back_deviations(
                 "apex_lon": apex_lon,
                 "overlap_km": round(deviation_m / 1000, 2),
             })
-            pts = pts[:cut_start] + pts[cut_end + 1:]
-            eles = eles[:cut_start] + eles[cut_end + 1:]
-            kept_indices = kept_indices[:cut_start] + kept_indices[cut_end + 1:]
+            pts, eles, kept_indices = _splice_out_range(pts, eles, kept_indices, cut_start, cut_end)
             cut_made = True
             break  # tracciato cambiato: ricomincia il rilevamento da capo
 
@@ -263,6 +261,52 @@ def cut_out_and_back_deviations(
             break
 
     return {"points": pts, "elevations": eles, "kept_indices": kept_indices, "cuts": cuts}
+
+
+def _splice_out_range(
+    points: list,
+    elevations: list,
+    kept_indices: list[int],
+    start_idx: int,
+    end_idx: int,
+) -> tuple[list, list, list[int]]:
+    """
+    Rimuove points[start_idx:end_idx+1] (e le liste parallele elevations/
+    kept_indices) e ricuce direttamente i due capi rimasti — l'unica
+    operazione fisica di "taglio" del tracciato, condivisa dal rilevamento
+    automatico degli spuntoni andata/ritorno (cut_out_and_back_deviations)
+    e dal taglio manuale esplicito (Builder → "Cancella tratto",
+    cut_range_in_gpx). start_idx/end_idx sono inclusi nel range rimosso.
+    """
+    return (
+        points[:start_idx] + points[end_idx + 1:],
+        elevations[:start_idx] + elevations[end_idx + 1:],
+        kept_indices[:start_idx] + kept_indices[end_idx + 1:],
+    )
+
+
+def _apply_kept_indices_to_gpx(gpx: "gpxpy.gpx.GPX", kept_indices: list[int], out_path: str) -> None:
+    """
+    Filtra i punti di un oggetto gpxpy.gpx.GPX già parsato tenendo solo quelli
+    in kept_indices (indici nell'ordine di iterazione tracks→segments→points,
+    stesso ordine di track_points nei chiamanti) e scrive il risultato in
+    out_path — riusa gpxpy.to_xml() per la serializzazione (i GPXTrackPoint
+    originali sopravvissuti sono riusati as-is, elevazione/extension incluse).
+    Ricucitura fisica su disco condivisa dal taglio automatico
+    (cut_out_and_back_in_gpx) e dal taglio manuale (cut_range_in_gpx).
+    """
+    kept = set(kept_indices)
+    offset = 0
+    for track in gpx.tracks:
+        for segment in track.segments:
+            n = len(segment.points)
+            segment.points = [
+                p for i, p in enumerate(segment.points) if (offset + i) in kept
+            ]
+            offset += n
+
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(gpx.to_xml())
 
 
 def cut_out_and_back_in_gpx(gpx_path: str, protected_points: list[tuple[float, float]]) -> list[dict]:
@@ -297,20 +341,84 @@ def cut_out_and_back_in_gpx(gpx_path: str, protected_points: list[tuple[float, f
     if not result["cuts"]:
         return []
 
-    kept = set(result["kept_indices"])
-    offset = 0
+    _apply_kept_indices_to_gpx(gpx, result["kept_indices"], gpx_path)
+    return result["cuts"]
+
+
+# ── Taglio manuale esplicito ("✂️ Cancella tratto", tab Builder) ──────────────
+# A differenza del taglio automatico sopra (rileva geometricamente gli
+# spuntoni andata/ritorno), qui l'intervallo da rimuovere è scelto
+# esplicitamente dall'utente (slider km) — nessun rilevamento, solo
+# localizzazione indici + stessa ricucitura fisica (_splice_out_range /
+# _apply_kept_indices_to_gpx) riusata dal Fix A qui sopra.
+_MANUAL_CUT_MIN_REMAINING_POINTS = 2
+
+
+def cut_range_in_gpx(gpx_path: str, start_km: float, end_km: float, out_path: str) -> dict:
+    """
+    Rimuove dal GPX in gpx_path l'intervallo [start_km, end_km] (selezione
+    esplicita dell'utente lungo il tracciato, in km cumulativi) e scrive il
+    risultato in out_path — non sovrascrive mai gpx_path: usata sia per
+    l'anteprima live (out_path temporaneo, analizzato e poi scartato) sia
+    per il salvataggio definitivo (out_path permanente).
+
+    Ritorna:
+      "gap_m": distanza in linea d'aria tra il punto immediatamente prima
+        dell'inizio del taglio e quello immediatamente dopo la fine — None
+        se il taglio tocca un estremo del percorso (nessun "prima"/"dopo"
+        da confrontare).
+      "removed_km": lunghezza reale rimossa lungo il tracciato (può
+        differire leggermente da end_km-start_km per lo snap ai punti più
+        vicini).
+      "removed_coords": [(lat, lon), ...] dei punti rimossi, per
+        evidenziare il tratto sulla mappa di anteprima.
+
+    Solleva ValueError se il GPX ha meno di 2 punti o se il taglio
+    lascerebbe meno di _MANUAL_CUT_MIN_REMAINING_POINTS punti nel percorso.
+    """
+    with open(gpx_path, "r") as f:
+        gpx = gpxpy.parse(f)
+
+    track_points = []
     for track in gpx.tracks:
         for segment in track.segments:
-            n = len(segment.points)
-            segment.points = [
-                p for i, p in enumerate(segment.points) if (offset + i) in kept
-            ]
-            offset += n
+            track_points.extend(segment.points)
 
-    with open(gpx_path, "w", encoding="utf-8") as f:
-        f.write(gpx.to_xml())
+    n = len(track_points)
+    if n < 2:
+        raise ValueError("GPX con meno di 2 punti, impossibile tagliare")
 
-    return result["cuts"]
+    cum = [0.0] * n
+    for i in range(1, n):
+        cum[i] = cum[i - 1] + _haversine_m(
+            track_points[i - 1].latitude, track_points[i - 1].longitude,
+            track_points[i].latitude, track_points[i].longitude,
+        )
+
+    lo_km, hi_km = min(start_km, end_km), max(start_km, end_km)
+    start_idx = min(range(n), key=lambda i: abs(cum[i] - lo_km * 1000))
+    end_idx = min(range(n), key=lambda i: abs(cum[i] - hi_km * 1000))
+    if end_idx < start_idx:
+        start_idx, end_idx = end_idx, start_idx
+
+    gap_m = None
+    if start_idx > 0 and end_idx < n - 1:
+        p_before, p_after = track_points[start_idx - 1], track_points[end_idx + 1]
+        gap_m = _haversine_m(
+            p_before.latitude, p_before.longitude, p_after.latitude, p_after.longitude,
+        )
+
+    removed_coords = [(p.latitude, p.longitude) for p in track_points[start_idx:end_idx + 1]]
+    removed_km = (cum[end_idx] - cum[start_idx]) / 1000
+
+    all_indices = list(range(n))
+    _, _, kept_indices = _splice_out_range(all_indices, all_indices, all_indices, start_idx, end_idx)
+    if len(kept_indices) < _MANUAL_CUT_MIN_REMAINING_POINTS:
+        raise ValueError("Il taglio lascerebbe troppo pochi punti nel percorso")
+
+    _apply_kept_indices_to_gpx(gpx, kept_indices, out_path)
+
+    return {"gap_m": gap_m, "removed_km": removed_km, "removed_coords": removed_coords}
 
 
 # ── Rilevamento salite ──────────────────────────────────────────────────────

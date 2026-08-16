@@ -32,7 +32,7 @@ from brouter_client import ensure_tile, get_route
 from candidate_generator import generate_candidates
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
-from gpx_analyzer import OUT_AND_BACK_WARN_THRESHOLD_PCT, analyze_gpx
+from gpx_analyzer import OUT_AND_BACK_WARN_THRESHOLD_PCT, analyze_gpx, cut_range_in_gpx
 from gpx_optimizer import is_already_optimized, optimize_gpx
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
@@ -135,6 +135,17 @@ _OUT_AND_BACK_INFO_THRESHOLD_PCT = 5.0
 # (sostituisce il vecchio input numerico max_elevation_gain_m, vedi scoring_engine.py).
 _ELEV_PREF_CODES = ["none", "prefer_avoid", "avoid_max"]
 
+# Taglio manuale di un tratto ("✂️ Cancella tratto", tab Builder) — sopra questa
+# distanza tra i due capi del taglio, avvisa l'utente di un salto visibile nel
+# tracciato risultante. Solo informativo, non blocca (scelta esplicita
+# dell'utente, che vede comunque l'anteprima sulla mappa prima di applicare).
+_MANUAL_CUT_GAP_WARN_M = 100.0
+
+# Directory scratch per le anteprime del taglio manuale (mai referenziata da
+# builder_results — solo il salvataggio esplicito scrive un file permanente
+# in routes/generated/, stessa cartella degli altri candidati di quel run).
+_MANUAL_CUT_PREVIEW_DIR = Path("routes/manual_cut_previews")
+
 
 def _elev_pref_selectbox(default_code: str, key: str, help_text: str | None = None) -> str:
     """Selectbox condivisa Planner/Builder per la preferenza dislivello. Ritorna il codice scelto."""
@@ -208,7 +219,15 @@ def _gpx_bytes_with_name(gpx_path: str, name: str) -> bytes:
     return gpx.to_xml().encode("utf-8")
 
 
-def _build_map(gpx_path: str, start_lat: float, start_lon: float) -> folium.Map:
+def _build_map(
+    gpx_path: str,
+    start_lat: float,
+    start_lon: float,
+    highlight_coords: list[tuple[float, float]] | None = None,
+) -> folium.Map:
+    """highlight_coords: se dato, sovrappone un tratto in evidenza (anteprima
+    del taglio manuale, "✂️ Cancella tratto") sopra il tracciato normale —
+    puramente informativo, non altera coords/il file su disco."""
     m = folium.Map(location=[start_lat, start_lon], zoom_start=12, scrollWheelZoom=False)
     folium.Marker(
         [start_lat, start_lon],
@@ -219,6 +238,11 @@ def _build_map(gpx_path: str, start_lat: float, start_lon: float) -> folium.Map:
     folium.PolyLine(coords, color="blue", weight=4, opacity=0.85).add_to(m)
     if coords:
         folium.Marker(coords[-1], tooltip="Fine traccia", icon=folium.Icon(color="red")).add_to(m)
+    if highlight_coords:
+        folium.PolyLine(
+            highlight_coords, color="#e74c3c", weight=6, opacity=0.9, dash_array="6 6",
+            tooltip="Tratto selezionato per il taglio",
+        ).add_to(m)
     return m
 
 
@@ -277,11 +301,14 @@ def _build_multi_map(
     return m
 
 
-def _render_climb_profile_chart(elevation_profile: dict):
+def _render_climb_profile_chart(elevation_profile: dict, highlight_range: tuple[float, float] | None = None):
     """
     Grafico altimetrico (km vs elevazione) colorato per fascia di pendenza
     istantanea — stesse soglie/colori di gpx_analyzer.gradient_color, nessuna
     soglia duplicata qui. Ritorna None se il profilo non ha punti sufficienti.
+
+    highlight_range: se dato (lo_km, hi_km), sovrappone una banda colorata tra
+    quei due km — anteprima live del taglio manuale ("✂️ Cancella tratto").
     """
     dists = elevation_profile.get("distances_km") or []
     elevs = elevation_profile.get("elevations_m") or []
@@ -304,6 +331,9 @@ def _render_climb_profile_chart(elevation_profile: dict):
     ax.add_collection(LineCollection(segments, colors=seg_colors, linewidths=2.2, zorder=2))
     ax.set_xlim(min(dists), max(dists))
     ax.set_ylim(min(elevs) - 15, max(elevs) + 15)
+    if highlight_range:
+        lo, hi = highlight_range
+        ax.axvspan(lo, hi, color="#e74c3c", alpha=0.25, zorder=3)
     ax.set_xlabel("km")
     ax.set_ylabel("m")
     ax.grid(True, alpha=0.25)
@@ -328,6 +358,194 @@ def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
         })
     return rows
+
+
+def _candidate_option_label(c: dict, s: dict, winner_id: str | None) -> str:
+    """
+    Etichetta del radio "Explore candidates" per un candidato — include
+    distanza/punteggio, quindi cambia quando c["analysis"] viene mutato (es.
+    dopo un taglio manuale, vedi _render_manual_cut_ui). Estratta in una
+    funzione condivisa così chi muta c["analysis"] può ricalcolare la stessa
+    stringa e tenere sincronizzato st.session_state["bld_explore_radio"] —
+    altrimenti la selezione salvata non troverebbe più corrispondenza tra le
+    opzioni dopo il rerun e Streamlit la resetterebbe alla prima voce
+    ("🗺 All overlaid"), facendo perdere all'utente la vista del candidato
+    appena tagliato.
+    """
+    return (
+        f"{'★ ' if c['id'] == winner_id else ('✗ ' if s['discarded'] else '· ')}"
+        f"{c['id']} — {c['strategy_name']} ({c['analysis']['distance_km']:.1f} km · {s['total_score']:.0f}pt)"
+    )
+
+
+def _render_manual_cut_ui(
+    c_b: dict, s_b: dict, winner_id_b: str | None,
+    route_name: str, start_lat: float, start_lon: float,
+) -> None:
+    """
+    "✂️ Cancella tratto" — rimozione manuale di una porzione del tracciato di
+    un candidato Builder, riusando la stessa logica di splice/ricucitura del
+    taglio automatico degli spuntoni andata/ritorno (gpx_analyzer.
+    cut_range_in_gpx, condivide _splice_out_range/_apply_kept_indices_to_gpx
+    con cut_out_and_back_deviations — non reimplementata qui).
+
+    Vive solo in session_state finché non salvata esplicitamente: muta c_b
+    in place (stesso oggetto dict referenziato da
+    st.session_state["bld_result"]["candidates"], vedi ordered_b/pairs_b —
+    zip shallow, non copie) così mappa/stats/grafico sopra in questa stessa
+    vista si aggiornano subito dopo "Applica taglio" (via st.rerun(), la
+    mutazione avviene DOPO che il rendering di sopra ha già girato in questo
+    stesso pass). Se la route viene chiusa/riaperta senza salvare, bld_result
+    viene ricostruito da disco (stesso meccanismo già esistente per il
+    cambio route) e il taglio non salvato sparisce naturalmente — nessuna
+    logica di invalidazione dedicata necessaria.
+
+    s_b/winner_id_b servono solo a ricostruire l'etichetta del radio
+    "Explore candidates" (vedi _candidate_option_label) dopo aver mutato
+    c_b["analysis"]: quell'etichetta incorpora la distanza del candidato,
+    quindi cambia insieme al taglio — senza risincronizzare
+    st.session_state["bld_explore_radio"] con la nuova etichetta PRIMA del
+    rerun, Streamlit non troverebbe più corrispondenza con le opzioni
+    ricalcolate e resetterebbe la selezione a "🗺 All overlaid", facendo
+    sparire la vista del candidato appena tagliato.
+    """
+    cand_id = c_b["id"]
+    st.markdown(f"**{t('builder.cut_header')}**")
+
+    cut_pending = c_b.get("_manual_cut")
+    if cut_pending:
+        st.info(
+            t("builder.cut_applied_pending").format(
+                start=f"{cut_pending['start_km']:.2f}", end=f"{cut_pending['end_km']:.2f}",
+            )
+        )
+        col_cut_save, col_cut_undo = st.columns(2)
+        with col_cut_save:
+            if st.button(t("builder.cut_btn_save"), key=f"bld_cut_save_{cand_id}", type="primary"):
+                try:
+                    _persist_manual_cut(route_name, c_b)
+                    st.success(t("builder.cut_saved_ok"))
+                    st.rerun()
+                except Exception as _cut_save_e:
+                    st.error(f"❌ {_cut_save_e}")
+        with col_cut_undo:
+            if st.button(t("builder.cut_btn_undo"), key=f"bld_cut_undo_{cand_id}"):
+                c_b["analysis"] = cut_pending["original_analysis"]
+                c_b["gpx_path"] = cut_pending["original_gpx_path"]
+                del c_b["_manual_cut"]
+                st.session_state["_bld_explore_radio_pending"] = _candidate_option_label(c_b, s_b, winner_id_b)
+                st.rerun()
+        return  # un taglio pendente alla volta — niente nuovo slider finché non si salva/annulla
+
+    distance_km = c_b["analysis"]["distance_km"]
+    if distance_km < 0.2:
+        st.caption(t("builder.cut_too_short"))
+        return
+
+    lo, hi = st.slider(
+        t("builder.cut_slider_label"),
+        min_value=0.0, max_value=float(distance_km), value=(0.0, 0.0), step=0.05,
+        key=f"bld_cut_range_{cand_id}",
+    )
+    if hi <= lo:
+        st.caption(t("builder.cut_hint"))
+        return
+
+    _MANUAL_CUT_PREVIEW_DIR.mkdir(parents=True, exist_ok=True)
+    preview_path = _MANUAL_CUT_PREVIEW_DIR / f"{cand_id}_preview.gpx"
+    try:
+        cut_res = cut_range_in_gpx(c_b["gpx_path"], lo, hi, str(preview_path))
+        _, coords_prev = _parse_gpx_bytes(preview_path.read_bytes())
+        closure_m = geodesic(coords_prev[0], coords_prev[-1]).meters if len(coords_prev) >= 2 else 0.0
+        auto_rt = "loop" if closure_m < 500 else "out_and_back"
+        preview_analysis = analyze_gpx(str(preview_path), route_type=auto_rt)
+    except Exception as _cut_prev_e:
+        st.error(f"❌ {t('builder.cut_error')}: {_cut_prev_e}")
+        return
+
+    st.caption(t("builder.cut_preview_label"))
+    profile_now = c_b["analysis"].get("elevation_profile") or {}
+    fig_cut = _render_climb_profile_chart(profile_now, highlight_range=(lo, hi))
+    if fig_cut is not None:
+        st.pyplot(fig_cut, use_container_width=True)
+
+    try:
+        m_cut = _build_map(c_b["gpx_path"], start_lat, start_lon, highlight_coords=cut_res["removed_coords"])
+    except FileNotFoundError:
+        st.warning(t("builder.stale_results_warning"))
+    else:
+        st_folium(m_cut, width=None, height=380, key=f"bld_cut_map_{cand_id}", use_container_width=True)
+
+    col_cut1, col_cut2, col_cut3 = st.columns(3)
+    col_cut1.metric(t("builder.cut_removed_km"), f"{cut_res['removed_km']:.2f} km")
+    col_cut2.metric(
+        t("builder.cut_new_distance"),
+        f"{preview_analysis['distance_km']:.1f} km",
+        delta=f"{preview_analysis['distance_km'] - distance_km:.1f} km",
+    )
+    col_cut3.metric(
+        t("builder.cut_new_elevation"),
+        f"{preview_analysis['elevation_gain_m']:.0f} m",
+        delta=f"{preview_analysis['elevation_gain_m'] - c_b['analysis']['elevation_gain_m']:.0f} m",
+    )
+
+    if cut_res["gap_m"] is not None and cut_res["gap_m"] > _MANUAL_CUT_GAP_WARN_M:
+        st.warning(t("builder.cut_gap_warning").format(gap_m=f"{cut_res['gap_m']:.0f}"))
+
+    if st.button(t("builder.cut_btn_apply"), key=f"bld_cut_apply_{cand_id}", type="primary"):
+        c_b["_manual_cut"] = {
+            "start_km": lo,
+            "end_km": hi,
+            "original_gpx_path": c_b["gpx_path"],
+            "original_analysis": c_b["analysis"],
+        }
+        c_b["gpx_path"] = str(preview_path)
+        c_b["analysis"] = preview_analysis
+        st.session_state["_bld_explore_radio_pending"] = _candidate_option_label(c_b, s_b, winner_id_b)
+        st.rerun()
+
+
+def _persist_manual_cut(route_name: str, c_b: dict) -> None:
+    """
+    Rende permanente il taglio manuale applicato in sessione (c_b["_manual_cut"],
+    vedi _render_manual_cut_ui): copia il file di anteprima in una posizione
+    permanente accanto agli altri GPX del run (stessa cartella del file
+    originale del candidato, mai routes/manual_cut_previews/) e aggiorna
+    gpx_path/analysis del candidato nell'ULTIMA run di builder_results dentro
+    il JSON della route — stesso schema già scritto dal salvataggio
+    automatico a fine generazione Builder, qui applicato a un candidato
+    esistente invece che a un run appena generato.
+
+    Solleva un'eccezione (mostrata dal chiamante) se la route non è mai
+    stata salvata su disco o se il candidato non si trova più nell'ultimo run.
+    """
+    cut_meta = c_b.get("_manual_cut")
+    if not cut_meta:
+        return
+
+    json_path = _PLANNED_DIR / f"{route_name}.json"
+    if not json_path.exists():
+        raise FileNotFoundError(t("builder.cut_route_not_saved"))
+    data = json.loads(json_path.read_text(encoding="utf-8"))
+    runs = _normalize_builder_results(data)
+    if not runs:
+        raise ValueError(t("builder.cut_no_run"))
+    last_run = runs[-1]
+    target = next((c for c in last_run.get("candidates", []) if c.get("id") == c_b["id"]), None)
+    if target is None:
+        raise ValueError(t("builder.cut_candidate_not_found"))
+
+    dest_dir = Path(cut_meta["original_gpx_path"]).parent
+    dest_path = dest_dir / f"{c_b['id']}_cut_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.gpx"
+    shutil.copy(c_b["gpx_path"], dest_path)
+
+    target["gpx_path"] = str(dest_path)
+    target["analysis"] = c_b["analysis"]
+    data["builder_results"] = runs
+    json_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    c_b["gpx_path"] = str(dest_path)
+    del c_b["_manual_cut"]
 
 
 def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_lat: float, start_lon: float) -> None:
@@ -2543,15 +2761,24 @@ with tab_builder:
 
                 n_ordered_b = len(ordered_b)
                 view_opts_b = [t("builder.explore_all")] + [
-                    f"{'★ ' if c['id'] == winner_id_b else ('✗ ' if s['discarded'] else '· ')}"
-                    f"{c['id']} — {c['strategy_name']} ({c['analysis']['distance_km']:.1f} km · {s['total_score']:.0f}pt)"
-                    for c, s in ordered_b
+                    _candidate_option_label(c, s, winner_id_b) for c, s in ordered_b
                 ] + [
                     t("builder.actual_ride_option_label").format(
                         idx=_i + 1, date=(_ar.get("uploaded_at") or "—")[:16].replace("T", " "),
                     )
                     for _i, _ar in enumerate(actual_rides_b)
                 ]
+                # Consuma PRIMA che il widget sia istanziato (stesso pattern già
+                # in uso per "_ride_profile_pending_sel"): st.session_state non
+                # può essere scritto direttamente su una key già instanziata in
+                # questo stesso run (vedi _render_manual_cut_ui, che aggiorna
+                # l'etichetta selezionata dopo un taglio manuale). Il controllo
+                # di appartenenza a view_opts_b evita di impostare un valore che
+                # non corrisponde più a nessuna opzione corrente.
+                if "_bld_explore_radio_pending" in st.session_state:
+                    _pending_radio_b = st.session_state.pop("_bld_explore_radio_pending")
+                    if _pending_radio_b in view_opts_b:
+                        st.session_state["bld_explore_radio"] = _pending_radio_b
                 sel_view_b = st.radio(
                     t("builder.explore_radio"), view_opts_b, horizontal=True, key="bld_explore_radio"
                 )
@@ -2626,6 +2853,10 @@ with tab_builder:
                         )
                     else:
                         st.caption(t("climbs.no_climbs"))
+
+                    # ── Taglio manuale ("✂️ Cancella tratto") ────────────────
+                    st.divider()
+                    _render_manual_cut_ui(c_b, s_b, winner_id_b, bld_sel, start_lat_b, start_lon_b)
                 else:
                     # ── Opzione D: percorso realmente pedalato — stessa vista
                     # ricca di A/B/C (mappa, profilo, salite, stats) ma senza
