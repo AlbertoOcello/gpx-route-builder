@@ -1254,6 +1254,33 @@ def _analyze_gpx_bytes(raw: bytes) -> tuple[list, list, dict]:
     return pts, coords, analysis
 
 
+# Sotto questa distanza tra primo e ultimo punto del tracciato, il percorso è
+# considerato un anello chiuso ai fini del report GPX (Utility → Visualizza
+# GPX) — mostrare il nome dell'arrivo sarebbe ridondante con quello della
+# partenza. Soglia più stretta di quella usata per route_type ("loop" vs
+# "out_and_back" in _analyze_gpx_bytes, 500m): qui la domanda è "stesso posto
+# per davvero", non "abbastanza vicino da trattarlo come anello ai fini del
+# calcolo salite/dislivello".
+_VIZ_LOOP_SAME_POINT_M = 80.0
+
+
+def _reverse_geocode_or_coords(lat: float, lon: float) -> str:
+    """
+    Nome del luogo via reverse geocoding — stessa funzione già usata da
+    Utility → Geolocalizza al click sulla mappa (geocoding_agent.
+    reverse_geocode_address), non una nuova implementazione. Ritorna le
+    coordinate formattate come fallback se il servizio non risponde, va in
+    timeout, o non trova nulla — non deve mai bloccare il resto del report.
+    """
+    try:
+        addr = reverse_geocode_address(lat, lon)
+        if addr:
+            return addr
+    except Exception:
+        pass
+    return f"{lat:.5f}, {lon:.5f}"
+
+
 def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> dict:
     """
     Persiste su disco un GPX di un percorso realmente pedalato caricato nel
@@ -1941,10 +1968,16 @@ with tab_planner:
                         _draft_idx = _draft_opts.index(_draft_sel)
                     else:
                         _draft_idx = 0
+                    _draft_target_count = st.slider(
+                        t("planner.draft_from_ride_count_label"),
+                        min_value=5, max_value=40, value=15, key="pl_draft_target_count",
+                    )
                     if st.button(t("planner.draft_from_ride_btn"), key="pl_draft_from_ride_btn"):
                         try:
                             _draft_gpx_path = _pl_open_actual_rides[_draft_idx]["gpx_path"]
-                            _draft_wps = extract_draft_waypoints_from_gpx(_draft_gpx_path)
+                            _draft_wps = extract_draft_waypoints_from_gpx(
+                                _draft_gpx_path, target_count=_draft_target_count,
+                            )
                             if not _draft_wps:
                                 st.warning(t("planner.draft_from_ride_empty"))
                             else:
@@ -3650,6 +3683,41 @@ with tab_post_ride:
                 if not pts_p or not pts_r:
                     st.warning(t("analizza.no_tracks"))
                 else:
+                    # Nomi partenza/arrivo — stessa funzione di reverse geocoding
+                    # e stessa soglia loop di Utility → Visualizza GPX
+                    # (_reverse_geocode_or_coords, _VIZ_LOOP_SAME_POINT_M), non
+                    # una nuova implementazione. Solo informativo: non tocca le
+                    # metriche/differenze di confronto sotto.
+                    st.markdown(t("analizza.compare_locations_header"))
+                    col_loc_p, col_loc_r = st.columns(2)
+                    with st.spinner(t("analizza.viz_geocoding_spinner")):
+                        with col_loc_p:
+                            st.markdown(f"**{t('analizza.col_planned')}**")
+                            _start_p = _reverse_geocode_or_coords(*coords_p[0])
+                            _closure_p = (
+                                geodesic(coords_p[0], coords_p[-1]).meters if len(coords_p) >= 2 else 0.0
+                            )
+                            st.markdown(t("analizza.viz_start_line").format(name=_start_p))
+                            if _closure_p >= _VIZ_LOOP_SAME_POINT_M:
+                                st.markdown(
+                                    t("analizza.viz_end_line").format(
+                                        name=_reverse_geocode_or_coords(*coords_p[-1]),
+                                    )
+                                )
+                        with col_loc_r:
+                            st.markdown(f"**{t('analizza.col_real')}**")
+                            _start_r = _reverse_geocode_or_coords(*coords_r[0])
+                            _closure_r = (
+                                geodesic(coords_r[0], coords_r[-1]).meters if len(coords_r) >= 2 else 0.0
+                            )
+                            st.markdown(t("analizza.viz_start_line").format(name=_start_r))
+                            if _closure_r >= _VIZ_LOOP_SAME_POINT_M:
+                                st.markdown(
+                                    t("analizza.viz_end_line").format(
+                                        name=_reverse_geocode_or_coords(*coords_r[-1]),
+                                    )
+                                )
+
                     # Metriche a confronto
                     st.markdown(t("analizza.compare_metrics_header"))
                     hdr, c1, c2, c3 = st.columns([1.5, 1, 1, 1])
@@ -4231,6 +4299,14 @@ with tab_utility:
                         col_v4.metric(t("analizza.metric_type"), t("analizza.metric_oadb"))
 
                     st.caption(f"**{len(pts_v)} punti GPX** · {auto_rt_v} · chiusura {closure_m_v:.0f} m")
+
+                    with st.spinner(t("analizza.viz_geocoding_spinner")):
+                        _viz_start_name = _reverse_geocode_or_coords(*coords_v[0])
+                        _viz_is_loop = closure_m_v < _VIZ_LOOP_SAME_POINT_M
+                        _viz_end_name = None if _viz_is_loop else _reverse_geocode_or_coords(*coords_v[-1])
+                    st.markdown(t("analizza.viz_start_line").format(name=_viz_start_name))
+                    if _viz_end_name:
+                        st.markdown(t("analizza.viz_end_line").format(name=_viz_end_name))
 
                     m_v = folium.Map(location=list(coords_v[0]), zoom_start=12, scrollWheelZoom=False)
                     folium.PolyLine(coords_v, color="#3a86ff", weight=4, opacity=0.85).add_to(m_v)

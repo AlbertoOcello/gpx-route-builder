@@ -731,8 +731,8 @@ def analyze_gpx(gpx_path: str,
 # del Planner — punto di partenza esplicitamente escluso qui (resta al
 # form, vedi main.py), così l'utente può anche ricollegare il giro a un
 # punto di partenza diverso.
-_DRAFT_WP_TARGET_MIN = 8
-_DRAFT_WP_TARGET_MAX = 15
+_DRAFT_WP_TARGET_COUNT_DEFAULT = 15    # deve coincidere col default dello slider in main.py
+_DRAFT_WP_TARGET_MARGIN = 2            # margine attorno a target_count per la ricerca binaria (non un numero esatto rigido)
 _DRAFT_WP_MIN_SPACING_M = 150.0       # sotto questa distanza reciproca, cluster ridondante
 _DRAFT_WP_ENDPOINT_EXCLUSION_M = 350.0  # sotto questa distanza dallo start/end del tracciato, ridondante con lo start del loop
 _DRAFT_WP_TOLERANCE_LO_DEG = 0.00001   # ~1m — quasi nessuna semplificazione
@@ -742,8 +742,8 @@ _DRAFT_WP_SEARCH_ITERATIONS = 25
 
 def extract_draft_waypoints_from_gpx(
     gpx_path: str,
-    target_min: int = _DRAFT_WP_TARGET_MIN,
-    target_max: int = _DRAFT_WP_TARGET_MAX,
+    target_count: int = _DRAFT_WP_TARGET_COUNT_DEFAULT,
+    target_margin: int = _DRAFT_WP_TARGET_MARGIN,
     min_spacing_m: float = _DRAFT_WP_MIN_SPACING_M,
     endpoint_exclusion_m: float = _DRAFT_WP_ENDPOINT_EXCLUSION_M,
 ) -> list[tuple[float, float]]:
@@ -754,23 +754,29 @@ def extract_draft_waypoints_from_gpx(
     Planner quando si riparte da una route "solo D" (nessuna pianificazione
     salvata).
 
-    La tolleranza di semplificazione è tarata con una ricerca binaria (nello
-    stesso sistema di coordinate del GPX, gradi) finché il numero di punti
-    risultanti rientra in [target_min, target_max] — Douglas-Peucker è
-    monotona (più tolleranza → uguali o meno punti sopravvissuti), quindi la
-    ricerca binaria è valida. Se il range non viene mai raggiunto esattamente
-    entro _DRAFT_WP_SEARCH_ITERATIONS iterazioni, ritorna il risultato più
-    vicino al range incontrato durante la ricerca.
+    target_count è il numero di waypoint desiderato dall'utente (slider in
+    main.py) — la ricerca binaria sulla tolleranza (nello stesso sistema di
+    coordinate del GPX, gradi) converge verso [target_count-target_margin,
+    target_count+target_margin], non un numero esatto rigido: Douglas-Peucker
+    è monotona (più tolleranza → uguali o meno punti sopravvissuti), quindi
+    la ricerca binaria è valida entro questo margine. Se il range non viene
+    mai raggiunto esattamente entro _DRAFT_WP_SEARCH_ITERATIONS iterazioni,
+    ritorna il risultato più vicino incontrato durante la ricerca.
 
     Dopo la semplificazione, filtra: punti reciprocamente più vicini di
     min_spacing_m (cluster ridondanti che DP a volte lascia vicino a curve
     strette) e punti entro endpoint_exclusion_m dal punto di partenza/arrivo
     del tracciato stesso (ridondanti con lo start del loop, che l'utente
-    configura a parte nel form — non toccato da questa funzione).
+    configura a parte nel form — non toccato da questa funzione). Questi
+    filtri si applicano sempre, indipendentemente da target_count: il
+    risultato finale può quindi avere meno punti del target scelto.
 
     Ritorna [(lat, lon), ...] nell'ordine del tracciato — il tracciato
-    stesso (non semplificato) se ha meno di target_min punti.
+    stesso (non semplificato) se ha meno di target_count-target_margin punti.
     """
+    target_min = max(2, target_count - target_margin)
+    target_max = target_count + target_margin
+
     with open(gpx_path, "r") as f:
         gpx = gpxpy.parse(f)
 
