@@ -9,5 +9,6 @@ streamlit>=1.58.0
 streamlit-folium>=0.27.0
 requests>=2.32.0
 matplotlib>=3.8.0
+staticmap>=0.5.7
 python-dotenv>=1.0.0
 pyyaml>=6.0.0

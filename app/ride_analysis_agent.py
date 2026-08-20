@@ -4,8 +4,9 @@ ride_analysis_agent.py — Analisi ciclistica personalizzata.
 Flusso:
   1. analyze_gpx_bytes()  — estrae stats + metadata + track points dal GPX
   2. run_analysis()        — chiama AI con stats + profilo, ritorna dict strutturato
-  3. render_html_report()  — genera HTML scaricabile con mappa matplotlib PNG
-                             e narrativa del percorso
+  3. render_html_report()  — genera HTML scaricabile con mappa PNG (tile
+                             OpenStreetMap reali via staticmap) e narrativa
+                             del percorso
 """
 from __future__ import annotations
 
@@ -13,7 +14,6 @@ import html as _html_mod
 import io
 import json
 import logging
-import math
 import time
 from datetime import datetime
 
@@ -112,50 +112,45 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
 
 # ── Map rendering ──────────────────────────────────────────────────────────────
 
-def _matplotlib_track_png_b64(
+def _track_map_png_b64(
     track_points: list[tuple[float, float]],
     width: int = 640,
     height: int = 320,
 ) -> str | None:
     """
-    Render GPX track as PNG using matplotlib (non-interactive, no pyplot global state).
-    Applies Mercator aspect correction. Returns base64 string or None on any failure.
+    Render GPX track as PNG with a real OpenStreetMap tile background (via
+    staticmap) — stessa fonte tile (tile.openstreetmap.org) usata di default
+    da Folium nelle altre mappe dell'app (Builder/Planner/Utility), qui
+    scaricata e composta lato server perché il report HTML deve restare
+    un'immagine statica autosufficiente, non una mappa interattiva Folium/
+    Leaflet. Returns base64 string or None on any failure (e.g. tile server
+    unreachable) — il chiamante omette la card mappa in tal caso, nessun crash.
     """
     if len(track_points) < 2:
         return None
     try:
         import base64
-        from matplotlib.backends.backend_agg import FigureCanvasAgg
-        from matplotlib.figure import Figure
+        from staticmap import CircleMarker, Line, StaticMap
 
-        lats = [p[0] for p in track_points]
-        lons = [p[1] for p in track_points]
-        cos_lat = math.cos(math.radians(sum(lats) / len(lats)))
-        lons_m = [lon * cos_lat for lon in lons]
+        m = StaticMap(
+            width, height,
+            headers={"User-Agent": "gpx-route-builder/1.0"},
+            tile_request_timeout=5,
+        )
+        coords_lonlat = [(lon, lat) for lat, lon in track_points]
+        m.add_line(Line(coords_lonlat, "#0055cc", 4))
+        m.add_marker(CircleMarker(coords_lonlat[0], "#27ae60", 12))
+        m.add_marker(CircleMarker(coords_lonlat[-1], "#e74c3c", 12))
+        image = m.render()
 
-        dpi = 100
-        fig = Figure(figsize=(width / dpi, height / dpi), dpi=dpi, facecolor="#dde8dd")
-        ax = fig.add_subplot(111)
-        ax.set_facecolor("#dde8dd")
-        ax.plot(lons_m, lats, color="#0055cc", linewidth=2.0,
-                solid_capstyle="round", zorder=2)
-        ax.plot(lons_m[0], lats[0], "o", color="#27ae60", markersize=9, zorder=3,
-                markeredgecolor="white", markeredgewidth=1.5)
-        ax.plot(lons_m[-1], lats[-1], "o", color="#e74c3c", markersize=9, zorder=3,
-                markeredgecolor="white", markeredgewidth=1.5)
-        ax.set_aspect("equal")
-        ax.axis("off")
-
-        canvas = FigureCanvasAgg(fig)
         buf = io.BytesIO()
-        canvas.print_figure(buf, format="png", bbox_inches="tight",
-                            pad_inches=0.15, facecolor="#dde8dd")
+        image.save(buf, format="png")
         buf.seek(0)
         b64 = base64.b64encode(buf.read()).decode()
-        _log.info("[ride_analysis] matplotlib PNG ok: %d chars base64", len(b64))
+        _log.info("[ride_analysis] OSM tile map PNG ok: %d chars base64", len(b64))
         return b64
     except Exception as exc:
-        _log.warning("[ride_analysis] matplotlib PNG failed: %s", exc)
+        _log.warning("[ride_analysis] OSM tile map PNG failed: %s", exc)
         return None
 
 
@@ -478,7 +473,8 @@ def render_html_report(
 ) -> str:
     """
     Generate a self-contained downloadable HTML report with:
-    - Folium map screenshot (Selenium/Chromium) — falls back to SVG if unavailable
+    - Static PNG map with real OpenStreetMap tile background (see _track_map_png_b64)
+      — omitted if the tile server is unreachable
     - Route info (name from GPX metadata, distance, elevation)
     - Planner narrative (between route data and profile, if provided)
     - Complete bike + rider profile
@@ -652,7 +648,7 @@ def render_html_report(
     track_points = gpx_stats.get("track_points") or []
     map_section = ""
     if track_points:
-        b64 = _matplotlib_track_png_b64(track_points)
+        b64 = _track_map_png_b64(track_points)
         if b64:
             legend = (
                 f'<span style="color:#27ae60">●</span> {l_start} &nbsp;'
