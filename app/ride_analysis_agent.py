@@ -536,6 +536,8 @@ def render_html_report(
         l_generated = "Generated on"
         l_start = "Start"
         l_end = "End"
+        l_type_loop = "🔁 Loop"
+        l_type_p2p = "➡️ Point-to-point"
         s_climbs = "Climbs on this ride"
         l_c_start = "Start km"
         l_c_length = "Length"
@@ -609,6 +611,8 @@ def render_html_report(
         l_generated = "Generato il"
         l_start = "Partenza"
         l_end = "Arrivo"
+        l_type_loop = "🔁 Anello (loop)"
+        l_type_p2p = "➡️ Punto-punto"
         s_climbs = "Salite di questo giro"
         l_c_start = "km inizio"
         l_c_length = "Lunghezza"
@@ -670,6 +674,28 @@ def render_html_report(
         f"{gpx_stats['max_elevation_m']:.0f} m"
         if gpx_stats.get("max_elevation_m") else "—"
     )
+
+    # ── Location banner (start/end + loop vs point-to-point) ───────────────────
+    # Nomi già risolti dal reverse geocoding lato Streamlit (stessa funzione
+    # geocoding_agent.reverse_geocode_address di Utility → Visualizza GPX,
+    # con fallback alle coordinate grezze già applicato lì) e messi in cache
+    # dentro gpx_stats — non ricalcolati qui. Mostrato subito dopo l'header,
+    # prima della card "Dati Percorso"/GPX Statistics.
+    location_section = ""
+    _loc_start = gpx_stats.get("location_start_name")
+    if _loc_start:
+        _loc_is_loop = bool(gpx_stats.get("location_is_loop"))
+        _loc_end = gpx_stats.get("location_end_name")
+        _loc_type_label = l_type_loop if _loc_is_loop else l_type_p2p
+        location_section = f"""
+<div class="card location-card">
+  <div class="loc-type">{_loc_type_label}</div>
+  <div class="loc-line">📍 {l_start}: <strong>{_html_mod.escape(_loc_start)}</strong></div>"""
+        if _loc_end:
+            location_section += f"""
+  <div class="loc-line">🏁 {l_end}: <strong>{_html_mod.escape(_loc_end)}</strong></div>"""
+        location_section += """
+</div>"""
 
     # ── Narrative section (between route data and profile) ────────────────────
     narrative_section = ""
@@ -889,6 +915,9 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
 .route-cell .val{{font-size:1rem;font-weight:700;color:#1a1a2e}}
 .route-title{{font-size:2rem;font-weight:800;color:#1a1a2e;margin-bottom:16px;line-height:1.2}}
 .route-name{{font-size:1.05rem;font-weight:600;color:#0f3460;margin-bottom:12px}}
+.location-card{{background:#eef4ff;border-left:4px solid #3a86ff}}
+.location-card .loc-type{{font-size:1.05rem;font-weight:700;color:#0f3460;margin-bottom:8px}}
+.location-card .loc-line{{font-size:.9rem;color:#333;margin-bottom:2px}}
 .profile-cols{{display:grid;grid-template-columns:1fr 1fr;gap:0 32px}}
 .profile-section-title{{font-size:.8rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:#666;margin:12px 0 6px}}
 .prow{{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid #f0f0f0}}
@@ -925,6 +954,8 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
   <div class="sub">{subtitle}</div>
   <div class="meta">{l_generated}: {now} &nbsp;·&nbsp; {_html_mod.escape(profile.get("name",""))}</div>
 </div>
+
+{location_section}
 
 <div class="card">
   <h2>📍 {s_route}</h2>

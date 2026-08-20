@@ -3349,6 +3349,37 @@ with tab_ride:
                 _gpx_bytes = _gpx_file.read()
                 _gpx_stats = ride_analysis.analyze_gpx_bytes(_gpx_bytes)
                 _gpx_stats["gpx_filename"] = Path(_gpx_file.name).stem
+
+                # Punto di partenza/arrivo + tipo di percorso — stessa funzione
+                # di reverse geocoding e stessa soglia loop di Utility →
+                # Visualizza GPX (_reverse_geocode_or_coords,
+                # _VIZ_LOOP_SAME_POINT_M), non una nuova implementazione.
+                # Cache dentro _gpx_stats così render_html_report riusa questi
+                # valori (session_state["ride_result_gpx"]) senza rigeocodificare.
+                _ra_coords = _gpx_stats["track_points"]
+                _ra_closure_m = (
+                    geodesic(_ra_coords[0], _ra_coords[-1]).meters if len(_ra_coords) >= 2 else 0.0
+                )
+                _ra_is_loop = _ra_closure_m < _VIZ_LOOP_SAME_POINT_M
+                with st.spinner(t("analizza.viz_geocoding_spinner")):
+                    _gpx_stats["location_start_name"] = _reverse_geocode_or_coords(*_ra_coords[0])
+                    _gpx_stats["location_end_name"] = (
+                        None if _ra_is_loop else _reverse_geocode_or_coords(*_ra_coords[-1])
+                    )
+                _gpx_stats["location_is_loop"] = _ra_is_loop
+
+                with st.container(border=True):
+                    st.markdown(
+                        "##### "
+                        + (
+                            t("ride_analysis.location_type_loop") if _ra_is_loop
+                            else t("ride_analysis.location_type_p2p")
+                        )
+                    )
+                    st.markdown(t("analizza.viz_start_line").format(name=_gpx_stats["location_start_name"]))
+                    if _gpx_stats["location_end_name"]:
+                        st.markdown(t("analizza.viz_end_line").format(name=_gpx_stats["location_end_name"]))
+
                 st.subheader(t("ride_analysis.gpx_stats"))
                 _gc1, _gc2, _gc3, _gc4 = st.columns(4)
                 _gc1.metric(t("ride_analysis.gpx_dist"), f"{_gpx_stats['distance_km']} km")
