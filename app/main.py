@@ -346,6 +346,24 @@ def _render_climb_profile_chart(elevation_profile: dict, highlight_range: tuple[
     return fig
 
 
+def _rows_have_low_confidence_grad(rows: list[dict]) -> bool:
+    """True se almeno una riga (già formattata da _climbs_table_rows /
+    _climbs_analysis_table_rows) contiene il badge ⓘ — per decidere se
+    mostrare la nota esplicativa sotto la tabella, solo quando serve."""
+    return any("ⓘ" in str(v) for row in rows for v in row.values())
+
+
+def _format_max_grad_cell(c: dict) -> str:
+    """
+    Cella 'Pend. max' — con ⓘ in coda se detect_climbs ha marcato il valore
+    max_gradient_low_confidence (picco isolato implausibile su pochi dati,
+    vedi gpx_analyzer._MAX_GRAD_LOW_CONFIDENCE_*). Mostrato sempre, non
+    nascosto: solo segnalato, stessa filosofia di assist_ratio anomalo.
+    """
+    suffix = " ⓘ" if c.get("max_gradient_low_confidence") else ""
+    return f"{c['max_gradient_percent']:.1f}%{suffix}"
+
+
 def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
     """Righe tabella 'Salite principali', ordinate per dislivello decrescente."""
     ranked = sorted(climbs, key=lambda c: c["elevation_gain_m"], reverse=True)
@@ -359,7 +377,7 @@ def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
             t("climbs.col_length"): f"{c['length_m']:.0f} m",
             t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
             t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
-            t("climbs.col_max_grad"): f"{c['max_gradient_percent']:.1f}%",
+            t("climbs.col_max_grad"): _format_max_grad_cell(c),
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
         })
     return rows
@@ -591,7 +609,10 @@ def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_la
         st.pyplot(fig_climb_d, use_container_width=True)
     if climbs_d:
         st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_d)))
-        st.dataframe(_climbs_table_rows(climbs_d, top_n=5), use_container_width=True, hide_index=True)
+        _rows_d = _climbs_table_rows(climbs_d, top_n=5)
+        st.dataframe(_rows_d, use_container_width=True, hide_index=True)
+        if _rows_have_low_confidence_grad(_rows_d):
+            st.caption(t("climbs.max_grad_low_confidence_note"))
     else:
         st.caption(t("climbs.no_climbs"))
 
@@ -727,7 +748,7 @@ def _climbs_analysis_table_rows(merged_climbs: list[dict], is_ebike: bool) -> li
             t("climbs.col_length"): f"{c['length_m']:.0f} m",
             t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
             t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
-            t("climbs.col_max_grad"): f"{c['max_gradient_percent']:.1f}%",
+            t("climbs.col_max_grad"): _format_max_grad_cell(c),
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
             t("climbs.col_kcal"): f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
             t("climbs.col_hr"): f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
@@ -2942,10 +2963,13 @@ with tab_builder:
                         st.pyplot(fig_climb_b, use_container_width=True)
                     if climbs_b:
                         st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_b)))
+                        _rows_b = _climbs_table_rows(climbs_b, top_n=5)
                         st.dataframe(
-                            _climbs_table_rows(climbs_b, top_n=5),
+                            _rows_b,
                             use_container_width=True, hide_index=True,
                         )
+                        if _rows_have_low_confidence_grad(_rows_b):
+                            st.caption(t("climbs.max_grad_low_confidence_note"))
                     else:
                         st.caption(t("climbs.no_climbs"))
 
@@ -3629,10 +3653,13 @@ with tab_ride:
                         f"{t('ride_analysis.hardest_climb_badge')} — km {_hc['start_km']:.1f} "
                         f"({_hc['classification_emoji']} {_hc_class_label})  \n_{_hardest_reason}_"
                     )
+                _rows_ra = _climbs_analysis_table_rows(_merged_climbs, _r_is_ebike)
                 st.dataframe(
-                    _climbs_analysis_table_rows(_merged_climbs, _r_is_ebike),
+                    _rows_ra,
                     use_container_width=True, hide_index=True,
                 )
+                if _rows_have_low_confidence_grad(_rows_ra):
+                    st.caption(t("climbs.max_grad_low_confidence_note"))
 
             # Advice
             _advice = _r.get("advice") or []

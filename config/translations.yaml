@@ -323,6 +323,10 @@ it:
     col_hr: "FC media"
     col_fatigue: "Fatica"
     col_battery: "Batteria"
+    max_grad_low_confidence_note: >-
+      ⓘ bassa confidenza su una o più pendenze massime — dati GPS/elevazione
+      radi in quel punto specifico, il valore è mostrato ma potrebbe non
+      essere del tutto affidabile.
     class:
       dolce: "Dolce"
       moderata: "Moderata"
@@ -946,6 +950,10 @@ en:
     col_hr: "Avg HR"
     col_fatigue: "Fatigue"
     col_battery: "Battery"
+    max_grad_low_confidence_note: >-
+      ⓘ low confidence on one or more max gradients — sparse GPS/elevation
+      data at that specific spot, the value is still shown but may not be
+      fully reliable.
     class:
       dolce: "Gentle"
       moderata: "Moderate"

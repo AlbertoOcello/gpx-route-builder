@@ -427,9 +427,33 @@ def cut_range_in_gpx(gpx_path: str, start_km: float, end_km: float, out_path: st
 # del profilo altimetrico punto-per-punto (Builder/Ride Analysis) — non
 # duplicare queste soglie altrove, importarle da qui.
 _CLIMB_RESAMPLE_STEP_M = 20.0     # passo di ricampionamento uniforme lungo il tracciato
-_CLIMB_SMOOTH_WINDOW_M = 75.0     # media mobile elevazione prima del calcolo gradiente (50-100m)
 _CLIMB_MAX_GRAD_WINDOW_M = 100.0  # finestra corta per max_gradient_percent (cattura uno strappo isolato)
 _CLIMB_MERGE_GAP_M = 100.0        # gap breve tra due tratti in salita → uniti in una sola salita
+
+# max_gradient_percent è marcato max_gradient_low_confidence quando è SIA
+# fisicamente implausibile in assoluto SIA un picco isolato molto più ripido
+# della salita che lo contiene — entrambe le condizioni, non una sola.
+# NON basato sul conteggio di punti GPX grezzi nella finestra: misurato e
+# scartato — riflette solo come è stato generato il file (profilo BRouter,
+# passaggio dal GPX Optimizer) e non la qualità del dato in quel punto: sui
+# file "Marche" puliti l'87-97% delle salite risultava sotto soglia punti pur
+# con pendenze plausibili (fino a 20.8%), mentre il caso Via Silente noto
+# (38.2%) restava sopra soglia — l'esatto contrario dell'intento.
+_MAX_GRAD_LOW_CONFIDENCE_ABS_PCT = 30.0    # sopra questa pendenza assoluta, implausibile su strada reale
+_MAX_GRAD_LOW_CONFIDENCE_RATIO = 2.5       # E il picco è più di 2.5× la pendenza media della salita
+
+# Smoothing elevazione — condiviso da detect_climbs() E da elevation_gain_m/
+# elevation_loss_m (analyze_gpx / ride_analysis_agent.analyze_gpx_bytes).
+# Il dato sorgente (SRTM via BRouter) può contenere rumore a dente di sega
+# anche di ±30-65% su pochi metri, sovrapposto a salite vere — confermato
+# sistemico su alcune aree (Cilento/Via Silente: 5-9% dei segmenti brevi
+# sopra soglia, contro 0-0.3% nelle Marche). Una singola media mobile non
+# basta: i picchi isolati vanno abbattuti PRIMA con un filtro a mediana
+# (finestra a distanza reale, robusta alla densità irregolare dei punti
+# grezzi — non punti fissi, altrimenti si ricade nello stesso bug), poi il
+# residuo viene smussato con una media mobile leggera sul dato ricampionato.
+_ELEV_MEDIAN_WINDOW_M = 40.0  # finestra mediana (distanza reale) per abbattere outlier isolati
+_ELEV_SMOOTH_WINDOW_M = 75.0  # media mobile leggera sul residuo, dopo ricampionamento (50-100m)
 
 _CLIMB_MIN_GRADIENT_PCT = 2.0     # sotto questa soglia non è una salita rilevante
 _CLIMB_MIN_LENGTH_M = 200.0       # sotto questa lunghezza non è una salita rilevante (rumore/saliscendi)
@@ -472,22 +496,28 @@ def _classify_climb(avg_gradient_percent: float, length_m: float) -> str:
     return "impegnativa" if length_m >= _CLIMB_SHORT_LENGTH_M else "strappo_breve"
 
 
-def _resample_elevation_profile(
+def _valid_elevation_pairs(
     distances_cumulative_m: list[float],
     elevations_m: list[float | None],
+) -> tuple[list[float], list[float]]:
+    """Scarta i punti senza elevazione. Ritorna (distanze, elevazioni) parallele."""
+    pairs = [(d, e) for d, e in zip(distances_cumulative_m, elevations_m) if e is not None]
+    return [p[0] for p in pairs], [p[1] for p in pairs]
+
+
+def _resample_series(
+    xs: list[float],
+    ys: list[float],
     step_m: float,
 ) -> tuple[list[float], list[float]]:
     """
-    Ricampiona (distanza, elevazione) a passo uniforme step_m via interpolazione
-    lineare, dopo aver scartato i punti senza elevazione. Ritorna liste vuote
-    se i dati validi sono insufficienti.
+    Ricampiona (xs, ys) — già filtrati/paralleli, xs crescente — a passo
+    uniforme step_m via interpolazione lineare. Ritorna liste vuote se i dati
+    sono insufficienti.
     """
-    pairs = [(d, e) for d, e in zip(distances_cumulative_m, elevations_m) if e is not None]
-    if len(pairs) < 4:
+    if len(xs) < 4:
         return [], []
 
-    xs = [p[0] for p in pairs]
-    ys = [p[1] for p in pairs]
     total = xs[-1]
     if total <= 0:
         return [], []
@@ -507,6 +537,84 @@ def _resample_elevation_profile(
         resampled_e.append(y0 + t * (y1 - y0))
 
     return resampled_d, resampled_e
+
+
+def _median_filter_by_distance(
+    xs: list[float],
+    ys: list[float],
+    window_m: float,
+) -> list[float]:
+    """
+    Filtro a mediana su finestra di distanza REALE (non un conteggio fisso di
+    punti) — robusto a spaziatura irregolare dei punti grezzi: un tratto con
+    punti radi non riceve una finestra effettivamente più larga (in metri) di
+    uno con punti fitti, il contrario del bug che questo filtro deve evitare.
+    Ogni punto i è sostituito dalla mediana dei valori entro ±window_m/2 da
+    xs[i]. Two-pointer: O(n) avanzamento degli estremi finestra + O(k log k)
+    per l'ordinamento locale (k = punti nella finestra).
+    """
+    n = len(ys)
+    if n == 0:
+        return []
+    half = window_m / 2.0
+    out = [0.0] * n
+    lo = 0
+    for i in range(n):
+        d = xs[i]
+        while xs[lo] < d - half:
+            lo += 1
+        hi = lo
+        while hi < n - 1 and xs[hi + 1] <= d + half:
+            hi += 1
+        window_vals = sorted(ys[lo:hi + 1])
+        out[i] = window_vals[len(window_vals) // 2]
+    return out
+
+
+def smooth_elevations(
+    distances_cumulative_m: list[float],
+    elevations_m: list[float | None],
+    step_m: float = _CLIMB_RESAMPLE_STEP_M,
+) -> tuple[list[float], list[float]]:
+    """
+    Profilo elevazione smussato in due stadi, condiviso da detect_climbs() e
+    da chi calcola elevation_gain_m/elevation_loss_m (analyze_gpx,
+    ride_analysis_agent.analyze_gpx_bytes) — stessa logica ovunque, non
+    duplicarla. 1) mediana a distanza reale sul dato grezzo (abbatte i picchi
+    isolati del rumore sorgente senza appiattire pendenze reali sostenute);
+    2) ricampionamento a passo uniforme + media mobile leggera sul residuo.
+    Ritorna (distanze ricampionate uniformi, elevazioni smussate) — liste
+    vuote se i dati validi sono insufficienti.
+    """
+    xs, ys = _valid_elevation_pairs(distances_cumulative_m, elevations_m)
+    if len(xs) < 4:
+        return [], []
+
+    median_ys = _median_filter_by_distance(xs, ys, _ELEV_MEDIAN_WINDOW_M)
+    rd, re_ = _resample_series(xs, median_ys, step_m)
+    if not rd:
+        return rd, re_
+
+    ma_win_pts = max(1, round(_ELEV_SMOOTH_WINDOW_M / step_m))
+    smoothed = _moving_average(re_, ma_win_pts)
+    return rd, smoothed
+
+
+def sum_uphill_downhill(elevations_m: list[float]) -> tuple[float, float]:
+    """
+    Dislivello positivo/negativo totale per somma dei delta punto-per-punto
+    su una serie (tipicamente smoothed_elevations di smooth_elevations()) —
+    stessa idea di gpxpy.get_uphill_downhill() ma su dato già smussato contro
+    il rumore sorgente, invece che sul dato grezzo.
+    """
+    uphill = downhill = 0.0
+    for i in range(1, len(elevations_m)):
+        delta = elevations_m[i] - elevations_m[i - 1]
+        if delta > 0:
+            uphill += delta
+        else:
+            downhill += -delta
+    return uphill, downhill
 
 
 def _moving_average(values: list[float], window_pts: int) -> list[float]:
@@ -547,15 +655,10 @@ def detect_climbs(
         "profile_colors": [],
     }
 
-    rd, re_ = _resample_elevation_profile(
-        distances_cumulative_m, elevations_m, _CLIMB_RESAMPLE_STEP_M
-    )
+    rd, smoothed = smooth_elevations(distances_cumulative_m, elevations_m)
     n = len(rd)
     if n < 4:
         return empty
-
-    smooth_window_pts = max(1, round(_CLIMB_SMOOTH_WINDOW_M / _CLIMB_RESAMPLE_STEP_M))
-    smoothed = _moving_average(re_, smooth_window_pts)
 
     # Gradiente istantaneo punto-per-punto sulla serie smoothed (per detection + colore grafico)
     grad = [0.0] * n
@@ -611,6 +714,15 @@ def detect_climbs(
             max_gradient_percent = max(max_gradient_percent, g)
         max_gradient_percent = max(max_gradient_percent, avg_gradient_percent)
 
+        # Confidenza: implausibile in assoluto E picco isolato molto più
+        # ripido della media della salita — non un limite fisico della
+        # bici/strada, probabilmente un limite di risoluzione del dato
+        # elevazione sorgente (vedi costanti). Segnalato, non nascosto.
+        max_gradient_low_confidence = (
+            max_gradient_percent > _MAX_GRAD_LOW_CONFIDENCE_ABS_PCT
+            and (max_gradient_percent / avg_gradient_percent) > _MAX_GRAD_LOW_CONFIDENCE_RATIO
+        )
+
         classification = _classify_climb(avg_gradient_percent, length_m)
         has_steep_section = (
             max_gradient_percent >= _GRAD_MODERATA_MAX_PCT
@@ -623,6 +735,7 @@ def detect_climbs(
             "elevation_gain_m": round(elevation_gain_m, 1),
             "avg_gradient_percent": round(avg_gradient_percent, 1),
             "max_gradient_percent": round(max_gradient_percent, 1),
+            "max_gradient_low_confidence": max_gradient_low_confidence,
             "classification": classification,
             "classification_emoji": _CLIMB_CLASS_EMOJI[classification],
             "has_steep_section": has_steep_section,
@@ -666,8 +779,19 @@ def analyze_gpx(gpx_path: str,
     distance_m = gpx.length_2d()
     distance_km = round(distance_m / 1000, 2)
 
-    # Dislivello (uphill, downhill) in metri
-    uphill, downhill = gpx.get_uphill_downhill()
+    cum_m = [0.0] * len(points)
+    for i in range(1, len(points)):
+        cum_m[i] = cum_m[i - 1] + _haversine_m(
+            points[i - 1].latitude, points[i - 1].longitude,
+            points[i].latitude, points[i].longitude,
+        )
+
+    # Dislivello (uphill, downhill) in metri — su elevazione smussata
+    # (smooth_elevations), non gpx.get_uphill_downhill() sul dato grezzo: il
+    # rumore sorgente (SRTM via BRouter) gonfia altrimenti sia il gradiente
+    # istantaneo sia il dislivello totale (vedi detect_climbs).
+    _, smoothed_elev = smooth_elevations(cum_m, [p.elevation for p in points])
+    uphill, downhill = sum_uphill_downhill(smoothed_elev)
     elevation_gain_m = round(uphill, 1)
     elevation_loss_m = round(downhill, 1)
 
@@ -677,12 +801,6 @@ def analyze_gpx(gpx_path: str,
     oab = _detect_out_and_back([(p.latitude, p.longitude) for p in points])
     out_and_back_percent = oab["percent"]
 
-    cum_m = [0.0] * len(points)
-    for i in range(1, len(points)):
-        cum_m[i] = cum_m[i - 1] + _haversine_m(
-            points[i - 1].latitude, points[i - 1].longitude,
-            points[i].latitude, points[i].longitude,
-        )
     climb_data = detect_climbs(cum_m, [p.elevation for p in points])
 
     result = {

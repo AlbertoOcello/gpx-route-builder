@@ -21,7 +21,7 @@ import gpxpy
 from geopy.distance import geodesic
 
 import ai_client
-from gpx_analyzer import detect_climbs
+from gpx_analyzer import detect_climbs, smooth_elevations, sum_uphill_downhill
 
 _log = logging.getLogger(__name__)
 
@@ -67,7 +67,6 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
         raise ValueError("Il file GPX non contiene punti traccia")
 
     distance_m = gpx.length_2d()
-    uphill, downhill = gpx.get_uphill_downhill()
     elevations = [pt.elevation for pt in points if pt.elevation is not None]
 
     # Route name: gpx.name → first track name → None
@@ -92,6 +91,14 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
             (points[i].latitude, points[i].longitude),
         ).meters
     climb_data = detect_climbs(cum_m, [pt.elevation for pt in points])
+
+    # Dislivello totale su elevazione smussata (gpx_analyzer.smooth_elevations),
+    # non gpx.get_uphill_downhill() sul dato grezzo — stessa ragione di
+    # gpx_analyzer.analyze_gpx: il rumore sorgente (SRTM via BRouter) gonfia
+    # altrimenti il dislivello, e da qui dipende anche il calcolo energetico
+    # deterministico (dislivello_reale_m).
+    _, smoothed_elev = smooth_elevations(cum_m, [pt.elevation for pt in points])
+    uphill, downhill = sum_uphill_downhill(smoothed_elev)
 
     return {
         "distance_km": round(distance_m / 1000, 2),
@@ -547,6 +554,11 @@ def render_html_report(
         l_c_battery = "Battery"
         l_c_hardest = "💪 The hardest for you"
         l_c_no_climbs = "No significant climb detected on this route."
+        l_c_low_confidence_note = (
+            "ⓘ low confidence on one or more max gradients — sparse GPS/elevation "
+            "data at that specific spot, the value is still shown but may not be "
+            "fully reliable."
+        )
         s_det = "📊 Deterministic Calculation (Real Ride)"
         l_det_e_required = "Energy required by the route"
         l_det_capacity_used = "Battery energy consumed"
@@ -622,6 +634,11 @@ def render_html_report(
         l_c_battery = "Batteria"
         l_c_hardest = "💪 La più dura per te"
         l_c_no_climbs = "Nessuna salita rilevante rilevata su questo percorso."
+        l_c_low_confidence_note = (
+            "ⓘ bassa confidenza su una o più pendenze massime — dati GPS/elevazione "
+            "radi in quel punto specifico, il valore è mostrato ma potrebbe non "
+            "essere del tutto affidabile."
+        )
         s_det = "📊 Calcolo Deterministico (Percorso Reale)"
         l_det_e_required = "Energia richiesta dal percorso"
         l_det_capacity_used = "Energia batteria consumata"
@@ -835,16 +852,20 @@ def render_html_report(
         head_html = "".join(f"<th>{h}</th>" for h in headers)
 
         colspan = len(headers)
+        any_low_confidence = any(c.get("max_gradient_low_confidence") for c in merged_climbs)
         rows_html = ""
         for c in merged_climbs:
             is_hardest = c["climb_index"] == hardest_idx
             row_style = ' style="background:#fff3d6"' if is_hardest else ""
+            max_grad_cell = f"{c['max_gradient_percent']:.1f}%"
+            if c.get("max_gradient_low_confidence"):
+                max_grad_cell += " ⓘ"
             cells = [
                 f"{c['start_km']:.1f} km",
                 f"{c['length_m']:.0f} m",
                 f"{c['elevation_gain_m']:.0f} m",
                 f"{c['avg_gradient_percent']:.1f}%",
-                f"{c['max_gradient_percent']:.1f}%",
+                max_grad_cell,
                 f"{c['classification_emoji']} {c['classification']}",
                 f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
                 f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
@@ -864,6 +885,10 @@ def render_html_report(
                     f'{l_c_hardest} — {_html_mod.escape(hardest_reason)}</td></tr>\n'
                 )
 
+        low_confidence_note_html = (
+            f'<p style="font-size:.78rem;color:#888;margin-top:8px">{l_c_low_confidence_note}</p>'
+            if any_low_confidence else ""
+        )
         climbs_section = f"""
 <div class="card">
   <h2>⛰️ {s_climbs}</h2>
@@ -875,6 +900,7 @@ def render_html_report(
     </tbody>
   </table>
   </div>
+  {low_confidence_note_html}
 </div>"""
     else:
         climbs_section = f"""
