@@ -29,15 +29,34 @@ def gpx_creator_string() -> str:
     return f"GPX Route Builder v{version} (build {commit})"
 
 
-# ── Rilevamento tratti andata/ritorno sovrapposti ("a lecca-lecca") ───────────
+# ── Rilevamento tratti andata/ritorno sovrapposti ("corni") ───────────────────
 # Un percorso può chiudersi correttamente (start==end) ed essere comunque "falso":
 # va da A a B e ripercorre la stessa strada all'indietro invece di fare un anello
 # vero. loop_closed non lo rileva perché guarda solo l'endpoint, non la forma.
-_OAB_MIN_GAP_M = 150.0    # distanza-lungo-tracciato minima per non essere "adiacenti"
-                          # (esclude tornanti stretti/curve, che restano vicini in cumulativa)
-_OAB_PROXIMITY_M = 30.0   # sotto questa distanza euclidea due punti sono "sullo stesso asse"
-_OAB_MIN_RUN_M = 100.0    # lunghezza minima di un tratto sovrapposto consecutivo per contarlo
-                          # (esclude incroci puntuali tipo percorso a otto)
+#
+# Ricerca esaustiva chiusura-based (porta remove_gpx_spurs.py dell'utente,
+# verificata empiricamente contro l'approccio precedente "trova punti vicini
+# poi raggruppa in run": quello vecchio perdeva sistematicamente i corni a
+# forma di piccola ansa — dove solo i punti di giunzione coincidono, non
+# l'intero percorso intermedio — perché richiedeva parallelismo punto-per-
+# punto lungo tutta la deviazione: limite strutturale del metodo, non di
+# soglia. Su due tracciati reali con 3 corni noti ciascuno, il metodo a "run"
+# ne perdeva 1/3 in entrambi i casi). Per ogni coppia (start, end) con
+# start < end: un corno è candidato se la percorrenza tra i due punti
+# (excursion) è tra minimum_length_m e maximum_length_m, e la distanza in
+# linea d'aria tra i due punti (closure) è sotto closure_radius_m.
+_OAB_CLOSURE_RADIUS_M = 5.0      # sotto questa distanza in linea d'aria, due punti sono "lo stesso punto"
+_OAB_MIN_LENGTH_M = 100.0        # percorrenza minima (andata+ritorno) per contare come corno
+_OAB_MAX_LENGTH_M = 3_000.0      # percorrenza massima — oltre, non è più un "corno" ma parte del percorso
+_OAB_PROTECTION_RADIUS_M = 50.0  # un corno è protetto se un waypoint mandatory è entro questa distanza
+                                  # da QUALUNQUE punto del suo intervallo (non solo l'apice, a differenza
+                                  # del check precedente) — più conservativo: meglio non tagliare per
+                                  # errore un corno legato a un mandatory che il contrario. Un raggio di
+                                  # 150m (come altrove nell'app) sarebbe qui eccessivo: con il check
+                                  # sull'intero intervallo (decine di punti, non un singolo apice) 50m dà
+                                  # già molte occasioni di match; 150m rischierebbe di proteggere corni
+                                  # che passano solo vicino a un mandatory senza realmente servirlo,
+                                  # vanificando il taglio automatico.
 
 # Soglia di comunicazione (non di rilevamento): sopra questa percentuale il
 # problema va segnalato all'utente/AI in modo esplicito — condivisa da Builder
@@ -54,212 +73,259 @@ def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     return 2 * R * math.asin(math.sqrt(a))
 
 
-def _find_out_and_back_runs(
+def _cumulative_distances_m(points: list[tuple[float, float]]) -> list[float]:
+    cum = [0.0] * len(points)
+    for i in range(1, len(points)):
+        cum[i] = cum[i - 1] + _haversine_m(*points[i - 1], *points[i])
+    return cum
+
+
+def _segment_contains_protected_point(
     points: list[tuple[float, float]],
-    min_gap_m: float,
-    proximity_m: float,
-    min_run_m: float,
-) -> tuple[float, list[float], list[tuple[tuple[int, int, float], tuple[int, int, float]]]]:
+    start: int,
+    end: int,
+    protected_points: list[tuple[float, float]],
+    protection_radius_m: float,
+) -> bool:
+    return any(
+        _haversine_m(lat, lon, p_lat, p_lon) <= protection_radius_m
+        for lat, lon in points[start:end + 1]
+        for p_lat, p_lon in protected_points
+    )
+
+
+def _spur_apex_index(points: list[tuple[float, float]], start: int, end: int) -> int:
     """
-    Rilevamento di base, condiviso da _detect_out_and_back (sola diagnosi) e
-    cut_out_and_back_deviations (Fix A, taglio fisico). Per ogni punto cerca il
-    più vicino tra i punti che sono lontani almeno min_gap_m *lungo il
-    tracciato* (non in linea d'aria): un tornante stretto ha punti vicini anche
-    in cumulativa, quindi resta escluso; un vero tratto di ritorno ha punti
-    vicini in spazio ma lontani in cumulativa.
+    Punto di massima distanza in linea d'aria dal punto di ingresso del corno
+    (points[start]) — la punta della deviazione. remove_gpx_spurs.py non
+    calcola un apice esplicito (gli basta start:end per tagliare); qui serve
+    per l'attribuzione spuntone→waypoint già esistente in candidate_generator
+    (_attribute_cuts, _attribute_out_and_back) e per la nota informativa UI.
+    """
+    origin_lat, origin_lon = points[start]
+    return max(
+        range(start, end + 1),
+        key=lambda i: _haversine_m(origin_lat, origin_lon, points[i][0], points[i][1]),
+    )
 
-    Ogni "spuntone" andata/ritorno produce DUE run speculari (la gamba di
-    andata e quella di ritorno) — vengono accoppiati per posizione PRIMA di
-    applicare la soglia min_run_m, e la soglia si applica alla percorrenza
-    COMBINATA della coppia (andata + ritorno), non a ciascuna gamba
-    singolarmente: vicino al vertice di uno spuntone il matching punto-punto
-    può interrompersi per un breve tratto (drift naturale della strada),
-    spezzando la sovrapposizione in due gambe più corte che, prese
-    singolarmente, potrebbero cadere sotto soglia pur essendo insieme ben
-    oltre. La chiusura d'anello (start≈end, non è una gamba di uno spuntone
-    su un via-point) resta filtrata individualmente, come le altre coppie
-    scartate: esclude incroci puntuali (percorso a otto, breve tratto in
-    comune tra due anse).
 
-    Ritorna (percent, cum, paired) dove paired è una lista di (leg_a, leg_b)
-    con leg_a/leg_b = (start_idx, end_idx, run_len_m); leg_a è la gamba di
-    andata (indici minori), leg_b quella di ritorno (indici maggiori).
+class _Spur:
+    __slots__ = ("start", "end", "excursion_m", "closure_m")
+
+    def __init__(self, start: int, end: int, excursion_m: float, closure_m: float):
+        self.start = start
+        self.end = end
+        self.excursion_m = excursion_m
+        self.closure_m = closure_m
+
+
+def _detect_spurs(
+    points: list[tuple[float, float]],
+    protected_points: list[tuple[float, float]],
+    closure_radius_m: float = _OAB_CLOSURE_RADIUS_M,
+    minimum_length_m: float = _OAB_MIN_LENGTH_M,
+    maximum_length_m: float = _OAB_MAX_LENGTH_M,
+    protection_radius_m: float = _OAB_PROTECTION_RADIUS_M,
+) -> tuple[list["_Spur"], list["_Spur"]]:
+    """
+    Ricerca esaustiva di tutte le coppie (start, end) la cui percorrenza
+    (excursion) è tra minimum_length_m e maximum_length_m e la cui distanza in
+    linea d'aria (closure) è sotto closure_radius_m — porta 1:1 la logica di
+    remove_gpx_spurs.detect_spurs (script dell'utente, verificato
+    empiricamente contro il vecchio approccio "trova punti vicini poi
+    raggruppa in run": quello vecchio perdeva strutturalmente i corni a forma
+    di ansa, dove solo i punti di giunzione coincidono e non l'intero
+    percorso intermedio). L'early break quando excursion supera
+    maximum_length_m rende il costo O(n·k) — non O(n²) — dove k è il numero
+    di punti entro maximum_length_m di percorrenza: fondamentale per le
+    performance, non va rimosso.
+
+    Tra candidati sovrapposti si tiene il più lungo (excursion_m maggiore) e
+    si scartano quelli annidati — un singolo corno produce molte coppie
+    annidate (indici via via più vicini al vertice), tenerle tutte
+    duplicherebbe il taglio dello stesso corno.
+
+    Ritorna (selected, protected_spurs): selected sono i corni tagliabili,
+    protected_spurs quelli con un waypoint mandatory entro protection_radius_m
+    da un punto qualunque del loro intervallo — mai tagliati, riportati solo
+    per diagnosi (vedi _detect_out_and_back, out_and_back_attributions).
+    Entrambe le liste sono ordinate per start crescente.
     """
     n = len(points)
     if n < 4:
-        return 0.0, [], []
+        return [], []
 
-    cum = [0.0] * n
-    for i in range(1, n):
-        cum[i] = cum[i - 1] + _haversine_m(*points[i - 1], *points[i])
-    total_m = cum[-1]
-    if total_m <= 0:
-        return 0.0, cum, []
+    cum = _cumulative_distances_m(points)
+    candidates: list[_Spur] = []
 
-    overlap = [False] * n
-    for i in range(n):
-        lat_i, lon_i = points[i]
-        ci = cum[i]
-        for j in range(n):
-            if abs(cum[j] - ci) <= min_gap_m:
+    for start in range(n):
+        lat_start, lon_start = points[start]
+        cum_start = cum[start]
+        for end in range(start + 1, n):
+            excursion = cum[end] - cum_start
+            if excursion < minimum_length_m:
                 continue
-            if _haversine_m(lat_i, lon_i, points[j][0], points[j][1]) < proximity_m:
-                overlap[i] = True
+            if excursion > maximum_length_m:
                 break
 
-    raw_runs: list[tuple[int, int, float]] = []  # (start_idx, end_idx, run_len_m) — non ancora filtrati
-    run_start = None
-    for i in range(n):
-        if overlap[i]:
-            if run_start is None:
-                run_start = i
+            closure = _haversine_m(lat_start, lon_start, points[end][0], points[end][1])
+            if closure <= closure_radius_m:
+                candidates.append(_Spur(start, end, excursion, closure))
+
+    selected: list[_Spur] = []
+    protected_spurs: list[_Spur] = []
+    for candidate in sorted(candidates, key=lambda s: s.excursion_m, reverse=True):
+        if any(
+            not (candidate.end < existing.start or candidate.start > existing.end)
+            for existing in selected + protected_spurs
+        ):
+            continue
+
+        if _segment_contains_protected_point(
+            points, candidate.start, candidate.end, protected_points, protection_radius_m
+        ):
+            protected_spurs.append(candidate)
         else:
-            if run_start is not None:
-                raw_runs.append((run_start, i - 1, cum[i - 1] - cum[run_start]))
-                run_start = None
-    if run_start is not None:
-        raw_runs.append((run_start, n - 1, cum[n - 1] - cum[run_start]))
+            selected.append(candidate)
 
-    # Chiusura anello (start≈end): non è la gamba di uno spuntone, resta
-    # filtrata individualmente. Il resto viene accoppiato per posizione PRIMA
-    # del filtro min_run_m (vedi docstring).
-    closure = [r for r in raw_runs if (r[0] == 0 or r[1] == n - 1) and r[2] >= min_run_m]
-    others = sorted((r for r in raw_runs if r[0] != 0 and r[1] != n - 1), key=lambda r: r[0])
-    candidate_pairs = [(others[i], others[i + 1]) for i in range(0, len(others) - 1, 2)]
-    paired = [(leg_a, leg_b) for leg_a, leg_b in candidate_pairs if leg_a[2] + leg_b[2] >= min_run_m]
-
-    overlapped_m = sum(r[2] for r in closure) + sum(leg_a[2] + leg_b[2] for leg_a, leg_b in paired)
-    percent = round(min(100.0, 100.0 * overlapped_m / total_m), 1)
-
-    return percent, cum, paired
+    return (
+        sorted(selected, key=lambda s: s.start),
+        sorted(protected_spurs, key=lambda s: s.start),
+    )
 
 
 def _detect_out_and_back(
     points: list[tuple[float, float]],
-    min_gap_m: float = _OAB_MIN_GAP_M,
-    proximity_m: float = _OAB_PROXIMITY_M,
-    min_run_m: float = _OAB_MIN_RUN_M,
+    closure_radius_m: float = _OAB_CLOSURE_RADIUS_M,
+    minimum_length_m: float = _OAB_MIN_LENGTH_M,
+    maximum_length_m: float = _OAB_MAX_LENGTH_M,
 ) -> dict:
     """
-    Per ciascuna coppia di run speculari calcola l'apice — il punto di
-    inversione reale, a metà tra la fine della gamba di andata e l'inizio di
-    quella di ritorno — utile per risalire al via-point che lo ha causato
-    (vedi candidate_generator, che abbina l'apice al via-point più vicino).
+    Diagnosi sola-lettura: rileva TUTTI i corni presenti nel tracciato (non
+    riceve protected_points, quindi _detect_spurs li mette tutti in
+    "selected" — qui non interessa distinguere tagliabili da protetti, solo
+    riportarli tutti) e ne calcola l'apice, per l'attribuzione a un waypoint
+    (candidate_generator._attribute_out_and_back) e per out_and_back_percent.
 
     Ritorna {"percent": float, "apexes": [{"apex_lat","apex_lon","overlap_km"}]}.
     """
-    percent, cum, paired = _find_out_and_back_runs(points, min_gap_m, proximity_m, min_run_m)
+    n = len(points)
+    if n < 4:
+        return {"percent": 0.0, "apexes": []}
+
+    total_m = _cumulative_distances_m(points)[-1]
+    if total_m <= 0:
+        return {"percent": 0.0, "apexes": []}
+
+    spurs, _ = _detect_spurs(points, [], closure_radius_m, minimum_length_m, maximum_length_m)
 
     apexes = []
-    for leg_a, leg_b in paired:
-        apex_cum = (cum[leg_a[1]] + cum[leg_b[0]]) / 2
-        apex_idx = min(range(len(points)), key=lambda k: abs(cum[k] - apex_cum))
+    overlapped_m = 0.0
+    for spur in spurs:
+        apex_idx = _spur_apex_index(points, spur.start, spur.end)
         apexes.append({
             "apex_lat": points[apex_idx][0],
             "apex_lon": points[apex_idx][1],
-            "overlap_km": round((leg_a[2] + leg_b[2]) / 1000, 2),
+            "overlap_km": round(spur.excursion_m / 1000, 2),
         })
+        overlapped_m += spur.excursion_m
 
+    percent = round(min(100.0, 100.0 * overlapped_m / total_m), 1)
     return {"percent": percent, "apexes": apexes}
 
 
 def _out_and_back_percent(
     points: list[tuple[float, float]],
-    min_gap_m: float = _OAB_MIN_GAP_M,
-    proximity_m: float = _OAB_PROXIMITY_M,
-    min_run_m: float = _OAB_MIN_RUN_M,
+    closure_radius_m: float = _OAB_CLOSURE_RADIUS_M,
+    minimum_length_m: float = _OAB_MIN_LENGTH_M,
+    maximum_length_m: float = _OAB_MAX_LENGTH_M,
 ) -> float:
     """Compatibilità: solo la percentuale, senza gli apici. Vedi _detect_out_and_back."""
-    return _detect_out_and_back(points, min_gap_m, proximity_m, min_run_m)["percent"]
+    return _detect_out_and_back(points, closure_radius_m, minimum_length_m, maximum_length_m)["percent"]
 
 
 # ── Fix A: taglio automatico delle deviazioni andata/ritorno ──────────────────
-# Se BRouter passa due volte per lo stesso punto (bivio) con una deviazione
-# significativa in mezzo, quella deviazione è sempre geometricamente "sbagliata"
-# (un vero anello non ripercorre sé stesso) — va rimossa dal GPX finale, a meno
-# che l'apice non coincida con un via-point mandatory (l'utente lo ha chiesto
-# esplicitamente, va rispettato). Non tenta di spiegare la causa (waypoint
-# soft mal posizionato, geocoding sbagliato, vicolo cieco reale): la taglia e
-# basta, per definizione geometrica.
-_OAB_CUT_MIN_DEVIATION_M = 300.0   # sotto questa percorrenza totale (andata+ritorno) non si taglia
-_OAB_CUT_PROTECT_TOLERANCE_M = 150.0  # stessa tolleranza di attribuzione di Fix 2
+# Se BRouter passa due volte vicino allo stesso punto (bivio) con una
+# deviazione significativa in mezzo, quella deviazione è sempre
+# geometricamente "sbagliata" (un vero anello non ripercorre sé stesso) — va
+# rimossa dal GPX finale, a meno che il corno non contenga un via-point
+# mandatory (l'utente lo ha chiesto esplicitamente, va rispettato). Non tenta
+# di spiegare la causa (waypoint soft mal posizionato, geocoding sbagliato,
+# vicolo cieco reale): la taglia e basta, per definizione geometrica.
 
 
 def cut_out_and_back_deviations(
     points: list[tuple[float, float]],
     elevations: list[float | None],
     protected_points: list[tuple[float, float]],
-    min_gap_m: float = _OAB_MIN_GAP_M,
-    proximity_m: float = _OAB_PROXIMITY_M,
-    min_run_m: float = _OAB_MIN_RUN_M,
-    min_deviation_m: float = _OAB_CUT_MIN_DEVIATION_M,
-    protect_tolerance_m: float = _OAB_CUT_PROTECT_TOLERANCE_M,
+    closure_radius_m: float = _OAB_CLOSURE_RADIUS_M,
+    minimum_length_m: float = _OAB_MIN_LENGTH_M,
+    maximum_length_m: float = _OAB_MAX_LENGTH_M,
+    protection_radius_m: float = _OAB_PROTECTION_RADIUS_M,
 ) -> dict:
     """
-    Rimuove iterativamente le deviazioni andata/ritorno da (points, elevations),
-    ricucendo il tracciato direttamente al punto di bivio. Un apice è
-    "protetto" (mai tagliato) se entro protect_tolerance_m da uno dei
-    protected_points (via-point mandatory, start, end) — l'utente ha chiesto
-    esplicitamente quel punto. Una deviazione è tagliata solo se la percorrenza
-    totale (andata + ritorno) è almeno min_deviation_m, per non intaccare
-    overlap minori già esclusi dal rilevamento di base (tornanti, incroci).
+    Rimuove le deviazioni andata/ritorno da (points, elevations), ricucendo il
+    tracciato direttamente al punto di bivio. Rilevamento in singola passata
+    (_detect_spurs, ricerca esaustiva chiusura-based) — non un ciclo
+    "taglia→ririleva→taglia": i corni selezionati sono per costruzione non
+    sovrapposti (già deduplicati in _detect_spurs), quindi si tagliano tutti
+    in un colpo solo, in ordine decrescente di start per non invalidare gli
+    indici dei tagli successivi (come remove_gpx_spurs.py). Il vecchio ciclo
+    iterativo — ririlevava da zero sull'intero tracciato dopo ogni taglio,
+    O(n²) per iterazione — non terminava (>2m39s, interrotto manualmente) su
+    un candidate reale di 2143 punti; la singola passata di rilevamento qui
+    resta nell'ordine dei secondi anche a 10-12mila punti.
 
-    Dopo ogni taglio il rilevamento riparte da capo sul tracciato aggiornato
-    (gli indici cambiano), per gestire correttamente deviazioni multiple o
-    annidate senza lasciare residui.
+    Un corno è "protetto" (mai tagliato) se un waypoint mandatory è entro
+    protection_radius_m da un punto qualunque del suo intervallo — vedi
+    _detect_spurs e _OAB_PROTECTION_RADIUS_M.
+
+    Dopo il taglio, un solo giro di verifica (self-check, come
+    remove_gpx_spurs.py): ririleva sul tracciato tagliato con le stesse
+    soglie e segnala se restano corni tagliabili — caso limite raro (es. due
+    corni adiacenti la cui unione supera minimum_length_m solo dopo aver
+    rimosso quello in mezzo), da loggare più che correggere all'infinito con
+    un altro ciclo automatico.
 
     Ritorna {"points", "elevations", "kept_indices", "cuts"}:
       - kept_indices: indici nell'array points/elevations ORIGINALE dei punti
         sopravvissuti (stesso ordine) — utile a chi deve ritagliare una lista
         parallela di oggetti (es. i GPXTrackPoint originali) senza doverli
         ricostruire da lat/lon.
-      - cuts: [{"apex_lat","apex_lon","overlap_km"}], nell'ordine in cui sono
-        stati effettivamente rimossi.
+      - cuts: [{"apex_lat","apex_lon","overlap_km"}], ordinati per start
+        crescente (ordine lungo il tracciato originale).
     """
     pts = list(points)
     eles = list(elevations)
     kept_indices = list(range(len(points)))
+
+    selected, _protected_spurs = _detect_spurs(
+        pts, protected_points, closure_radius_m, minimum_length_m, maximum_length_m, protection_radius_m
+    )
+
     cuts = []
+    for spur in selected:
+        apex_idx = _spur_apex_index(pts, spur.start, spur.end)
+        cuts.append({
+            "apex_lat": pts[apex_idx][0],
+            "apex_lon": pts[apex_idx][1],
+            "overlap_km": round(spur.excursion_m / 1000, 2),
+        })
 
-    while True:
-        _, cum, paired = _find_out_and_back_runs(pts, min_gap_m, proximity_m, min_run_m)
-        if not paired:
-            break
+    # Conserva il punto di diramazione (spur.start); il punto finale
+    # (spur.end) è praticamente coincidente ed è eliminato con l'escursione.
+    for spur in sorted(selected, key=lambda s: s.start, reverse=True):
+        pts, eles, kept_indices = _splice_out_range(pts, eles, kept_indices, spur.start + 1, spur.end)
 
-        cut_made = False
-        for leg_a, leg_b in paired:
-            cut_start, cut_end = leg_a[0], leg_b[1]
-            # Percorrenza reale bivio→rientro (non la somma delle sole porzioni
-            # "matchate" delle due gambe, leg_a[2]+leg_b[2]): quest'ultima
-            # sottostima lo spuntone perché esclude il tratto vicino al vertice
-            # dove il matching punto-punto si interrompe — tratto che il taglio
-            # rimuove comunque (cut_start→cut_end lo include per intero).
-            deviation_m = cum[cut_end] - cum[cut_start]
-            if deviation_m < min_deviation_m:
-                continue
-
-            apex_cum = (cum[leg_a[1]] + cum[leg_b[0]]) / 2
-            apex_idx = min(range(len(pts)), key=lambda k: abs(cum[k] - apex_cum))
-            apex_lat, apex_lon = pts[apex_idx]
-
-            protected = any(
-                _haversine_m(apex_lat, apex_lon, p_lat, p_lon) <= protect_tolerance_m
-                for p_lat, p_lon in protected_points
+    if selected:
+        remaining, _ = _detect_spurs(
+            pts, protected_points, closure_radius_m, minimum_length_m, maximum_length_m, protection_radius_m
+        )
+        if remaining:
+            print(
+                f"cut_out_and_back_deviations: {len(remaining)} corno/i tagliabile/i residuo/i "
+                "dopo il taglio (self-check) — non ritagliati automaticamente."
             )
-            if protected:
-                continue
-
-            cuts.append({
-                "apex_lat": apex_lat,
-                "apex_lon": apex_lon,
-                "overlap_km": round(deviation_m / 1000, 2),
-            })
-            pts, eles, kept_indices = _splice_out_range(pts, eles, kept_indices, cut_start, cut_end)
-            cut_made = True
-            break  # tracciato cambiato: ricomincia il rilevamento da capo
-
-        if not cut_made:
-            break
 
     return {"points": pts, "elevations": eles, "kept_indices": kept_indices, "cuts": cuts}
 
