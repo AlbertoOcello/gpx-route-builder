@@ -38,7 +38,15 @@ from gpx_analyzer import (
     cut_range_in_gpx,
     extract_draft_waypoints_from_gpx,
 )
-from gpx_optimizer import is_already_optimized, optimize_gpx
+from gpx_optimizer import (
+    DANGER_THRESHOLD_PCT_DEFAULT,
+    WARNING_DISTANCE_M_DEFAULT,
+    WARNING_DISTANCE_MAX_M,
+    WARNING_DISTANCE_MIN_M,
+    add_danger_waypoints,
+    is_already_optimized,
+    optimize_gpx,
+)
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
 from learning_agent import update_user_memory_from_feedback
@@ -378,6 +386,7 @@ def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
             t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
             t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
             t("climbs.col_max_grad"): _format_max_grad_cell(c),
+            t("climbs.col_hard_start"): f"km {c['hard_start_km']:.1f}" if c.get("hard_start_km") is not None else "—",
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
         })
     return rows
@@ -749,6 +758,7 @@ def _climbs_analysis_table_rows(merged_climbs: list[dict], is_ebike: bool) -> li
             t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
             t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
             t("climbs.col_max_grad"): _format_max_grad_cell(c),
+            t("climbs.col_hard_start"): f"km {c['hard_start_km']:.1f}" if c.get("hard_start_km") is not None else "—",
             t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
             t("climbs.col_kcal"): f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
             t("climbs.col_hr"): f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
@@ -3131,6 +3141,24 @@ def _render_gpx_optimizer(key_prefix: str, open_route_name: str | None = None) -
                 st.session_state[_name_key] = opt_default_name
             opt_route_name = st.text_input(t("optimizer.route_name_label"), key=_name_key)
 
+            opt_danger = st.checkbox(t("optimizer.danger_checkbox"), key=f"{key_prefix}_opt_danger")
+            st.caption(t("optimizer.danger_caption"))
+            opt_danger_threshold = DANGER_THRESHOLD_PCT_DEFAULT
+            opt_warning_distance = WARNING_DISTANCE_M_DEFAULT
+            if opt_danger:
+                _dcol1, _dcol2 = st.columns(2)
+                opt_danger_threshold = _dcol1.number_input(
+                    t("optimizer.danger_threshold_label"),
+                    min_value=5.0, max_value=30.0, value=DANGER_THRESHOLD_PCT_DEFAULT, step=1.0,
+                    key=f"{key_prefix}_opt_danger_threshold",
+                )
+                opt_warning_distance = _dcol2.number_input(
+                    t("optimizer.danger_distance_label"),
+                    min_value=WARNING_DISTANCE_MIN_M, max_value=WARNING_DISTANCE_MAX_M,
+                    value=WARNING_DISTANCE_M_DEFAULT, step=10.0,
+                    key=f"{key_prefix}_opt_danger_distance",
+                )
+
             if st.button(t("optimizer.btn_run"), key=f"{key_prefix}_opt_btn_run", disabled=not opt_can_proceed):
                 with tempfile.NamedTemporaryFile(suffix=".gpx", delete=False, mode="wb") as tmp_in:
                     tmp_in.write(_source_bytes)
@@ -3141,7 +3169,14 @@ def _render_gpx_optimizer(key_prefix: str, open_route_name: str | None = None) -
                 try:
                     opt_stats = optimize_gpx(opt_in_path, opt_route_name, opt_out_path)
 
-                    col_o1, col_o2, col_o3 = st.columns(3)
+                    if opt_danger:
+                        opt_danger_stats = add_danger_waypoints(
+                            opt_out_path,
+                            danger_threshold_pct=opt_danger_threshold,
+                            warning_distance_m=opt_warning_distance,
+                        )
+
+                    col_o1, col_o2, col_o3, *_col_o4 = st.columns(4 if opt_danger else 3)
                     col_o1.metric(t("optimizer.metric_points_before"), opt_stats["points_before"])
                     col_o2.metric(
                         t("optimizer.metric_points_after"),
@@ -3149,13 +3184,16 @@ def _render_gpx_optimizer(key_prefix: str, open_route_name: str | None = None) -
                         delta=f"-{opt_stats['reduction_pct']:.1f}%",
                     )
                     col_o3.metric(t("optimizer.metric_waypoints"), opt_stats["waypoints_added"])
+                    if opt_danger:
+                        _col_o4[0].metric(t("optimizer.metric_danger"), opt_danger_stats["danger_count"])
 
                     with open(opt_out_path, "rb") as f:
                         opt_out_bytes = f.read()
+                    _dl_suffix = "osmand" if opt_danger else "edge840"
                     st.download_button(
                         label=t("optimizer.btn_download"),
                         data=opt_out_bytes,
-                        file_name=f"{opt_route_name}_edge840.gpx",
+                        file_name=f"{opt_route_name}_{_dl_suffix}.gpx",
                         mime="application/gpx+xml",
                         key=f"{key_prefix}_opt_dl_btn",
                     )

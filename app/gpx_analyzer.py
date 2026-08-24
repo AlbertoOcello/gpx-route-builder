@@ -489,41 +489,61 @@ def cut_range_in_gpx(gpx_path: str, start_km: float, end_km: float, out_path: st
 
 
 # ── Rilevamento salite ──────────────────────────────────────────────────────
-# Costanti condivise tra rilevamento/classificazione salite (qui) e colorazione
-# del profilo altimetrico punto-per-punto (Builder/Ride Analysis) — non
-# duplicare queste soglie altrove, importarle da qui.
-_CLIMB_RESAMPLE_STEP_M = 20.0     # passo di ricampionamento uniforme lungo il tracciato
-_CLIMB_MAX_GRAD_WINDOW_M = 100.0  # finestra corta per max_gradient_percent (cattura uno strappo isolato)
-_CLIMB_MERGE_GAP_M = 100.0        # gap breve tra due tratti in salita → uniti in una sola salita
+# Ricerca esaustiva su griglia ricampionata a passo fisso (porta
+# analisi_salita.py dell'utente, validata sui casi reali noti — vedi
+# _resample_track_for_climbs/detect_climbs più sotto): PRIMA di qualunque
+# calcolo, l'intero tracciato è ricampionato per interpolazione a passo
+# uniforme _CLIMB_RESAMPLE_STEP_M. Fix strutturale: nella versione precedente
+# l'ampiezza EFFETTIVA di ogni finestra di calcolo dipendeva da quanto erano
+# fitti i punti GPS/BRouter grezzi — in tratti radi pochi punti concordi
+# producevano pendenze fisicamente implausibili (35-39%), non correggibili
+# con più smoothing senza appiattire dati puliti altrove. Su griglia uniforme
+# ogni finestra (100/200/500m) copre sempre la stessa distanza reale,
+# indipendentemente dalla densità sorgente.
+_CLIMB_RESAMPLE_STEP_M = 10.0       # passo di ricampionamento uniforme lungo il tracciato
+_CLIMB_SMOOTH_RADIUS_PTS = 5        # raggio finestra triangolare, in punti (5×10m per lato ≈ 100m totali)
+_CLIMB_START_GRADE_PCT = 2.0        # gradiente rolling sui 200m per riconoscere l'inizio di una salita
+_CLIMB_START_WINDOW_M = 200.0
+_CLIMB_END_STALL_M = 250.0          # fine salita: 250m senza un nuovo massimo di quota (assorbe brevi falsopiani)
+_CLIMB_MIN_LENGTH_M = 400.0         # sotto questa lunghezza non è una salita vera (era 200m)
+_CLIMB_MIN_GAIN_M = 20.0            # sotto questo dislivello non è una salita vera (nuovo requisito)
+_CLIMB_MERGE_GAP_M = 200.0          # salite separate da meno di questo si fondono...
+_CLIMB_MERGE_MAX_DROP_M = 8.0       # ...se il calo di quota nel mezzo non supera questo (evita di fondere due cime distinte)
+_CLIMB_GRAD_WINDOW_100M = 100.0     # tre orizzonti di pendenza per ogni salita, non un solo "max_gradient_percent"
+_CLIMB_GRAD_WINDOW_200M = 200.0
+_CLIMB_GRAD_WINDOW_500M = 500.0
 
-# max_gradient_percent è marcato max_gradient_low_confidence quando è SIA
-# fisicamente implausibile in assoluto SIA un picco isolato molto più ripido
-# della salita che lo contiene — entrambe le condizioni, non una sola.
-# NON basato sul conteggio di punti GPX grezzi nella finestra: misurato e
-# scartato — riflette solo come è stato generato il file (profilo BRouter,
-# passaggio dal GPX Optimizer) e non la qualità del dato in quel punto: sui
-# file "Marche" puliti l'87-97% delle salite risultava sotto soglia punti pur
-# con pendenze plausibili (fino a 20.8%), mentre il caso Via Silente noto
-# (38.2%) restava sopra soglia — l'esatto contrario dell'intento.
-_MAX_GRAD_LOW_CONFIDENCE_ABS_PCT = 30.0    # sopra questa pendenza assoluta, implausibile su strada reale
-_MAX_GRAD_LOW_CONFIDENCE_RATIO = 2.5       # E il picco è più di 2.5× la pendenza media della salita
+# max_gradient_percent, esposto per compatibilità, è un ALIAS di max_200m_pct
+# (non max_100m_pct): è il valore più rappresentativo da mostrare come singolo
+# numero nelle viste che non elencano i tre orizzonti — vedi Via Silente-tappa_5
+# nella verifica: max_100m=37.6%, max_200m=28.7%, max_500m=27.0%, il 100m da
+# solo è un picco isolato fuorviante come "la" pendenza della salita.
+#
+# max_gradient_low_confidence resta invece ancorato a max_100m_pct — è
+# l'orizzonte più sensibile, quello che cattura davvero un picco isolato
+# implausibile; il ricampionamento a griglia fissa risolve il bug strutturale
+# della versione precedente (finestra la cui ampiezza effettiva dipendeva
+# dalla densità dei punti sorgente) ma NON fa sparire un dato sorgente
+# realmente anomalo su un tratto breve — verificato: sulla salita incriminata
+# max_100m_pct=37.6% con media=10.2% (rapporto 3.68×) continua a superare
+# entrambe le soglie sotto, quindi il flag resta necessario, solo ancorato
+# all'orizzonte giusto invece che a un "max_gradient_percent" ambiguo.
+_MAX_GRAD_LOW_CONFIDENCE_ABS_PCT = 30.0    # sopra questa pendenza assoluta (sui 100m), implausibile su strada reale
+_MAX_GRAD_LOW_CONFIDENCE_RATIO = 2.5       # E il picco sui 100m è più di 2.5× la pendenza media della salita
 
-# Smoothing elevazione — condiviso da detect_climbs() E da elevation_gain_m/
-# elevation_loss_m (analyze_gpx / ride_analysis_agent.analyze_gpx_bytes).
-# Il dato sorgente (SRTM via BRouter) può contenere rumore a dente di sega
-# anche di ±30-65% su pochi metri, sovrapposto a salite vere — confermato
-# sistemico su alcune aree (Cilento/Via Silente: 5-9% dei segmenti brevi
-# sopra soglia, contro 0-0.3% nelle Marche). Una singola media mobile non
-# basta: i picchi isolati vanno abbattuti PRIMA con un filtro a mediana
-# (finestra a distanza reale, robusta alla densità irregolare dei punti
-# grezzi — non punti fissi, altrimenti si ricade nello stesso bug), poi il
-# residuo viene smussato con una media mobile leggera sul dato ricampionato.
+# Smoothing elevazione per elevation_gain_m/elevation_loss_m (analyze_gpx,
+# ride_analysis_agent.analyze_gpx_bytes) — pipeline DISTINTA da quella di
+# detect_climbs() qui sotto, deliberatamente non unificata: il filtro a
+# mediana pre-resample qui sotto è stato validato empiricamente contro il
+# rumore a dente di sega di SRTM (±30-65% su pochi metri, sistemico su
+# Cilento/Via Silente) e sostituirlo con la sola media triangolare del nuovo
+# algoritmo salite rischierebbe di reintrodurre quel bug sul dislivello
+# totale, senza che i tre file di verifica di questa sessione lo coprano
+# (nessuna regressione osservata, ma nessuna prova a favore nemmeno). Unificare
+# è un lavoro di validazione a sé, non sproporzionato ma indipendente da
+# questo step — vedi nota architetturale in detect_climbs().
 _ELEV_MEDIAN_WINDOW_M = 40.0  # finestra mediana (distanza reale) per abbattere outlier isolati
 _ELEV_SMOOTH_WINDOW_M = 75.0  # media mobile leggera sul residuo, dopo ricampionamento (50-100m)
-
-_CLIMB_MIN_GRADIENT_PCT = 2.0     # sotto questa soglia non è una salita rilevante
-_CLIMB_MIN_LENGTH_M = 200.0       # sotto questa lunghezza non è una salita rilevante (rumore/saliscendi)
-_CLIMB_SHORT_LENGTH_M = 300.0     # sotto questa lunghezza, con pendenza ≥8%, è "strappo_breve" non "impegnativa"
 
 # Fasce di pendenza — condivise da classificazione salite E colore istantaneo nel grafico.
 _GRAD_DOLCE_MAX_PCT = 4.0     # < 4%  → dolce / verde
@@ -537,7 +557,6 @@ _CLIMB_CLASS_EMOJI = {
     "dolce": "🟢",
     "moderata": "🟡",
     "impegnativa": "🔴",
-    "strappo_breve": "⚡",
 }
 
 
@@ -554,12 +573,18 @@ def gradient_color(gradient_percent: float) -> str:
     return _GRADIENT_COLOR_RED
 
 
-def _classify_climb(avg_gradient_percent: float, length_m: float) -> str:
+def _classify_climb(avg_gradient_percent: float) -> str:
+    """
+    Niente più "strappo_breve": nasceva per una salita breve (<300m) e ripida
+    (≥8%) rilevata col vecchio minimo di 200m — con _CLIMB_MIN_LENGTH_M ora a
+    400m nessuna salita rilevata può più essere sotto i 300m, il ramo era
+    diventato irraggiungibile.
+    """
     if avg_gradient_percent < _GRAD_DOLCE_MAX_PCT:
         return "dolce"
     if avg_gradient_percent < _GRAD_MODERATA_MAX_PCT:
         return "moderata"
-    return "impegnativa" if length_m >= _CLIMB_SHORT_LENGTH_M else "strappo_breve"
+    return "impegnativa"
 
 
 def _valid_elevation_pairs(
@@ -696,23 +721,119 @@ def _moving_average(values: list[float], window_pts: int) -> list[float]:
     return out
 
 
+def _resample_track_for_climbs(
+    distances_cumulative_m: list[float],
+    elevations_m: list[float | None],
+    coordinates: list[tuple[float, float]],
+    step_m: float,
+) -> tuple[list[float], list[float], list[tuple[float, float]]]:
+    """
+    Ricampiona distanza/elevazione/coordinate a passo fisso uniforme per
+    interpolazione lineare — pipeline dedicata a detect_climbs(), separata da
+    smooth_elevations() (vedi nota architetturale sopra _ELEV_MEDIAN_WINDOW_M).
+    Interpola anche lat/lon insieme all'elevazione: servono per hard_lat/
+    hard_lon (punto più duro di ogni salita — attribuzione zona, danger
+    waypoint in GPX Optimizer). Scarta i punti senza elevazione prima di
+    ricampionare. Ritorna liste vuote se i dati validi sono insufficienti.
+    """
+    valid = [
+        (d, e, c) for d, e, c in zip(distances_cumulative_m, elevations_m, coordinates)
+        if e is not None
+    ]
+    if len(valid) < 4:
+        return [], [], []
+
+    xs = [v[0] for v in valid]
+    ys = [v[1] for v in valid]
+    cs = [v[2] for v in valid]
+    total = xs[-1]
+    if total <= 0:
+        return [], [], []
+
+    n_steps = max(1, int(total // step_m))
+    rd = [i * step_m for i in range(n_steps + 1)]
+    if rd[-1] < total:
+        rd.append(total)
+
+    resampled_elev: list[float] = []
+    resampled_coords: list[tuple[float, float]] = []
+    j = 0
+    for d in rd:
+        while j < len(xs) - 2 and xs[j + 1] < d:
+            j += 1
+        x0, x1 = xs[j], xs[j + 1]
+        t = 0.0 if x1 == x0 else (d - x0) / (x1 - x0)
+        t = min(1.0, max(0.0, t))
+        resampled_elev.append(ys[j] + t * (ys[j + 1] - ys[j]))
+        lat0, lon0 = cs[j]
+        lat1, lon1 = cs[j + 1]
+        resampled_coords.append((lat0 + t * (lat1 - lat0), lon0 + t * (lon1 - lon0)))
+
+    return rd, resampled_elev, resampled_coords
+
+
+def _triangular_smooth(values: list[float], radius_pts: int) -> list[float]:
+    """
+    Media pesata triangolare (picco al centro, decrescente linearmente verso i
+    bordi) su serie a passo uniforme — porta 1:1 lo smoothing di
+    analisi_salita.py, usato SOLO da detect_climbs(). Con radius_pts=5 e passo
+    10m copre una finestra di circa 100m.
+    """
+    n = len(values)
+    if n == 0:
+        return []
+    weights = list(range(1, radius_pts + 2)) + list(range(radius_pts, 0, -1))
+    out = []
+    for i in range(n):
+        start, end = max(0, i - radius_pts), min(n, i + radius_pts + 1)
+        selected = weights[radius_pts - (i - start): radius_pts + (end - i)]
+        out.append(sum(values[j] * w for j, w in zip(range(start, end), selected)) / sum(selected))
+    return out
+
+
+def _rolling_grade_pct(elevations_m: list[float], index: int, window_m: float, step_m: float) -> float:
+    """Pendenza tra elevations_m[index] e il punto ~window_m più avanti sulla griglia uniforme
+    (o l'ultimo punto disponibile, se la salita finisce prima della finestra)."""
+    count = max(1, round(window_m / step_m))
+    end = min(len(elevations_m) - 1, index + count)
+    actual_m = (end - index) * step_m
+    return 0.0 if actual_m == 0 else (elevations_m[end] - elevations_m[index]) / actual_m * 100.0
+
+
 def detect_climbs(
     distances_cumulative_m: list[float],
     elevations_m: list[float | None],
+    coordinates: list[tuple[float, float]],
 ) -> dict:
     """
-    Rileva le salite lungo un tracciato a partire da distanza cumulativa (m) ed
-    elevazione (m) per punto (stesso ordine/lunghezza di points).
+    Rileva le salite lungo un tracciato a partire da distanza cumulativa (m),
+    elevazione (m) e coordinate (lat, lon) per punto (stesso ordine/lunghezza
+    di points). Ricampiona l'intero tracciato a passo fisso _CLIMB_RESAMPLE_STEP_M
+    prima di qualunque calcolo (vedi nota in testa alla sezione) — pipeline
+    separata da smooth_elevations()/elevation_gain_m.
+
+    Rilevamento guidato dal gradiente rolling sui 200m (non dal delta
+    punto-a-punto): una salita nasce quando questo gradiente raggiunge
+    _CLIMB_START_GRADE_PCT; il punto più alto raggiunto (best) assorbe brevi
+    falsopiani; la salita finisce dopo _CLIMB_END_STALL_M senza un nuovo
+    massimo. Richiede lunghezza ≥_CLIMB_MIN_LENGTH_M E dislivello
+    ≥_CLIMB_MIN_GAIN_M per essere considerata una salita vera. Salite separate
+    da un gap breve (≤_CLIMB_MERGE_GAP_M) con un calo di quota modesto nel
+    mezzo (≤_CLIMB_MERGE_MAX_DROP_M) vengono fuse in una sola.
 
     Ritorna:
-      "climbs": list[dict] — una per salita rilevata, con start_km, length_m,
-        elevation_gain_m, avg_gradient_percent, max_gradient_percent,
-        classification (dolce/moderata/impegnativa/strappo_breve),
-        has_steep_section (bool), note (str|None).
-      "profile_distances_km": list[float] — profilo ricampionato/smoothed, per grafico.
-      "profile_elevations_m": list[float] — elevazione smoothed corrispondente.
-      "profile_colors": list[str] — colore per fascia di pendenza istantanea,
-        stesso index di profile_distances_km/profile_elevations_m.
+      "climbs": list[dict] — una per salita rilevata:
+        start_km, length_m, elevation_gain_m, avg_gradient_percent,
+        max_gradient_percent (alias di max_200m_pct, per compatibilità),
+        max_100m_pct/max_200m_pct/max_500m_pct (tre orizzonti di pendenza),
+        hard_start_km/hard_lat/hard_lon (punto di inizio del tratto più duro,
+        cioè quello con la pendenza sui 200m più alta), max_gradient_low_confidence
+        (ancorato a max_100m_pct — vedi costanti), classification
+        (dolce/moderata/impegnativa), has_steep_section (bool), note (str|None),
+        zone (str, vuota — riservato a un futuro collegamento col reverse
+        geocoding, non popolato in questo step: vedi valutazione consegnata).
+      "profile_distances_km"/"profile_elevations_m"/"profile_colors": profilo
+        ricampionato/smoothed per il grafico altimetrico, stesso index.
     """
     empty = {
         "climbs": [],
@@ -721,79 +842,86 @@ def detect_climbs(
         "profile_colors": [],
     }
 
-    rd, smoothed = smooth_elevations(distances_cumulative_m, elevations_m)
+    rd, resampled_elev, resampled_coords = _resample_track_for_climbs(
+        distances_cumulative_m, elevations_m, coordinates, _CLIMB_RESAMPLE_STEP_M
+    )
     n = len(rd)
     if n < 4:
         return empty
 
-    # Gradiente istantaneo punto-per-punto sulla serie smoothed (per detection + colore grafico)
+    smoothed = _triangular_smooth(resampled_elev, _CLIMB_SMOOTH_RADIUS_PTS)
+
+    # Gradiente istantaneo punto-per-punto sulla serie smoothed (solo per il colore del grafico)
     grad = [0.0] * n
     for i in range(1, n):
         dd = rd[i] - rd[i - 1]
         grad[i] = (smoothed[i] - smoothed[i - 1]) / dd * 100.0 if dd > 0 else 0.0
     if n > 1:
         grad[0] = grad[1]
-
     profile_colors = [gradient_color(g) for g in grad]
 
-    # ── Individua run contigui sopra soglia, poi unisce quelli separati da gap brevi ──
-    raw_runs: list[tuple[int, int]] = []
-    run_start = None
+    # ── Rilevamento: stato "in salita" guidato dal gradiente rolling 200m ──
+    active = False
+    start = best = 0
+    best_ele = smoothed[0]
+    candidates: list[tuple[int, int]] = []
     for i in range(n):
-        if grad[i] >= _CLIMB_MIN_GRADIENT_PCT:
-            if run_start is None:
-                run_start = i
-        else:
-            if run_start is not None:
-                raw_runs.append((run_start, i - 1))
-                run_start = None
-    if run_start is not None:
-        raw_runs.append((run_start, n - 1))
+        grade200 = _rolling_grade_pct(smoothed, i, _CLIMB_START_WINDOW_M, _CLIMB_RESAMPLE_STEP_M)
+        if not active and grade200 >= _CLIMB_START_GRADE_PCT:
+            active, start, best, best_ele = True, i, i, smoothed[i]
+        if active:
+            if smoothed[i] > best_ele:
+                best, best_ele = i, smoothed[i]
+            if (i - best) * _CLIMB_RESAMPLE_STEP_M >= _CLIMB_END_STALL_M or i == n - 1:
+                if ((best - start) * _CLIMB_RESAMPLE_STEP_M >= _CLIMB_MIN_LENGTH_M
+                        and best_ele - smoothed[start] >= _CLIMB_MIN_GAIN_M):
+                    candidates.append((start, best))
+                active = False
 
-    merged_runs: list[tuple[int, int]] = []
-    for run in raw_runs:
-        if merged_runs and (rd[run[0]] - rd[merged_runs[-1][1]]) <= _CLIMB_MERGE_GAP_M:
-            merged_runs[-1] = (merged_runs[-1][0], run[1])
+    # ── Fusione salite separate da un gap breve con calo di quota modesto ──
+    merged: list[list[int]] = []
+    for c_start, c_end in candidates:
+        if (merged
+                and (rd[c_start] - rd[merged[-1][1]]) <= _CLIMB_MERGE_GAP_M
+                and smoothed[c_start] >= smoothed[merged[-1][1]] - _CLIMB_MERGE_MAX_DROP_M):
+            merged[-1][1] = c_end
         else:
-            merged_runs.append(run)
-
-    max_grad_offset_pts = max(1, round(_CLIMB_MAX_GRAD_WINDOW_M / _CLIMB_RESAMPLE_STEP_M))
+            merged.append([c_start, c_end])
 
     climbs = []
-    for start_idx, end_idx in merged_runs:
-        length_m = rd[end_idx] - rd[start_idx]
-        if length_m < _CLIMB_MIN_LENGTH_M:
-            continue
+    for start_idx, end_idx in merged:
+        grades100 = [_rolling_grade_pct(smoothed, i, _CLIMB_GRAD_WINDOW_100M, _CLIMB_RESAMPLE_STEP_M)
+                     for i in range(start_idx, end_idx + 1)]
+        grades200 = [_rolling_grade_pct(smoothed, i, _CLIMB_GRAD_WINDOW_200M, _CLIMB_RESAMPLE_STEP_M)
+                     for i in range(start_idx, end_idx + 1)]
+        grades500 = [_rolling_grade_pct(smoothed, i, _CLIMB_GRAD_WINDOW_500M, _CLIMB_RESAMPLE_STEP_M)
+                     for i in range(start_idx, end_idx + 1)]
 
+        max_100m_pct = max(grades100)
+        max_200m_pct, hard_offset = max((g, i) for i, g in enumerate(grades200))
+        max_500m_pct = max(grades500)
+        hard_index = start_idx + hard_offset
+
+        length_m = max(1.0, (end_idx - start_idx) * _CLIMB_RESAMPLE_STEP_M)
         elevation_gain_m = smoothed[end_idx] - smoothed[start_idx]
-        if elevation_gain_m <= 0:
-            continue
         avg_gradient_percent = elevation_gain_m / length_m * 100.0
+        max_gradient_percent = max_200m_pct  # alias di compatibilità — vedi nota sopra le costanti
 
-        max_gradient_percent = 0.0
-        for i in range(start_idx, end_idx):
-            j = min(end_idx, i + max_grad_offset_pts)
-            dd = rd[j] - rd[i]
-            if dd <= 0:
-                continue
-            g = (smoothed[j] - smoothed[i]) / dd * 100.0
-            max_gradient_percent = max(max_gradient_percent, g)
-        max_gradient_percent = max(max_gradient_percent, avg_gradient_percent)
-
-        # Confidenza: implausibile in assoluto E picco isolato molto più
-        # ripido della media della salita — non un limite fisico della
-        # bici/strada, probabilmente un limite di risoluzione del dato
-        # elevazione sorgente (vedi costanti). Segnalato, non nascosto.
+        # Confidenza ancorata a max_100m_pct (l'orizzonte più sensibile ai
+        # picchi isolati) — implausibile in assoluto E molto più ripido della
+        # media della salita, entrambe le condizioni. Segnalato, non nascosto.
         max_gradient_low_confidence = (
-            max_gradient_percent > _MAX_GRAD_LOW_CONFIDENCE_ABS_PCT
-            and (max_gradient_percent / avg_gradient_percent) > _MAX_GRAD_LOW_CONFIDENCE_RATIO
+            max_100m_pct > _MAX_GRAD_LOW_CONFIDENCE_ABS_PCT
+            and (max_100m_pct / avg_gradient_percent) > _MAX_GRAD_LOW_CONFIDENCE_RATIO
         )
 
-        classification = _classify_climb(avg_gradient_percent, length_m)
+        classification = _classify_climb(avg_gradient_percent)
         has_steep_section = (
             max_gradient_percent >= _GRAD_MODERATA_MAX_PCT
             and avg_gradient_percent < _GRAD_MODERATA_MAX_PCT
         )
+
+        hard_lat, hard_lon = resampled_coords[hard_index]
 
         climbs.append({
             "start_km": round(rd[start_idx] / 1000, 2),
@@ -801,6 +929,12 @@ def detect_climbs(
             "elevation_gain_m": round(elevation_gain_m, 1),
             "avg_gradient_percent": round(avg_gradient_percent, 1),
             "max_gradient_percent": round(max_gradient_percent, 1),
+            "max_100m_pct": round(max_100m_pct, 1),
+            "max_200m_pct": round(max_200m_pct, 1),
+            "max_500m_pct": round(max_500m_pct, 1),
+            "hard_start_km": round(rd[hard_index] / 1000, 2),
+            "hard_lat": hard_lat,
+            "hard_lon": hard_lon,
             "max_gradient_low_confidence": max_gradient_low_confidence,
             "classification": classification,
             "classification_emoji": _CLIMB_CLASS_EMOJI[classification],
@@ -809,6 +943,7 @@ def detect_climbs(
                 f"contiene un tratto al {max_gradient_percent:.0f}%"
                 if has_steep_section else None
             ),
+            "zone": "",
         })
 
     return {
@@ -867,7 +1002,7 @@ def analyze_gpx(gpx_path: str,
     oab = _detect_out_and_back([(p.latitude, p.longitude) for p in points])
     out_and_back_percent = oab["percent"]
 
-    climb_data = detect_climbs(cum_m, [p.elevation for p in points])
+    climb_data = detect_climbs(cum_m, [p.elevation for p in points], [(p.latitude, p.longitude) for p in points])
 
     result = {
         "distance_km": distance_km,

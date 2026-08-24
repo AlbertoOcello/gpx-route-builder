@@ -318,6 +318,7 @@ it:
     col_gain: "Dislivello"
     col_avg_grad: "Pend. media"
     col_max_grad: "Pend. max"
+    col_hard_start: "Tratto più duro"
     col_class: "Classificazione"
     col_kcal: "Kcal"
     col_hr: "FC media"
@@ -331,7 +332,6 @@ it:
       dolce: "Dolce"
       moderata: "Moderata"
       impegnativa: "Impegnativa"
-      strappo_breve: "Strappo breve"
 
   # ── GPX Optimizer ─────────────────────────────────────────────────────────────
   optimizer:
@@ -357,8 +357,16 @@ it:
     metric_points_after: "Punti dopo"
     metric_reduction: "Riduzione"
     metric_waypoints: "Waypoint aggiunti"
+    metric_danger: "Avvisi salita aggiunti"
     btn_download: "⬇ Scarica GPX ottimizzato"
     parse_error: "❌ Errore lettura GPX — il file potrebbe non essere un GPX valido o non contenere tracce:"
+    danger_checkbox: "⚠️ Aggiungi avvisi pre-salita (OsmAnd)"
+    danger_caption: >-
+      Funziona su OsmAnd. Su Garmin Edge questi waypoint non generano un
+      avviso di prossimità (limite del formato GPX su quei dispositivi) —
+      supporto Garmin dedicato non ancora disponibile.
+    danger_threshold_label: "Soglia pendenza su 200 m (%)"
+    danger_distance_label: "Anticipo avviso (m)"
 
   # ── Analizza & Feedback ──────────────────────────────────────────────────────
   analizza:
@@ -945,6 +953,7 @@ en:
     col_gain: "Elevation gain"
     col_avg_grad: "Avg gradient"
     col_max_grad: "Max gradient"
+    col_hard_start: "Hardest stretch"
     col_class: "Classification"
     col_kcal: "Kcal"
     col_hr: "Avg HR"
@@ -958,7 +967,6 @@ en:
       dolce: "Gentle"
       moderata: "Moderate"
       impegnativa: "Challenging"
-      strappo_breve: "Short kicker"
 
   # ── GPX Optimizer ─────────────────────────────────────────────────────────────
   optimizer:
@@ -983,8 +991,16 @@ en:
     metric_points_after: "Points after"
     metric_reduction: "Reduction"
     metric_waypoints: "Waypoints added"
+    metric_danger: "Climb warnings added"
     btn_download: "⬇ Download optimized GPX"
     parse_error: "❌ Error reading GPX — the file may not be a valid GPX or may contain no tracks:"
+    danger_checkbox: "⚠️ Add pre-climb warnings (OsmAnd)"
+    danger_caption: >-
+      Works on OsmAnd. On Garmin Edge these waypoints do not trigger a
+      proximity alert (a limitation of the GPX format on those devices) —
+      dedicated Garmin support is not available yet.
+    danger_threshold_label: "Gradient threshold over 200 m (%)"
+    danger_distance_label: "Warning lead distance (m)"
 
   # ── Analyse & Feedback ───────────────────────────────────────────────────────
   analizza:

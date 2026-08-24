@@ -14,7 +14,7 @@ import gpxpy
 
 from geopy.distance import geodesic
 
-from gpx_analyzer import gpx_creator_string
+from gpx_analyzer import detect_climbs, gpx_creator_string
 
 log = logging.getLogger(__name__)
 
@@ -25,6 +25,19 @@ MAX_GAP_M = 100.0
 MIN_GAP_M = 8.0
 SHARP_TURN_DEG = 35.0
 WAYPOINT_INTERVAL_KM = 5.0
+
+# ── Danger Waypoints — avvisi pre-salita, solo OsmAnd ──────────────────────────
+# Su OsmAnd un <wpt> GPX standard genera davvero un avviso di prossimità
+# quando ci si avvicina; su Garmin Edge lo stesso waypoint diventa solo una
+# "Saved location" senza alcun avviso — servirebbe un file FIT con Course
+# Point, non implementato (fuori scope). Per questo add_danger_waypoints() è
+# una funzione a sé, mai chiamata da optimize_gpx()/il percorso Garmin: va
+# invocata esplicitamente, solo quando l'utente sceglie la variante OsmAnd.
+CLIMB_DANGER_TYPE = "ClimbDanger"
+DANGER_THRESHOLD_PCT_DEFAULT = 13.0   # soglia su max_200m_pct (gpx_analyzer.detect_climbs)
+WARNING_DISTANCE_M_DEFAULT = 170.0    # anticipo del waypoint rispetto al tratto più duro
+WARNING_DISTANCE_MIN_M = 150.0
+WARNING_DISTANCE_MAX_M = 250.0
 
 
 def is_already_optimized(gpx: gpxpy.gpx.GPX) -> bool:
@@ -240,3 +253,99 @@ def optimize_gpx(
         "waypoints_added": len(orientation_wpts),
         "reduction_pct": reduction_pct,
     }
+
+
+def _interpolate_along_track(
+    points: list,
+    cum_m: list[float],
+    distance_m: float,
+) -> tuple[float, float, float | None]:
+    """Punto (lat, lon, ele) a distance_m lungo il tracciato, per interpolazione lineare
+    tra i due punti più vicini — stesso metodo di interpolate() in analisi_salita.py."""
+    distance_m = min(max(distance_m, 0.0), cum_m[-1])
+    lo, hi = 0, len(points) - 1
+    while lo + 1 < hi:
+        mid = (lo + hi) // 2
+        if cum_m[mid] <= distance_m:
+            lo = mid
+        else:
+            hi = mid
+    a, b = points[lo], points[hi]
+    span = cum_m[hi] - cum_m[lo]
+    t = 0.0 if span == 0 else (distance_m - cum_m[lo]) / span
+    lat = a.latitude + (b.latitude - a.latitude) * t
+    lon = a.longitude + (b.longitude - a.longitude) * t
+    ele = None
+    if a.elevation is not None and b.elevation is not None:
+        ele = a.elevation + (b.elevation - a.elevation) * t
+    return lat, lon, ele
+
+
+def add_danger_waypoints(
+    gpx_path: str,
+    danger_threshold_pct: float = DANGER_THRESHOLD_PCT_DEFAULT,
+    warning_distance_m: float = WARNING_DISTANCE_M_DEFAULT,
+) -> dict:
+    """
+    Aggiunge waypoint di avviso pre-salita al GPX in gpx_path, sovrascrivendolo
+    — SOLO per OsmAnd (vedi nota sopra CLIMB_DANGER_TYPE), mai chiamata dal
+    percorso Garmin (optimize_gpx). Va invocata DOPO optimize_gpx(), sul file
+    già ottimizzato: rileva le salite (gpx_analyzer.detect_climbs, stessa
+    pipeline usata in Builder/Ride Analysis) e inserisce un waypoint
+    warning_distance_m PRIMA del punto più duro (hard_start_km) di ogni
+    salita con max_200m_pct >= danger_threshold_pct.
+
+    Idempotente: rimuove prima ogni waypoint type=ClimbDanger già presente
+    (aggiunto da una chiamata precedente), poi reinserisce — rilanciarla
+    (anche con soglie diverse) non duplica gli avvisi.
+
+    Ritorna {"danger_count": int, "climbs_checked": int}.
+    """
+    with open(gpx_path, "r", encoding="utf-8") as f:
+        gpx = gpxpy.parse(f)
+
+    gpx.waypoints = [wp for wp in gpx.waypoints if wp.type != CLIMB_DANGER_TYPE]
+
+    track_points = [pt for track in gpx.tracks for seg in track.segments for pt in seg.points]
+    if len(track_points) < 4:
+        with open(gpx_path, "w", encoding="utf-8") as f:
+            f.write(gpx.to_xml())
+        return {"danger_count": 0, "climbs_checked": 0}
+
+    cum_m = [0.0] * len(track_points)
+    for i in range(1, len(track_points)):
+        cum_m[i] = cum_m[i - 1] + _dist_m(track_points[i - 1], track_points[i])
+
+    climb_data = detect_climbs(
+        cum_m,
+        [pt.elevation for pt in track_points],
+        [(pt.latitude, pt.longitude) for pt in track_points],
+    )
+
+    danger_count = 0
+    for climb in climb_data["climbs"]:
+        if climb["max_200m_pct"] < danger_threshold_pct:
+            continue
+
+        warn_distance_m = climb["hard_start_km"] * 1000 - warning_distance_m
+        warn_lat, warn_lon, warn_ele = _interpolate_along_track(track_points, cum_m, warn_distance_m)
+
+        gpx.waypoints.append(gpxpy.gpx.GPXWaypoint(
+            latitude=warn_lat,
+            longitude=warn_lon,
+            elevation=warn_ele,
+            name=f"⚠️ DANGER {climb['max_200m_pct']:.0f}% — RAPPORTO AGILE",
+            comment=f"Tra {warning_distance_m:.0f} m: 200 m al {climb['max_200m_pct']:.1f}%",
+            description=(
+                f"Salita critica: inserire ora il rapporto più agile. "
+                f"Tratto di 200 m al {climb['max_200m_pct']:.1f}%."
+            ),
+            symbol="Danger Area",
+            type=CLIMB_DANGER_TYPE,
+        ))
+        danger_count += 1
+
+    with open(gpx_path, "w", encoding="utf-8") as f:
+        f.write(gpx.to_xml())
+
+    return {"danger_count": danger_count, "climbs_checked": len(climb_data["climbs"])}

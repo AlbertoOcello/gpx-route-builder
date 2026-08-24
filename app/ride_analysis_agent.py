@@ -90,7 +90,7 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
             (points[i - 1].latitude, points[i - 1].longitude),
             (points[i].latitude, points[i].longitude),
         ).meters
-    climb_data = detect_climbs(cum_m, [pt.elevation for pt in points])
+    climb_data = detect_climbs(cum_m, [pt.elevation for pt in points], [(pt.latitude, pt.longitude) for pt in points])
 
     # Dislivello totale su elevazione smussata (gpx_analyzer.smooth_elevations),
     # non gpx.get_uphill_downhill() sul dato grezzo — stessa ragione di
@@ -547,6 +547,7 @@ def render_html_report(
         l_c_gain = "Elevation gain"
         l_c_avg_grad = "Avg gradient"
         l_c_max_grad = "Max gradient"
+        l_c_hard_start = "Hardest stretch at"
         l_c_class = "Class"
         l_c_kcal = "Kcal"
         l_c_hr = "Avg HR"
@@ -627,6 +628,7 @@ def render_html_report(
         l_c_gain = "Dislivello"
         l_c_avg_grad = "Pend. media"
         l_c_max_grad = "Pend. max"
+        l_c_hard_start = "Tratto più duro a"
         l_c_class = "Classe"
         l_c_kcal = "Kcal"
         l_c_hr = "FC media"
@@ -844,7 +846,7 @@ def render_html_report(
 
     climbs_section = ""
     if merged_climbs:
-        headers = [l_c_start, l_c_length, l_c_gain, l_c_avg_grad, l_c_max_grad, l_c_class,
+        headers = [l_c_start, l_c_length, l_c_gain, l_c_avg_grad, l_c_max_grad, l_c_hard_start, l_c_class,
                    l_c_kcal, l_c_hr]
         if is_ebike:
             headers.append(l_c_battery)
@@ -866,6 +868,7 @@ def render_html_report(
                 f"{c['elevation_gain_m']:.0f} m",
                 f"{c['avg_gradient_percent']:.1f}%",
                 max_grad_cell,
+                f"km {c['hard_start_km']:.1f}" if c.get("hard_start_km") is not None else "—",
                 f"{c['classification_emoji']} {c['classification']}",
                 f"{c['kcal']} kcal" if c.get("kcal") is not None else "—",
                 f"{c['avg_hr_bpm']} bpm" if c.get("avg_hr_bpm") is not None else "—",
