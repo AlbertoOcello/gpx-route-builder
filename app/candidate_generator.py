@@ -19,6 +19,7 @@ import gpxpy
 from geopy.distance import geodesic
 
 from brouter_client import get_route
+from geocoding_agent import geocode_climbs
 from gpx_analyzer import analyze_gpx, cut_out_and_back_in_gpx, gpx_creator_string
 from area_resolver import OverpassUnavailable, resolve_area_traversal, snap_to_nearest_road
 
@@ -479,6 +480,15 @@ def _generate_one(
             analysis.get("out_and_back_apexes", []),
             named_via_points,
         )
+
+        # 3c. Geocodifica la zona di ciascuna salita — eager, non lazy (decisione
+        # esplicita: il costo va misurato ora, non nascosto dietro un fallback
+        # posticipato). Persistita automaticamente col resto di "analysis" nel
+        # JSON della route (builder_results), nessuna scrittura separata.
+        climbs = analysis.get("climbs") or []
+        if climbs:
+            _emit(f"📍 Variant {label}: geocoding {len(climbs)} climb zone(s)...")
+            geocode_climbs(climbs, context=f"{route_name or strategy['name']} {label}")
 
         _emit(f"✅ Variant {label} completed ({analysis['distance_km']:.1f} km)")
 

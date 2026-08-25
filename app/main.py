@@ -25,13 +25,15 @@ logging.basicConfig(
 import folium
 import gpxpy
 import streamlit as st
+import streamlit.components.v1 as st_components
 from geopy.distance import geodesic
 from streamlit_folium import st_folium
 
 from brouter_client import ensure_tile, get_route
 from candidate_generator import generate_candidates
+from climb_chart import render_climb_chart_html
 from decision_agent import run_decision
-from geocoding_agent import geocode_candidate, geocode_search_raw, reverse_geocode_address
+from geocoding_agent import geocode_candidate, geocode_climbs, geocode_search_raw, reverse_geocode_address
 from gpx_analyzer import (
     OUT_AND_BACK_WARN_THRESHOLD_PCT,
     analyze_gpx,
@@ -355,9 +357,9 @@ def _render_climb_profile_chart(elevation_profile: dict, highlight_range: tuple[
 
 
 def _rows_have_low_confidence_grad(rows: list[dict]) -> bool:
-    """True se almeno una riga (già formattata da _climbs_table_rows /
-    _climbs_analysis_table_rows) contiene il badge ⓘ — per decidere se
-    mostrare la nota esplicativa sotto la tabella, solo quando serve."""
+    """True se almeno una riga (già formattata da _climbs_analysis_table_rows)
+    contiene il badge ⓘ — per decidere se mostrare la nota esplicativa sotto
+    la tabella, solo quando serve."""
     return any("ⓘ" in str(v) for row in rows for v in row.values())
 
 
@@ -372,24 +374,28 @@ def _format_max_grad_cell(c: dict) -> str:
     return f"{c['max_gradient_percent']:.1f}%{suffix}"
 
 
-def _climbs_table_rows(climbs: list[dict], top_n: int | None = 5) -> list[dict]:
-    """Righe tabella 'Salite principali', ordinate per dislivello decrescente."""
-    ranked = sorted(climbs, key=lambda c: c["elevation_gain_m"], reverse=True)
-    if top_n is not None:
-        ranked = ranked[:top_n]
-    rows = []
-    for c in ranked:
-        class_label = t(f"climbs.class.{c['classification']}")
-        rows.append({
-            t("climbs.col_start"): f"{c['start_km']:.1f} km",
-            t("climbs.col_length"): f"{c['length_m']:.0f} m",
-            t("climbs.col_gain"): f"{c['elevation_gain_m']:.0f} m",
-            t("climbs.col_avg_grad"): f"{c['avg_gradient_percent']:.1f}%",
-            t("climbs.col_max_grad"): _format_max_grad_cell(c),
-            t("climbs.col_hard_start"): f"km {c['hard_start_km']:.1f}" if c.get("hard_start_km") is not None else "—",
-            t("climbs.col_class"): f"{c['classification_emoji']} {class_label}",
-        })
-    return rows
+def _render_climb_chart(climbs: list[dict], distance_km: float, profile: dict, title: str = "") -> None:
+    """
+    Embed del grafico salite (profilo SVG + tabella con zona) via
+    st.components.v1.html — climb_chart.render_climb_chart_html è la STESSA
+    funzione generatrice riusata identica nel report HTML scaricabile
+    (ride_analysis_agent.render_html_report): zero duplicazione della logica
+    di rendering tra UI live ed export.
+    """
+    html = render_climb_chart_html(
+        climbs, distance_km,
+        profile.get("distances_km"), profile.get("elevations_m"),
+        lang=active_lang(), danger_threshold_pct=DANGER_THRESHOLD_PCT_DEFAULT,
+        title=title,
+    )
+    # Altezza approssimata: cards riepilogo + grafico + legenda + riquadro
+    # dettaglio + intestazione tabella + una riga per salita (~40px). Non
+    # ottimale (nessun modo semplice di misurare il contenuto reale
+    # dell'iframe da qui), ma scrolling=True lascia comunque una scrollbar
+    # interna se il conteggio sottostima — nessun contenuto tagliato in modo
+    # invisibile.
+    height = 620 + max(0, len(climbs) - 3) * 40
+    st_components.html(html, height=min(height, 1400), scrolling=True)
 
 
 def _candidate_option_label(c: dict, s: dict, winner_id: str | None) -> str:
@@ -613,14 +619,9 @@ def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_la
     climbs_d = analysis_d.get("climbs") or []
     profile_d = analysis_d.get("elevation_profile") or {}
     st.markdown(f"**{t('climbs.header')}**")
-    fig_climb_d = _render_climb_profile_chart(profile_d)
-    if fig_climb_d is not None:
-        st.pyplot(fig_climb_d, use_container_width=True)
     if climbs_d:
-        st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_d)))
-        _rows_d = _climbs_table_rows(climbs_d, top_n=5)
-        st.dataframe(_rows_d, use_container_width=True, hide_index=True)
-        if _rows_have_low_confidence_grad(_rows_d):
+        _render_climb_chart(climbs_d, analysis_d["distance_km"], profile_d, title=f"{route_name} D{d_idx + 1}")
+        if any(c.get("max_gradient_low_confidence") for c in climbs_d):
             st.caption(t("climbs.max_grad_low_confidence_note"))
     else:
         st.caption(t("climbs.no_climbs"))
@@ -1331,6 +1332,12 @@ def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> di
     closure_m = geodesic(coords[0], coords[-1]).meters if len(coords) >= 2 else 0.0
     auto_rt = "loop" if closure_m < 500 else "out_and_back"
     analysis = analyze_gpx(str(gpx_path), route_type=auto_rt)
+    # Geocodifica la zona di ciascuna salita PRIMA del return — eager, non
+    # lazy (geocoding_agent.geocode_climbs): il dict tornato qui finisce in
+    # actual_rides e viene persistito nel JSON della route più avanti nel
+    # flusso, la zona deve già esserci.
+    if analysis.get("climbs"):
+        geocode_climbs(analysis["climbs"], context=f"Opzione D {route_name}")
     return {
         "uploaded_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "original_filename": original_filename,
@@ -2968,17 +2975,12 @@ with tab_builder:
                     climbs_b = c_b["analysis"].get("climbs") or []
                     profile_b = c_b["analysis"].get("elevation_profile") or {}
                     st.markdown(f"**{t('climbs.header')}**")
-                    fig_climb_b = _render_climb_profile_chart(profile_b)
-                    if fig_climb_b is not None:
-                        st.pyplot(fig_climb_b, use_container_width=True)
                     if climbs_b:
-                        st.caption(t("climbs.main_climbs_caption").format(n=len(climbs_b)))
-                        _rows_b = _climbs_table_rows(climbs_b, top_n=5)
-                        st.dataframe(
-                            _rows_b,
-                            use_container_width=True, hide_index=True,
+                        _render_climb_chart(
+                            climbs_b, c_b["analysis"]["distance_km"], profile_b,
+                            title=f"{bld_sel} {c_b['id']}",
                         )
-                        if _rows_have_low_confidence_grad(_rows_b):
+                        if any(c.get("max_gradient_low_confidence") for c in climbs_b):
                             st.caption(t("climbs.max_grad_low_confidence_note"))
                     else:
                         st.caption(t("climbs.no_climbs"))
@@ -3682,6 +3684,9 @@ with tab_ride:
             _merged_climbs = ride_analysis.merge_climbs_analysis(_climbs_obj, _r.get("climbs_analysis"))
             if _merged_climbs:
                 st.subheader(t("ride_analysis.climbs_header"))
+                _render_climb_chart(
+                    _climbs_obj, _rg.get("distance_km", 0.0), _rg.get("elevation_profile") or {},
+                )
                 _hardest_idx = _r.get("hardest_climb_index")
                 _hardest_reason = _r.get("hardest_climb_reason") or ""
                 _hc = next((c for c in _merged_climbs if c["climb_index"] == _hardest_idx), None)

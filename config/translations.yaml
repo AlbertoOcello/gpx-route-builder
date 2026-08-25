@@ -311,7 +311,6 @@ it:
   # ── Analisi salite (condivisa Builder + Ride Analysis) ─────────────────────────
   climbs:
     header: "⛰️ Profilo altimetrico e salite"
-    main_climbs_caption: "{n} salite rilevate — le 5 principali per dislivello:"
     no_climbs: "Nessuna salita rilevante rilevata su questo percorso."
     col_start: "km inizio"
     col_length: "Lunghezza"
@@ -946,7 +945,6 @@ en:
   # ── Climb analysis (shared Builder + Ride Analysis) ────────────────────────────
   climbs:
     header: "⛰️ Elevation profile and climbs"
-    main_climbs_caption: "{n} climbs detected — top 5 by elevation gain:"
     no_climbs: "No significant climb detected on this route."
     col_start: "Start km"
     col_length: "Length"

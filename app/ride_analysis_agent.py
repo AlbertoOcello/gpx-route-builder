@@ -21,6 +21,8 @@ import gpxpy
 from geopy.distance import geodesic
 
 import ai_client
+from climb_chart import render_climb_chart_html
+from geocoding_agent import geocode_climbs
 from gpx_analyzer import detect_climbs, smooth_elevations, sum_uphill_downhill
 
 _log = logging.getLogger(__name__)
@@ -91,6 +93,11 @@ def analyze_gpx_bytes(file_bytes: bytes) -> dict:
             (points[i].latitude, points[i].longitude),
         ).meters
     climb_data = detect_climbs(cum_m, [pt.elevation for pt in points], [(pt.latitude, pt.longitude) for pt in points])
+
+    # Geocodifica la zona di ciascuna salita — eager (vedi geocoding_agent.geocode_climbs),
+    # non calcolata al volo quando l'utente apre la vista grafica.
+    if climb_data["climbs"]:
+        geocode_climbs(climb_data["climbs"], context="ride analysis")
 
     # Dislivello totale su elevazione smussata (gpx_analyzer.smooth_elevations),
     # non gpx.get_uphill_downhill() sul dato grezzo — stessa ragione di
@@ -839,6 +846,20 @@ def render_html_report(
         results_header = s_results_ai
         ai_caption_html = f'<p class="ai-caption">{_html_mod.escape(ai_caption_text)}</p>'
 
+    # ── Grafico salite (profilo SVG + tabella con zona) ─────────────────────────
+    # Stessa funzione generatrice di main.py._render_climb_chart — nessuna
+    # duplicazione della logica di rendering tra UI live e questo report.
+    climb_chart_section = ""
+    _obj_climbs = gpx_stats.get("climbs") or []
+    if _obj_climbs:
+        _profile = gpx_stats.get("elevation_profile") or {}
+        _climb_chart_html = render_climb_chart_html(
+            _obj_climbs, gpx_stats.get("distance_km", 0.0),
+            _profile.get("distances_km"), _profile.get("elevations_m"),
+            lang=("en" if is_en else "it"),
+        )
+        climb_chart_section = f'<div class="card">{_climb_chart_html}</div>'
+
     # ── Climbs table ──────────────────────────────────────────────────────────
     merged_climbs = merge_climbs_analysis(gpx_stats.get("climbs"), analysis.get("climbs_analysis"))
     hardest_idx = analysis.get("hardest_climb_index")
@@ -922,7 +943,7 @@ def render_html_report(
 <style>
 *{{box-sizing:border-box;margin:0;padding:0}}
 body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;line-height:1.5}}
-.wrap{{max-width:720px;margin:0 auto;padding:28px 16px}}
+.wrap{{max-width:960px;margin:0 auto;padding:28px 16px}}
 .hdr{{background:linear-gradient(135deg,#1a1a2e,#0f3460);color:#fff;border-radius:12px;padding:28px 32px;margin-bottom:20px}}
 .hdr h1{{font-size:1.7rem;font-weight:700;margin-bottom:4px}}
 .hdr .sub{{font-size:.88rem;opacity:.7;margin-bottom:10px}}
@@ -1024,6 +1045,8 @@ body{{font-family:'Segoe UI',system-ui,sans-serif;background:#f4f6fb;color:#222;
     <div class="metric"><div class="lbl">{l_fatigue}</div><div class="val"><span class="fatigue-badge">{fatigue}/10</span></div></div>
   </div>
 </div>
+
+{climb_chart_section}
 
 {climbs_section}
 

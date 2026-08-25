@@ -8,6 +8,7 @@ Errori: geocoding fallito su singolo waypoint non blocca la pipeline.
 """
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from pathlib import Path
@@ -17,6 +18,8 @@ from geopy.exc import GeocoderServiceError, GeocoderTimedOut, GeocoderUnavailabl
 
 # DB unificato (SRS §10) — geocoding_cache è ora in gpx_route_builder.sqlite
 from db import DB_PATH as _DB_PATH  # noqa: E402 (import dopo stdlib)
+
+log = logging.getLogger(__name__)
 
 _GEOLOCATOR = Nominatim(user_agent="gpx-route-builder/0.3")
 
@@ -177,6 +180,57 @@ def reverse_geocode_address(lat: float, lon: float) -> str | None:
     time.sleep(1.0)
     loc = _GEOLOCATOR.reverse((lat, lon), language="it")
     return loc.address if loc else None
+
+
+_CLIMB_ZONE_UNAVAILABLE = "Zona non disponibile"
+
+
+def geocode_climbs(climbs: list[dict], context: str = "") -> list[dict]:
+    """
+    Popola climb["zone"] per ciascuna salita rilevata (gpx_analyzer.detect_climbs)
+    via reverse_geocode_address() sulle coordinate del punto più duro
+    (hard_lat/hard_lon) — EAGER, non lazy: va chiamata subito dopo il
+    rilevamento (candidate_generator, ride_analysis_agent, Opzione D), non al
+    momento in cui l'utente apre una vista grafica. Decisione esplicita
+    dell'utente: il costo (1s di attesa per chiamata, cortesia Nominatim, non
+    cachato qui a differenza di geocode_place — reverse_geocode_address non
+    usa la cache SQLite) è accettato consapevolmente ora, in vista di un
+    futuro redesign del Builder che lo renderà marginale.
+
+    Il fallimento su una singola salita (rete irraggiungibile, nessun
+    risultato) imposta zone="Zona non disponibile" e NON blocca le altre né
+    il chiamante. context è solo per i log (es. nome route + slot candidato),
+    facoltativo.
+
+    Muta e ritorna la stessa lista di dict passata in input.
+    """
+    if not climbs:
+        return climbs
+
+    label = f" [{context}]" if context else ""
+    t0 = time.perf_counter()
+    failures = 0
+    for climb in climbs:
+        lat, lon = climb.get("hard_lat"), climb.get("hard_lon")
+        if lat is None or lon is None:
+            climb["zone"] = _CLIMB_ZONE_UNAVAILABLE
+            failures += 1
+            continue
+        try:
+            addr = reverse_geocode_address(lat, lon)
+        except Exception as exc:
+            log.warning("geocode_climbs%s: reverse geocoding fallito per (%.5f,%.5f): %s", label, lat, lon, exc)
+            addr = None
+        climb["zone"] = addr if addr else _CLIMB_ZONE_UNAVAILABLE
+        if not addr:
+            failures += 1
+
+    elapsed = time.perf_counter() - t0
+    log.info(
+        "geocode_climbs%s: %d salite geocodificate in %.1fs (%d falliti/non disponibili)",
+        label, len(climbs), elapsed, failures,
+    )
+    return climbs
 
 
 def geocode_candidate(candidate: dict) -> dict:
