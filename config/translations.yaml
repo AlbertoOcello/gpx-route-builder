@@ -57,6 +57,19 @@ it:
     orphan_dir_row: "📁 **{name}** — {n} file GPX · {size} · {date}"
     orphan_report_row: "📄 **{name}** — {size} · {date}"
     orphan_confirm_msg: "Eliminare **{name}** per sempre? L'operazione non è reversibile."
+    history_expander: "📊 Storico collegamenti ({n})"
+
+  # ── Tracciabilità run Builder (Parte B) — etichette condivise da Ride
+  # Analysis, Post Ride e File → Le mie route per mostrare a quale run/
+  # candidato Builder (o quale Opzione D) si riferisce un'analisi/confronto/
+  # feedback ───────────────────────────────────────────────────────────────
+  history:
+    ref_untracked: "run non tracciato"
+    ref_with_candidate: "riferita al run del {date}, candidato {candidate}"
+    ref_no_candidate: "riferita al run del {date}"
+    ref_actual_ride: "riferita al percorso pedalato caricato il {date}"
+    ref_orphaned: "riferita al run/percorso del {date} (non più presente)"
+    ref_not_latest: "◦ non è il run più recente"
 
   # ── Placeholder condiviso dai tab workspace vincolati a una route aperta ────
   workspace:
@@ -253,13 +266,15 @@ it:
     metric_type: "Tipo"
     metric_waypoints: "Waypoint"
     est_km: "📏 Stima distanza: ~{est:.0f} km (linea d'aria ×1.6)"
-    profiles_label: "Profili BRouter (3 varianti)"
-    profiles_help: "Seleziona esattamente 3 profili per i 3 candidati A/B/C"
-    elevpref_help: "Precompilata dalla scelta fatta nel Planner, ma resta modificabile qui: i 3 candidati A/B/C hanno dislivelli diversi tra loro, quindi questa scelta influenza quale dei tre vince — anche se non cambia più la geografia già decisa nel Planner."
+    profiles_label: "Profili BRouter (uno o più candidati)"
+    profiles_help: "Seleziona uno o più profili: ognuno genera un candidato. Più profili selezionati richiedono più tempo (vedi stima sotto)."
+    elevpref_help: "Precompilata dalla scelta fatta nel Planner, ma resta modificabile qui: i candidati generati hanno dislivelli diversi tra loro, quindi questa scelta influenza quale dei candidati vince — anche se non cambia più la geografia già decisa nel Planner."
     max_elev_label: "Dislivello max (m)"
     max_ss_label: "Max SS% (strade statali)"
     max_sp_label: "Max SP% (strade provinciali)"
-    warn_profiles: "Seleziona esattamente 3 profili per generare i 3 candidati."
+    warn_profiles: "Seleziona almeno un profilo per generare i candidati."
+    time_estimate_sec: "⏱️ Profili selezionati: {n} — stima ~{low}-{high} secondi (BRouter/Overpass + geocodifica salite)."
+    time_estimate_min: "⏱️ Profili selezionati: {n} — stima ~{low}-{high} minuti (BRouter/Overpass + geocodifica salite)."
     btn_generate: "🚴 Genera percorso reale"
     brouter_error: "❌ **BRouter non raggiungibile** su `{url}`. Avvia BRouter prima di generare i percorsi.  \nDalla root del progetto:  \n`java -jar brouter/brouter.jar brouter/segments4 brouter/profiles2 brouter/customprofiles 17777`"
     tile_progress: "Verifica tile OSM BRouter..."
@@ -307,6 +322,17 @@ it:
     winner_dl: "⬇ Scarica GPX scelto —"
     decision_choice: "**Scelta richiesta:**"
     decision_option: "Seleziona un'opzione:"
+    compare_all_header: "🏆 Confronta tutti i percorsi di questa route"
+    compare_all_intro: "Pool di {n} percorsi (tutte le run Builder + percorsi realmente pedalati di questa route). Nessuna esecuzione automatica — solo su richiesta."
+    compare_all_disabled_hint: "Serve più di un percorso salvato (run Builder o Opzione D) per poter confrontare."
+    compare_all_btn: "🏆 Confronta tutti i percorsi di questa route"
+    compare_all_running: "Rescoring e Decision Agent sull'intero pool..."
+    compare_all_no_candidates: "❌ Nessun candidato Builder valido nel pool (solo Opzioni D, che non entrano nello scoring)."
+    compare_all_error: "❌ Errore nel confronto:"
+    compare_all_col_run: "Run/percorso"
+    compare_all_actual_ride_label: "Percorso realmente pedalato"
+    compare_all_no_score: "dati oggettivi — mai candidato al titolo"
+    compare_all_winner_id_mismatch: "⚠️ Il Decision Agent ha indicato un vincitore ({id}) non riconoscibile nel pool — riprova."
 
   # ── Analisi salite (condivisa Builder + Ride Analysis) ─────────────────────────
   climbs:
@@ -397,6 +423,7 @@ it:
     route_detected: "Route identificata: **{name}** ({note})"
     no_plan: "Carica il GPX pianificato per identificare la route e abilitare il confronto."
     no_tracks: "Uno o entrambi i file GPX non contengono tracce."
+    cmp_linked_to_run: "🔗 Confronto {ref}"
     compare_locations_header: "#### 📍 Partenza / Arrivo"
     compare_metrics_header: "#### Confronto metriche"
     col_metric: "**Metrica**"
@@ -448,6 +475,7 @@ it:
     fb_notes_placeholder: "Commenti opzionali..."
     btn_fb_save: "Salva feedback"
     fb_saved: "Feedback salvato."
+    fb_linked_to_run: "🔗 Feedback {ref}"
     fb_obstacles: " {n} segnaposto 'problema' aggiunti a **known_obstacles** — il Builder li eviterà nelle prossime generazioni."
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
@@ -607,6 +635,7 @@ it:
     download_name: "analisi_giro.html"
     route_link: "🗺️ Route collegata (opzionale)"
     route_link_none: "— Nessuna —"
+    linked_to_run: "🔗 Analisi {ref}"
     need_gpx: "⬆️ Carica un file GPX per procedere."
     need_profile: "👤 Seleziona o crea e salva un profilo per procedere."
     ebike_na: "N/D — non eBike"
@@ -691,6 +720,18 @@ en:
     orphan_dir_row: "📁 **{name}** — {n} GPX files · {size} · {date}"
     orphan_report_row: "📄 **{name}** — {size} · {date}"
     orphan_confirm_msg: "Permanently delete **{name}**? This cannot be undone."
+    history_expander: "📊 Linked history ({n})"
+
+  # ── Builder run traceability (Part B) — labels shared by Ride Analysis,
+  # Post Ride and File → My routes to show which Builder run/candidate (or
+  # which Opzione D) an analysis/comparison/feedback entry refers to ───────
+  history:
+    ref_untracked: "untracked run"
+    ref_with_candidate: "refers to the run of {date}, candidate {candidate}"
+    ref_no_candidate: "refers to the run of {date}"
+    ref_actual_ride: "refers to the ride uploaded on {date}"
+    ref_orphaned: "refers to the run/ride of {date} (no longer present)"
+    ref_not_latest: "◦ not the most recent run"
 
   # ── Placeholder shared by workspace tabs bound to an open route ────────────
   workspace:
@@ -887,13 +928,15 @@ en:
     metric_type: "Type"
     metric_waypoints: "Waypoints"
     est_km: "📏 Estimated distance: ~{est:.0f} km (straight-line ×1.6)"
-    profiles_label: "BRouter profiles (3 variants)"
-    profiles_help: "Select exactly 3 profiles for the 3 candidates A/B/C"
-    elevpref_help: "Pre-filled from the choice made in the Planner, but still editable here: the 3 A/B/C candidates have different elevation gains from each other, so this choice affects which of the three wins — even though it no longer changes the geography already decided in the Planner."
+    profiles_label: "BRouter profiles (one or more candidates)"
+    profiles_help: "Select one or more profiles: each generates one candidate. More selected profiles take longer (see estimate below)."
+    elevpref_help: "Pre-filled from the choice made in the Planner, but still editable here: the generated candidates have different elevation gains from each other, so this choice affects which candidate wins — even though it no longer changes the geography already decided in the Planner."
     max_elev_label: "Max elevation gain (m)"
     max_ss_label: "Max SS% (state roads)"
     max_sp_label: "Max SP% (provincial roads)"
-    warn_profiles: "Select exactly 3 profiles to generate the 3 candidates."
+    warn_profiles: "Select at least one profile to generate the candidates."
+    time_estimate_sec: "⏱️ Selected profiles: {n} — estimate ~{low}-{high} seconds (BRouter/Overpass + climb geocoding)."
+    time_estimate_min: "⏱️ Selected profiles: {n} — estimate ~{low}-{high} minutes (BRouter/Overpass + climb geocoding)."
     btn_generate: "🚴 Generate actual route"
     brouter_error: "❌ **BRouter unreachable** on `{url}`. Start BRouter before generating routes.  \nFrom the project root:  \n`java -jar brouter/brouter.jar brouter/segments4 brouter/profiles2 brouter/customprofiles 17777`"
     tile_progress: "Checking BRouter OSM tile..."
@@ -941,6 +984,17 @@ en:
     winner_dl: "⬇ Download chosen GPX —"
     decision_choice: "**Choice required:**"
     decision_option: "Select an option:"
+    compare_all_header: "🏆 Compare all routes for this route"
+    compare_all_intro: "Pool of {n} routes (every Builder run + actually ridden routes for this route). No automatic run — on demand only."
+    compare_all_disabled_hint: "Needs more than one saved route (Builder run or Opzione D) to compare."
+    compare_all_btn: "🏆 Compare all routes for this route"
+    compare_all_running: "Rescoring and Decision Agent over the whole pool..."
+    compare_all_no_candidates: "❌ No valid Builder candidate in the pool (only Opzione D rides, which don't enter scoring)."
+    compare_all_error: "❌ Comparison error:"
+    compare_all_col_run: "Run/ride"
+    compare_all_actual_ride_label: "Actually ridden route"
+    compare_all_no_score: "objective data — never a candidate for the title"
+    compare_all_winner_id_mismatch: "⚠️ The Decision Agent picked a winner ({id}) that isn't recognized in the pool — try again."
 
   # ── Climb analysis (shared Builder + Ride Analysis) ────────────────────────────
   climbs:
@@ -1030,6 +1084,7 @@ en:
     route_detected: "Route identified: **{name}** ({note})"
     no_plan: "Load the planned GPX to identify the route and enable comparison."
     no_tracks: "One or both GPX files contain no tracks."
+    cmp_linked_to_run: "🔗 Comparison {ref}"
     compare_locations_header: "#### 📍 Start / End"
     compare_metrics_header: "#### Metrics comparison"
     col_metric: "**Metric**"
@@ -1081,6 +1136,7 @@ en:
     fb_notes_placeholder: "Optional comments..."
     btn_fb_save: "Save feedback"
     fb_saved: "Feedback saved."
+    fb_linked_to_run: "🔗 Feedback {ref}"
     fb_obstacles: " {n} 'problem' markers added to **known_obstacles** — the Builder will avoid them in future generations."
 
   # ── Debug ─────────────────────────────────────────────────────────────────────
@@ -1240,6 +1296,7 @@ en:
     download_name: "ride_analysis.html"
     route_link: "🗺️ Linked route (optional)"
     route_link_none: "— None —"
+    linked_to_run: "🔗 Analysis {ref}"
     need_gpx: "⬆️ Upload a GPX file to proceed."
     need_profile: "👤 Select or create and save a profile to proceed."
     ebike_na: "N/A — not an eBike"

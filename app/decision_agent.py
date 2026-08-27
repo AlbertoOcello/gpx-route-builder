@@ -30,7 +30,7 @@ class RankingEntry(BaseModel):
 
 
 class DecisionReport(BaseModel):
-    winner: str | None              # "A" | "B" | "C" | null se serve input utente
+    winner: str | None              # id del candidato vincitore, o null se serve input utente
     rationale: str
     question_for_user: str | None = None
     # Opzioni strutturate per la UI (radio buttons) — obbligatorie quando winner=null.
@@ -70,7 +70,7 @@ _OAB_PROMPT_NOTE = (
     f"stradale\" invece di una frase vaga senza nominare la causa.\n"
 )
 
-_SYSTEM_PROMPT = """Sei un esperto cicloturistico che aiuta a scegliere il percorso migliore tra tre candidati.
+_SYSTEM_PROMPT = """Sei un esperto cicloturistico che aiuta a scegliere il percorso migliore tra i candidati proposti (possono essere 1, 2 o più).
 
 Ricevi i candidati con i loro punteggi di scoring. Nota importante sui punteggi:
 - I punteggi "placeholder: true" (traffic, surface, scenic, user_preferences) sono stime neutre
@@ -96,19 +96,25 @@ Regole di decisione:
 4. Se due o più candidati con discarded=false hanno total_score con differenza < 5 punti:
    imposta winner=null, formula una domanda in italiano in question_for_user, e in options elenca
    i candidati in competizione nel formato ESATTO: "Candidato {id} — {strategy_name} ({profile})"
-   (es. "Candidato B — Valle Cesano (gravel)").
-5. Rispondi SOLO con JSON valido, niente testo prima o dopo.
+   (es. "Candidato B — Valle Cesano (gravel)"). Questa regola richiede almeno due candidati
+   eleggibili per scattare: se il pool contiene un solo candidato con discarded=false, quello
+   vince direttamente per la regola 2, senza bisogno di confrontarlo con nessun altro.
+5. Se è presente una sezione "Percorsi realmente pedalati (riferimento informativo)": quei
+   percorsi NON sono candidati — non hanno un id nel payload candidati e non possono MAI
+   comparire in winner, ranking od options. Usali solo come contesto (es. per notare che il
+   vincitore scelto è più/meno impegnativo di quanto l'utente ha già pedalato realmente).
+6. Rispondi SOLO con JSON valido, niente testo prima o dopo.
 
-Schema JSON atteso (includere SEMPRE tutti i campi):
+Schema JSON atteso (includere SEMPRE tutti i campi). Gli id validi per "winner" e per ogni
+voce di "ranking" sono quelli presenti nel payload candidati qui sotto — il payload può
+contenere 1, 2 o più candidati, non necessariamente 3:
 {
-  "winner": "A" | "B" | "C" | null,
+  "winner": "<id candidato>" | null,
   "rationale": "motivazione in italiano, 2-3 frasi, citando dati reali (km, dislivello)",
   "question_for_user": "domanda in italiano se winner=null, altrimenti null",
   "options": [],
   "ranking": [
-    {"id": "A", "total_score": 0.0, "rank": 3, "note": "scartato — motivo"},
-    {"id": "B", "total_score": 63.1, "rank": 2, "note": "..."},
-    {"id": "C", "total_score": 79.0, "rank": 1, "note": "..."}
+    {"id": "<id>", "total_score": 0.0, "rank": 1, "note": "motivo del ranking, o 'scartato — motivo'"}
   ]
 }"""
 
@@ -119,11 +125,20 @@ def _extract_json(text: str) -> str:
     return m.group(1) if m else text
 
 
-def run_decision(candidates: list[dict], scored: list[dict], request: dict) -> DecisionReport:
+def run_decision(
+    candidates: list[dict], scored: list[dict], request: dict,
+    actual_rides: list[dict] | None = None,
+) -> DecisionReport:
     """
-    candidates : lista candidate dict da Candidate Generator (SRS §5.4 esteso)
-    scored     : lista scoring dict da scoring_engine.score_candidate()
-    request    : RouteRequest dict (SRS §5.1)
+    candidates   : lista candidate dict da Candidate Generator (SRS §5.4 esteso)
+    scored       : lista scoring dict da scoring_engine.score_candidate()
+    request      : RouteRequest dict (SRS §5.1)
+    actual_rides : percorsi realmente pedalati (Opzione D), opzionale — solo
+                   riferimento informativo per il modello (Builder redesign,
+                   Parte C): non hanno un id nel payload candidati e non
+                   possono mai vincere (niente request["target_km"] concettuale
+                   per una D, restano fuori da score_candidate/run_decision
+                   come candidati veri e propri).
 
     Ritorna DecisionReport validato con Pydantic (SRS §5.6).
     """
@@ -163,6 +178,21 @@ def run_decision(candidates: list[dict], scored: list[dict], request: dict) -> D
         "Candidati con punteggi:\n"
         + json.dumps(payload, indent=2, ensure_ascii=False)
     )
+
+    if actual_rides:
+        rides_payload = [
+            {
+                "uploaded_at": r.get("uploaded_at"),
+                "distance_km": (r.get("analysis") or {}).get("distance_km"),
+                "elevation_gain_m": (r.get("analysis") or {}).get("elevation_gain_m"),
+            }
+            for r in actual_rides
+        ]
+        user_prompt += (
+            "\n\nPercorsi realmente pedalati (riferimento informativo, NON candidati — "
+            "non hanno un id, non possono comparire in winner/ranking/options):\n"
+            + json.dumps(rides_payload, indent=2, ensure_ascii=False)
+        )
 
     text = ai_client.generate_json(_SYSTEM_PROMPT, user_prompt, max_tokens=2000)
     if not text:

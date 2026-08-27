@@ -26,7 +26,7 @@ from area_resolver import OverpassUnavailable, resolve_area_traversal, snap_to_n
 log = logging.getLogger(__name__)
 
 _ROUTES_DIR = Path(__file__).parent.parent / "routes" / "generated"
-_SLOT_LABELS = ["A", "B", "C"]
+_SLOT_LABELS = ["A", "B", "C", "D", "E", "F", "G"]
 
 
 # ─── Traversal expansion ──────────────────────────────────────────────────────

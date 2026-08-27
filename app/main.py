@@ -30,7 +30,7 @@ from geopy.distance import geodesic
 from streamlit_folium import st_folium
 
 from brouter_client import ensure_tile, get_route
-from candidate_generator import generate_candidates
+from candidate_generator import _SLOT_LABELS, generate_candidates
 from climb_chart import render_climb_chart_html
 from decision_agent import run_decision
 from geocoding_agent import geocode_candidate, geocode_climbs, geocode_search_raw, reverse_geocode_address
@@ -676,6 +676,8 @@ def _render_actual_ride_detail(ar_d: dict, d_idx: int, route_name: str, start_la
                     "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                     "is_actual_ride": True,
                     "actual_ride_index": d_idx,
+                    "builder_run_id": ar_d.get("uploaded_at"),
+                    "candidate_id": None,
                     "gpx_filename": ar_d.get("original_filename"),
                     "profile_name": _active_profile_d.get("name"),
                     "battery_start_pct": _batt_start_d,
@@ -1031,6 +1033,84 @@ def _normalize_builder_results(data: dict) -> list[dict]:
     if isinstance(br, dict):
         return [br] if br else []
     return list(br)
+
+
+# ── Tracciabilità run→candidato ──────────────────────────────────────────────
+# builder_run_id = "generated_at" della run in builder_results (già univoco tra
+# run diverse, nessun nuovo campo necessario) — per un percorso realmente
+# pedalato (actual_rides) l'identificatore equivalente è "uploaded_at" del
+# record, già presente su ognuno. candidate_id = "id" del candidato dentro la
+# run (None per un'Opzione D, che non ha candidati). Ogni nuova voce di
+# ride_analysis_history/comparison_history/feedback_history porta con sé
+# questa coppia per sapere sempre da quale run/candidato/percorso specifico è
+# stata originata (main.py, redesign Builder).
+
+def _fmt_ref_dt(iso_str: str | None) -> str:
+    """Formatta un 'generated_at'/'uploaded_at' ISO in 'YYYY-MM-DD HH:MM' per la UI."""
+    if not iso_str:
+        return "—"
+    return iso_str.replace("T", " ")[:16]
+
+
+def _infer_builder_ref(route_name: str, route_data: dict, gpx_stem: str) -> tuple[str | None, str | None]:
+    """
+    (builder_run_id, candidate_id) da collegare a un'analisi/confronto fatto su
+    un GPX riconducibile a un candidato Builder — inferito dal nome del file
+    scaricato ("{route_name}_{candidate_id}.gpx", stesso pattern di tutti i
+    download button del Builder, vedi _gpx_bytes_with_name). Il filename da
+    solo non incorpora QUALE run l'ha generato (ogni run rietichetta i suoi
+    candidati da "A": lo stesso "MyRoute_A.gpx" può esistere per run diverse)
+    — cerchiamo quindi a partire dalla run più recente andando a ritroso,
+    stesso best-effort già usato per la selezione candidato in Post Ride →
+    Feedback (il caso comune: genera → scarica/analizza subito). Se il
+    filename non combacia con nessun candidato di nessuna run salvata, non
+    prova a indovinare: torna (None, None) — un riferimento assente è meglio
+    di uno sbagliato (es. GPX esterno non generato dal Builder).
+    """
+    m = re.match(rf"^{re.escape(route_name)}_([A-Za-z0-9]+)$", gpx_stem or "")
+    if not m:
+        return None, None
+    candidate_id = m.group(1)
+    for run in reversed(_normalize_builder_results(route_data)):
+        if any(c.get("id") == candidate_id for c in run.get("candidates", [])):
+            return run.get("generated_at"), candidate_id
+    return None, None
+
+
+def _format_run_ref(route_data: dict, builder_run_id: str | None, candidate_id: str | None) -> str:
+    """
+    Etichetta leggibile del run Builder (o percorso Opzione D) a cui
+    un'analisi/confronto/feedback è collegato, con indicazione se quel
+    run/percorso non è più il più recente per questa route.
+    """
+    if not builder_run_id:
+        return t("history.ref_untracked")
+
+    builder_runs = _normalize_builder_results(route_data)
+    run = next((r for r in builder_runs if r.get("generated_at") == builder_run_id), None)
+    if run is not None:
+        if candidate_id:
+            label = t("history.ref_with_candidate").format(
+                date=_fmt_ref_dt(builder_run_id), candidate=candidate_id,
+            )
+        else:
+            label = t("history.ref_no_candidate").format(date=_fmt_ref_dt(builder_run_id))
+        if builder_runs and builder_runs[-1].get("generated_at") != builder_run_id:
+            label += " " + t("history.ref_not_latest")
+        return label
+
+    actual_rides = route_data.get("actual_rides", [])
+    ride = next((r for r in actual_rides if r.get("uploaded_at") == builder_run_id), None)
+    if ride is not None:
+        label = t("history.ref_actual_ride").format(date=_fmt_ref_dt(builder_run_id))
+        if actual_rides and actual_rides[-1].get("uploaded_at") != builder_run_id:
+            label += " " + t("history.ref_not_latest")
+        return label
+
+    # Il run/percorso a cui questa voce era collegata non esiste più (route
+    # aggiornata/rigenerata da allora) — mostriamo comunque la data salvata
+    # invece di perdere l'informazione.
+    return t("history.ref_orphaned").format(date=_fmt_ref_dt(builder_run_id))
 
 
 def _count_route_artifacts(route_data: dict) -> dict:
@@ -1531,6 +1611,35 @@ with tab_file:
                     if st.button("🗑️", key=f"file_my_del_btn_{_mname}", help=t("file.delete_btn")):
                         st.session_state[f"_file_delete_pending_{_mname}"] = True
                         st.rerun()
+
+                # ── Storico collegato a un run/candidato/percorso specifico ──
+                # Ogni voce di ride_analysis_history/comparison_history/
+                # feedback_history sa a quale run Builder (o quale Opzione D)
+                # si riferisce — con indicatore se quel run non è più il più
+                # recente per questa route (tracciabilità run→candidato).
+                _mride_hist = _mdata.get("ride_analysis_history", [])
+                _mcmp_hist = _mdata.get("comparison_history", [])
+                _mfb_hist = _mdata.get("feedback_history", [])
+                _mhist_total = len(_mride_hist) + len(_mcmp_hist) + len(_mfb_hist)
+                if _mhist_total:
+                    with st.expander(t("file.history_expander").format(n=_mhist_total)):
+                        for _h in _mride_hist:
+                            st.caption(
+                                f"🔋 {_fmt_ref_dt(_h.get('recorded_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h.get("candidate_id"))
+                            )
+                        for _h in _mcmp_hist:
+                            st.caption(
+                                f"🏁 {_fmt_ref_dt(_h.get('compared_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h.get("candidate_id"))
+                            )
+                        for _h in _mfb_hist:
+                            _h_cand = _h.get("candidate_id")
+                            _h_cand = None if _h_cand in (None, "—") else _h_cand
+                            st.caption(
+                                f"⭐ {_fmt_ref_dt(_h.get('recorded_at'))} — "
+                                + _format_run_ref(_mdata, _h.get("builder_run_id"), _h_cand)
+                            )
 
                 # ── Rinomina inline ──────────────────────────────────────────
                 if st.session_state.get(f"_file_rename_pending_{_mname}"):
@@ -2569,7 +2678,7 @@ with tab_builder:
                 t("builder.profiles_label"),
                 ["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic",
                  "roadbike_fast", "trekking", "gravel", "fastbike"],
-                default=["ebike_asphalt_safe", "ebike_gravel_easy", "ebike_scenic"],
+                default=["ebike_asphalt_safe"],
                 key="bld_profiles",
                 help=t("builder.profiles_help"),
             )
@@ -2582,9 +2691,24 @@ with tab_builder:
                 help_text=t("builder.elevpref_help"),
             )
 
-        profiles_valid = len(bld_profiles) == 3
+        profiles_valid = len(bld_profiles) >= 1
         if not profiles_valid:
             st.warning(t("builder.warn_profiles"))
+        elif bld_profiles:
+            # Stima basata sui tempi reali misurati: ~1.2-1.3s/salita per la
+            # geocodifica zone (vedi geocode_climbs) + una stima approssimata
+            # per la chiamata BRouter/Overpass di ogni candidato (non ancora
+            # cronometrata con la stessa precisione, quindi range più largo).
+            _bld_low_s = len(bld_profiles) * 15
+            _bld_high_s = len(bld_profiles) * 40
+            if _bld_high_s < 60:
+                st.caption(t("builder.time_estimate_sec").format(
+                    n=len(bld_profiles), low=_bld_low_s, high=_bld_high_s,
+                ))
+            else:
+                st.caption(t("builder.time_estimate_min").format(
+                    n=len(bld_profiles), low=f"{_bld_low_s / 60:.1f}", high=f"{_bld_high_s / 60:.1f}",
+                ))
 
         bld_gen_btn = st.button(
             t("builder.btn_generate"),
@@ -2640,7 +2764,7 @@ with tab_builder:
                 # Build 3 strategy dicts from Planner waypoints (already geocoded)
                 strategies_b = []
                 for i, profile in enumerate(bld_profiles):
-                    label = ["A", "B", "C"][i]
+                    label = _SLOT_LABELS[i] if i < len(_SLOT_LABELS) else str(i)
                     waypoints_b = [
                         {
                             "role": wp["role"],
@@ -3078,6 +3202,189 @@ with tab_builder:
                 else:
                     _d_idx2 = d_view_opts.index(d_sel_view) - 1
                     _render_actual_ride_detail(actual_rides_b[_d_idx2], _d_idx2, bld_sel, start_lat_b, start_lon_b)
+
+        # ── Confronta tutti i percorsi di questa route (Parte C) ────────────
+        # Sezione manuale separata dal blocco "Explore candidates" sopra (che
+        # resta legato solo all'ultima run in sessione/su disco): qui il pool
+        # comprende OGNI candidato di OGNI run Builder salvata per questa
+        # route più ogni percorso realmente pedalato (Opzione D). Nessuna
+        # esecuzione automatica dopo la generazione — solo su click esplicito
+        # di questo bottone, abilitato solo se il pool ha più di un elemento.
+        st.divider()
+        st.subheader(t("builder.compare_all_header"))
+
+        _all_runs_b = _normalize_builder_results(rd_b)
+        _pool_total_b = sum(len(r.get("candidates", [])) for r in _all_runs_b) + len(actual_rides_b)
+        st.caption(
+            t("builder.compare_all_intro").format(n=_pool_total_b) if _pool_total_b > 1
+            else t("builder.compare_all_disabled_hint")
+        )
+
+        if st.button(
+            t("builder.compare_all_btn"), key="btn_bld_compare_all", disabled=_pool_total_b <= 1,
+        ):
+            with st.spinner(t("builder.compare_all_running")):
+                try:
+                    # Pool eterogeneo: un dict per candidato con gli stessi
+                    # campi che score_candidate/run_decision già leggono
+                    # (nessuna sintesi necessaria, già presenti sul candidato
+                    # Builder) + il riferimento run/candidato dalla Parte B.
+                    _pool_b: list[dict] = []
+                    for _run in _all_runs_b:
+                        for _c in _run.get("candidates", []):
+                            if _c.get("status") not in ("ok", "retried") or not _c.get("analysis"):
+                                continue
+                            _pool_b.append({
+                                "builder_run_id": _run.get("generated_at"),
+                                "candidate_id": _c["id"],
+                                "strategy_name": _c.get("strategy_name", _c["id"]),
+                                "profile": _c.get("profile", "—"),
+                                "analysis": _c["analysis"],
+                                "gpx_path": _c.get("gpx_path"),
+                            })
+
+                    if len(_pool_b) < 1:
+                        st.error(t("builder.compare_all_no_candidates"))
+                    else:
+                        # Le D non passano di qui: score_candidate/run_decision
+                        # richiedono request["target_km"] in modo bloccante, e
+                        # una D non ha un target concettualmente — restano
+                        # fuori dallo scoring, incluse solo nella tabella e nel
+                        # prompt del Decision Agent come riferimento informativo.
+                        # Stesso merge memory/ostacoli usato in fase di
+                        # generazione (vedi sopra) — coerenza col punteggio già
+                        # persistito per ogni run, non solo i campi del form.
+                        _pool_memory_b = load_user_memory()
+                        _pool_zona_b = (req_b.get("start") or {}).get("name") if isinstance(req_b, dict) else None
+                        _pool_obstacles_b = db.get_active_obstacles(zona=_pool_zona_b)
+                        _pool_request_b = merge_memory_with_request(
+                            {**req_b, "elevation_preference": bld_elevation_pref},
+                            _pool_memory_b, obstacles=_pool_obstacles_b,
+                        )
+                        _pool_scored_b = [score_candidate(p["analysis"], _pool_request_b) for p in _pool_b]
+
+                        # id univoco per candidato nel pool (la stessa lettera
+                        # si ripete run dopo run: ogni run rietichetta da "A")
+                        # — richiesto da run_decision per poter indicare un
+                        # vincitore univoco.
+                        _decision_cands_b = [
+                            {
+                                "id": f"{p['candidate_id']}#{i + 1}",
+                                "strategy_name": f"{p['strategy_name']} ({_fmt_ref_dt(p['builder_run_id'])})",
+                                "profile": p["profile"],
+                                "route_type": req_b.get("route_type", "loop"),
+                                "analysis": p["analysis"],
+                            }
+                            for i, p in enumerate(_pool_b)
+                        ]
+                        # Le D vengono passate come riferimento informativo al
+                        # prompt (mai come candidati — vedi run_decision e la
+                        # regola dedicata nel system prompt del Decision Agent).
+                        _decision_report_b = run_decision(
+                            _decision_cands_b, _pool_scored_b, _pool_request_b,
+                            actual_rides=actual_rides_b,
+                        )
+
+                        st.session_state["bld_compare_all_result"] = {
+                            "route_name": bld_sel,
+                            "pool": _pool_b,
+                            "scored": _pool_scored_b,
+                            "decision_ids": [dc["id"] for dc in _decision_cands_b],
+                            "decision": _decision_report_b.model_dump(),
+                            "actual_rides": actual_rides_b,
+                        }
+                except Exception as _cmp_all_e:
+                    st.error(f"{t('builder.compare_all_error')} {_cmp_all_e}")
+
+        _cmp_all_res_b = st.session_state.get("bld_compare_all_result")
+        if _cmp_all_res_b and _cmp_all_res_b.get("route_name") == bld_sel:
+            _pool_b2 = _cmp_all_res_b["pool"]
+            _scored_b2 = _cmp_all_res_b["scored"]
+            _ids_b2 = _cmp_all_res_b["decision_ids"]
+            _decision_b2 = _cmp_all_res_b["decision"]
+            _winner_pool_id_b2 = _decision_b2.get("winner")
+
+            _rows_cmp_b = []
+            for _p, _s, _pid in zip(_pool_b2, _scored_b2, _ids_b2):
+                _is_w = _pid == _winner_pool_id_b2
+                _rows_cmp_b.append({
+                    "  ": "★" if _is_w else ("✗" if _s["discarded"] else "·"),
+                    t("builder.col_id"): _p["candidate_id"],
+                    t("builder.compare_all_col_run"): _fmt_ref_dt(_p["builder_run_id"]),
+                    t("builder.col_name"): _p["strategy_name"],
+                    t("builder.col_profile"): _p["profile"],
+                    t("builder.col_km"): f"{_p['analysis']['distance_km']:.1f}",
+                    t("builder.col_elev"): f"{_p['analysis']['elevation_gain_m']:.0f}",
+                    t("builder.col_score"): f"{_s['total_score']:.1f}",
+                    t("builder.col_status"): (
+                        f"{t('builder.status_discarded')} — {_s['discard_reason']}"
+                        if _s["discarded"] else t("builder.status_valid")
+                    ),
+                })
+            for _d_i, _ar in enumerate(_cmp_all_res_b.get("actual_rides", [])):
+                _d_analysis = _ar.get("analysis", {})
+                _rows_cmp_b.append({
+                    "  ": "🚴",
+                    t("builder.col_id"): f"D{_d_i + 1}",
+                    t("builder.compare_all_col_run"): _fmt_ref_dt(_ar.get("uploaded_at")),
+                    t("builder.col_name"): t("builder.compare_all_actual_ride_label"),
+                    t("builder.col_profile"): "—",
+                    t("builder.col_km"): f"{_d_analysis.get('distance_km', 0):.1f}",
+                    t("builder.col_elev"): f"{_d_analysis.get('elevation_gain_m', 0):.0f}",
+                    t("builder.col_score"): "—",
+                    t("builder.col_status"): t("builder.compare_all_no_score"),
+                })
+
+            st.dataframe(_rows_cmp_b, use_container_width=True, hide_index=True)
+
+            _rat_b2 = _decision_b2.get("rationale", "")
+            if _rat_b2:
+                st.markdown(f"{t('builder.decision_motivation')} {_rat_b2}")
+
+            if _winner_pool_id_b2:
+                _win_idx_b2 = _ids_b2.index(_winner_pool_id_b2) if _winner_pool_id_b2 in _ids_b2 else None
+                if _win_idx_b2 is None:
+                    # Il Decision Agent ha risposto con un id non presente nel
+                    # pool (mai osservato, ma gli id "A#1"/"A#2" sintetizzati
+                    # qui sotto non compaiono negli esempi del suo prompt) —
+                    # meglio un avviso esplicito che un risultato silenzioso.
+                    st.warning(t("builder.compare_all_winner_id_mismatch").format(id=_winner_pool_id_b2))
+                else:
+                    _win_p_b2 = _pool_b2[_win_idx_b2]
+                    _win_s_b2 = _scored_b2[_win_idx_b2]
+                    st.success(
+                        t("builder.winner_label").format(
+                            id=_win_p_b2["candidate_id"],
+                            name=_win_p_b2["strategy_name"],
+                            profile=_win_p_b2["profile"],
+                            km=_win_p_b2["analysis"]["distance_km"],
+                            elev=_win_p_b2["analysis"]["elevation_gain_m"],
+                        )
+                        + f"  ·  Score: {_win_s_b2['total_score']:.1f}/100"
+                        + f"  ·  {_fmt_ref_dt(_win_p_b2['builder_run_id'])}"
+                    )
+                    if _win_p_b2.get("gpx_path"):
+                        try:
+                            _win_gpx_b2 = _gpx_bytes_with_name(
+                                _win_p_b2["gpx_path"], f"{bld_sel}_{_win_p_b2['candidate_id']}",
+                            )
+                        except FileNotFoundError:
+                            st.warning(t("builder.stale_results_warning"))
+                        else:
+                            st.download_button(
+                                label=f"{t('builder.winner_dl')} {_win_p_b2['candidate_id']}",
+                                data=_win_gpx_b2,
+                                file_name=f"{bld_sel}_{_win_p_b2['candidate_id']}.gpx",
+                                mime="application/gpx+xml",
+                                key="bld_dl_winner_compare_all",
+                            )
+            else:
+                _q_b2 = _decision_b2.get("question_for_user", "")
+                _opts_b2 = _decision_b2.get("options", [])
+                if _q_b2:
+                    st.info(f"{t('builder.decision_choice')} {_q_b2}")
+                if _opts_b2:
+                    st.radio(t("builder.decision_option"), _opts_b2, key="bld_compare_all_opt_radio")
 
 
 # ─── GPX Optimizer — corpo condiviso ────────────────────────────────────────
@@ -3564,10 +3871,19 @@ with tab_ride:
                             _ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                             _report_path = _RIDE_REPORTS_DIR / f"{_route_sel}_{_ts}.html"
                             _report_path.write_text(_html_hist, encoding="utf-8")
+                            _ra_run_id, _ra_cand_id = _infer_builder_ref(
+                                # gpx_filename è già uno stem (Path(...).stem
+                                # applicato all'upload, vedi sopra) — non
+                                # ri-applicarlo, tronca male un nome con punti.
+                                _route_sel, _saved_routes[_route_sel],
+                                _gpx_stats.get("gpx_filename") or "",
+                            )
                             _history_record = {
                                 "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                                 "report_path": str(_report_path),
                                 "gpx_filename": _gpx_stats.get("gpx_filename"),
+                                "builder_run_id": _ra_run_id,
+                                "candidate_id": _ra_cand_id,
                                 "calories_kcal": _result.get("calories_kcal"),
                                 "avg_hr_bpm": _result.get("avg_hr_bpm"),
                                 "battery_pct_consumed": _result.get("battery_pct_consumed"),
@@ -3587,6 +3903,11 @@ with tab_ride:
                                     "rider_kcal_deterministic": _det_result["rider_kcal"],
                                 })
                             _save_ride_analysis_to_route(_route_sel, _history_record)
+                            st.session_state["ride_result_link_caption"] = t("ride_analysis.linked_to_run").format(
+                                ref=_format_run_ref(_saved_routes[_route_sel], _ra_run_id, _ra_cand_id)
+                            )
+                        else:
+                            st.session_state.pop("ride_result_link_caption", None)
 
                         # Forza un rerun a fine analisi: _profiles/_existing in
                         # cima al tab (media storica assist_ratio, vedi sopra)
@@ -3606,6 +3927,8 @@ with tab_ride:
             _rl = st.session_state.get("ride_result_lang", active_lang())
 
             st.subheader(t("ride_analysis.results_header"))
+            if st.session_state.get("ride_result_link_caption"):
+                st.caption(st.session_state["ride_result_link_caption"])
             _r_is_ebike = (_rp.get("bike_type") or "").lower() == "ebike"
             _r_det = st.session_state.get("ride_det_result")
 
@@ -3869,18 +4192,27 @@ with tab_post_ride:
                         )
 
                     # Salva confronto nella route JSON (se route identificata)
-                    if _cmp_rname and not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
-                        _save_comparison_to_route(_cmp_rname, {
-                            "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
-                            "gpx_planned": gpx_plan.name,
-                            "gpx_real": gpx_real.name,
-                            "planned_km": round(analysis_p["distance_km"], 2),
-                            "real_km": round(analysis_r["distance_km"], 2),
-                            "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
-                            "real_elev_gain": round(analysis_r["elevation_gain_m"]),
-                            "max_deviation_m": round(max_dev_m),
-                        })
-                        st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
+                    if _cmp_rname:
+                        _cmp_run_id, _cmp_cand_id = _infer_builder_ref(
+                            _cmp_rname, _saved_r_cmp[_cmp_rname], Path(gpx_plan.name).stem,
+                        )
+                        if not st.session_state.get(f"cmp_saved_{_cmp_rname}_{gpx_real.name}"):
+                            _save_comparison_to_route(_cmp_rname, {
+                                "compared_at": datetime.datetime.now().isoformat(timespec="seconds"),
+                                "gpx_planned": gpx_plan.name,
+                                "gpx_real": gpx_real.name,
+                                "builder_run_id": _cmp_run_id,
+                                "candidate_id": _cmp_cand_id,
+                                "planned_km": round(analysis_p["distance_km"], 2),
+                                "real_km": round(analysis_r["distance_km"], 2),
+                                "planned_elev_gain": round(analysis_p["elevation_gain_m"]),
+                                "real_elev_gain": round(analysis_r["elevation_gain_m"]),
+                                "max_deviation_m": round(max_dev_m),
+                            })
+                            st.session_state[f"cmp_saved_{_cmp_rname}_{gpx_real.name}"] = True
+                        st.caption(t("analizza.cmp_linked_to_run").format(
+                            ref=_format_run_ref(_saved_r_cmp[_cmp_rname], _cmp_run_id, _cmp_cand_id)
+                        ))
 
                     # ── Mappa sovrapposta con click handler ─────────────────
                     st.markdown(t("analizza.map_header"))
@@ -4107,9 +4439,12 @@ with tab_post_ride:
                     try:
                         # Opinione soggettiva sulla route → feedback_history nel JSON
                         # (non SQLite: è specifica di questa route, non trasversale).
+                        # builder_run_id = run da cui è stato scelto fb_candidate_id
+                        # sopra (sempre l'ultimo run al momento del feedback).
                         _save_feedback_to_route(fb_route_sel, {
                             "recorded_at": datetime.datetime.now().isoformat(timespec="seconds"),
                             "candidate_id": fb_candidate_id or "—",
+                            "builder_run_id": builder_res.get("generated_at") if builder_res else None,
                             "rating": fb_rating,
                             "too_traffic": fb_traffic,
                             "too_gravel": fb_gravel,
@@ -4119,6 +4454,13 @@ with tab_post_ride:
                             "would_repeat": fb_repeat,
                             "notes": fb_notes,
                         })
+                        st.session_state["fb_link_caption"] = t("analizza.fb_linked_to_run").format(
+                            ref=_format_run_ref(
+                                rd_fb,
+                                builder_res.get("generated_at") if builder_res else None,
+                                fb_candidate_id,
+                            )
+                        )
 
                         # Segnaposto "problema" → promossi a known_obstacles (SQLite,
                         # trasversale: vale per qualunque route futura con la stessa
@@ -4140,6 +4482,7 @@ with tab_post_ride:
                         if _problems:
                             _msg += t("analizza.fb_obstacles").format(n=len(_problems))
                         st.success(_msg)
+                        st.caption(st.session_state.get("fb_link_caption", ""))
                     except Exception as exc:
                         st.error(f"Errore salvataggio feedback: {exc}")
 
