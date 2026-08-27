@@ -40,3 +40,6 @@ Thumbs.db
 *.swp
 installer/mac/build/
 installer/windows/icon.ico
+
+# Sources export
+project_sources.txt
