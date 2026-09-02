@@ -12,3 +12,6 @@ matplotlib>=3.8.0
 staticmap>=0.5.7
 python-dotenv>=1.0.0
 pyyaml>=6.0.0
+leuvenmapmatching>=1.1.4
+scipy>=1.18.1
+rtree>=1.4.1

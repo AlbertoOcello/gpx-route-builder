@@ -64,7 +64,7 @@ _snap_cache: dict[tuple[float, float, int], tuple[float, float]] = {}
 
 class OverpassUnavailable(Exception):
     """
-    Sollevata da _query_overpass quando NESSUNO degli endpoint Overpass risponde
+    Sollevata da query_overpass quando NESSUNO degli endpoint Overpass risponde
     con successo dopo tutti i tentativi — distingue questo caso (servizio non
     raggiungibile) da una risposta 200 con zero risultati (nessuna strada/sentiero
     trovato nel raggio, esito geografico legittimo).
@@ -94,7 +94,7 @@ def resolve_area_traversal(
     )
 
     try:
-        ways = _query_overpass(query)
+        ways = query_overpass(query)
     except OverpassUnavailable:
         return []
     if not ways:
@@ -201,7 +201,7 @@ def snap_to_nearest_road(
             f");\n"
             f"out body geom;\n"
         )
-        return _query_overpass(query, on_progress=on_progress)  # OverpassUnavailable si propaga al chiamante
+        return query_overpass(query, on_progress=on_progress)  # OverpassUnavailable si propaga al chiamante
 
     current_radius = radius_m
     candidates_filtered: list[dict] = []
@@ -244,7 +244,7 @@ def snap_to_nearest_road(
 
 # ── Rete ──────────────────────────────────────────────────────────────────────
 
-def _query_overpass(
+def query_overpass(
     query_str: str,
     on_progress: Callable[[str], None] | None = None,
 ) -> list[dict]:
@@ -261,6 +261,11 @@ def _query_overpass(
     on_progress(message), se fornito, viene chiamato ad ogni nuovo tentativo —
     questo è il caso che più spesso fa sembrare l'app bloccata per minuti
     (429/504 a ripetizione), quindi va reso visibile all'utente.
+
+    Pubblica (non solo per uso interno di questo modulo): riusata anche da
+    map_matcher.py per scaricare le vie OSM di un'area da map-matchare —
+    stessa funzione, query diversa, nessuna duplicazione della logica di
+    retry/mirror.
     """
     raw_body = ("data=" + query_str).encode("utf-8")
     headers  = {

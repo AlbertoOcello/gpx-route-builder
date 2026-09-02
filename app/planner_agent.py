@@ -886,6 +886,51 @@ def generate_raw_route(
     return deduped, warnings, search_queries, validated.route_narrative
 
 
+def generate_narrative_from_facts(
+    waypoint_names: list[str],
+    distance_km: float,
+    elevation_gain_m: float,
+    route_type: str = "loop",
+    scenery_theme: str = "misto",
+    athletic_theme: str = "medio",
+) -> str:
+    """
+    Narrativa breve generata da fatti REALI di una route già costruita
+    (waypoint/distanza/dislivello/tipo) — non uno stralcio di
+    generate_raw_route() qui sopra: quella (FASE 3) è cucita dentro la
+    ricerca web + scelta dei waypoint di una bozza non ancora generata, non
+    isolabile senza portarsi dietro tutto il resto della pipeline. Qui invece
+    il percorso esiste già (BRouter l'ha già generato per davvero), quindi il
+    prompt è molto più mirato — nessuna ricerca, solo i fatti forniti.
+
+    Usata dal tab Manual (main.py, Parte A) quando l'utente clicca
+    esplicitamente "✨ Genera narrativa con AI" per una route creata da zero
+    con narrativa vuota — mai chiamata automaticamente.
+    """
+    _check_api_key()
+    wp_text = "; ".join(waypoint_names) if waypoint_names else "nessuno (percorso a due soli punti)"
+    system = (
+        "Sei un assistente cicloturistico italiano. Scrivi una breve narrativa "
+        "(4-6 frasi, tono evocativo ma preciso) per un percorso in bicicletta "
+        "GIÀ generato per davvero (non una bozza) a partire SOLO dai fatti "
+        "forniti sotto. Se i nomi dei waypoint sono coordinate grezze "
+        "(\"lat,lon\") invece di toponimi, non inventare luoghi/monumenti/"
+        "paesaggi specifici che non ti vengono detti: descrivi il percorso in "
+        "termini onesti (lunghezza, dislivello, tipo di anello/tratta, stile "
+        "di guida suggerito dal tema), senza fabbricare dettagli geografici."
+    )
+    user = (
+        f"Waypoint (in ordine): {wp_text}\n"
+        f"Distanza reale: {distance_km:.1f} km\n"
+        f"Dislivello reale: {elevation_gain_m:.0f} m\n"
+        f"Tipo percorso: {route_type}\n"
+        f"Tema scenografico: {scenery_theme}\n"
+        f"Tema atletico: {athletic_theme}\n\n"
+        "Scrivi la narrativa."
+    )
+    return ai_client.generate(system=system, prompt=user, max_tokens=350).strip()
+
+
 def _check_api_key() -> None:
     ai_client.check_api_key()
 

@@ -52,10 +52,12 @@ from gpx_optimizer import (
 from i18n import t, render_language_selector, active_lang
 import ride_analysis_agent as ride_analysis
 from learning_agent import update_user_memory_from_feedback
-from models import RouteRequest, StartPoint, UserWaypointInput
+from models import RouteRequest, StartPoint, UserWaypointInput, WaypointOrdered
+from route_editor_manual_splice_tool import render_manual_tab
 from planner_agent import (
     build_prompt,
     build_raw_route_prompt,
+    generate_narrative_from_facts,
     generate_raw_route,
     generate_strategies,
     _geocode_user_waypoints,
@@ -115,10 +117,11 @@ st.title(t("app.title"))
 st.caption(f"v{_app_version()} · build {_build_commit()}")
 render_language_selector()
 
-tab_file, tab_planner, tab_builder, tab_optimizer, tab_ride, tab_post_ride, tab_utility = st.tabs([
+tab_file, tab_planner, tab_builder, tab_manual, tab_optimizer, tab_ride, tab_post_ride, tab_utility = st.tabs([
     t("tabs.file"),
     t("tabs.planner"),
     t("tabs.builder"),
+    t("tabs.manual"),
     t("tabs.optimizer"),
     t("tabs.ride"),
     t("tabs.post_ride"),
@@ -920,12 +923,34 @@ def _save_feedback_to_route(route_name: str, record: dict) -> None:
     path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def _normalize_user_waypoints(data: dict) -> None:
+    """
+    Corregge in-place request.user_waypoints se contiene stringhe grezze
+    invece di dict {name, mandatory} — dato legacy (route salvate prima di
+    un certo redesign, trovato durante il lavoro sul tab Manual: apriva route
+    del genere in Planner crashava con AttributeError: 'str' object has no
+    attribute 'get' su main.py, "Carica nel Planner"). Ogni stringa diventa
+    {"name": <stringa>, "mandatory": False} — stesso default già in uso per
+    un nome di località senza "!" finale (sintassi UserWaypointInput).
+    Applicato qui, il punto più a monte (_load_saved_routes, unico loader
+    condiviso da tutta l'app): ogni consumatore a valle riceve sempre il
+    formato atteso, non solo quello dove il crash è stato osservato.
+    """
+    uw = (data.get("request") or {}).get("user_waypoints")
+    if not uw:
+        return
+    fixed = [{"name": w, "mandatory": False} if isinstance(w, str) else w for w in uw]
+    if fixed != uw:
+        data["request"]["user_waypoints"] = fixed
+
+
 def _load_saved_routes() -> dict[str, dict]:
     """Carica tutti i JSON da routes/planned/ — {route_name: data}."""
     routes = {}
     for p in sorted(_PLANNED_DIR.glob("*.json")):
         try:
             data = json.loads(p.read_text(encoding="utf-8"))
+            _normalize_user_waypoints(data)
             routes[data.get("route_name", p.stem)] = data
         except Exception:
             pass
@@ -1341,6 +1366,119 @@ def _save_planned_route(
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return path
+
+
+# ── Salvataggio candidati dal tab Manual (Parti A/B) ──────────────────────
+# Un candidato "manuale" (generato da zero o come sostituzione di un tratto,
+# vedi route_editor_manual_splice_tool.py) entra nel resto dell'app con lo
+# STESSO schema di un candidato Builder A/B/C — stessa directory
+# routes/generated/{timestamp}/candidate_{id}.gpx, stesso score_candidate/
+# run_decision, stessa struttura di run in builder_results — nessun formato
+# parallelo, così "Confronta tutti i percorsi" (Parte C) lo vede senza alcun
+# caso speciale.
+_MANUAL_CANDIDATES_DIR = Path(__file__).parent.parent / "routes" / "generated"
+
+
+def _set_manual_gpx_name(gpx_path: Path, route_name: str, candidate_id: str) -> None:
+    """Stessa convenzione "{route}_{label}" di candidate_generator._set_gpx_name
+    (il Garmin legge <trk><name>, non il filename) — reimplementata qui in
+    poche righe invece di importare un helper privato di un altro modulo."""
+    try:
+        with open(gpx_path, "r", encoding="utf-8") as f:
+            gpx = gpxpy.parse(f)
+        name = f"{route_name}_{candidate_id}"
+        gpx.name = name
+        for track in gpx.tracks:
+            track.name = name
+        with open(gpx_path, "w", encoding="utf-8") as f:
+            f.write(gpx.to_xml())
+    except Exception:
+        pass
+
+
+def _persist_manual_candidate_gpx(source_path: str, route_name: str, candidate_id: str) -> Path:
+    """
+    Copia il GPX generato dallo strumento Manual (scratch,
+    routes/generated/manual_splice_test/) in una directory timestampata
+    permanente, stessa convenzione di
+    candidate_generator.generate_candidates
+    (routes/generated/{timestamp}/candidate_{id}.gpx) — così conteggio
+    artefatti/pulizia orfani/download lo trattano come un candidato Builder
+    qualunque.
+    """
+    run_dir = _MANUAL_CANDIDATES_DIR / datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    dest = run_dir / f"candidate_{candidate_id}.gpx"
+    shutil.copyfile(source_path, dest)
+    _set_manual_gpx_name(dest, route_name, candidate_id)
+    return dest
+
+
+def _analyze_manual_result(gpx_path: str) -> tuple[dict, str]:
+    """
+    (analysis, route_type) per un GPX prodotto dallo strumento Manual — riusa
+    analyze_gpx()/detect_climbs() così come sono, mai reinventato il
+    confronto primo/ultimo punto: un'unica chiamata con route_type="loop"
+    basta, perché loop_closed/closure_distance_m sono calcolati identici per
+    "loop" e "out_and_back" (vedi gpx_analyzer.analyze_gpx) — solo
+    l'etichetta finale route_type cambia in base al risultato.
+    """
+    analysis = analyze_gpx(gpx_path, route_type="loop")
+    route_type = "loop" if analysis.get("loop_closed") else "out_and_back"
+    return analysis, route_type
+
+
+def _build_manual_builder_run(
+    candidate_id: str,
+    strategy_label: str,
+    profile: str,
+    gpx_path: str,
+    analysis: dict,
+    route_type: str,
+    request_dict: dict,
+) -> dict:
+    """
+    Run builder_results per un candidato generato dallo strumento Manual —
+    stesso schema/stesse funzioni (score_candidate/run_decision) di una run
+    Builder A/B/C normale.
+    """
+    candidate = {
+        "id": candidate_id,
+        "strategy_name": strategy_label,
+        "profile": profile,
+        "route_type": route_type,
+        "status": "ok",
+        "gpx_path": str(gpx_path),
+        "analysis": analysis,
+        "failure_reason": None,
+    }
+    scored = score_candidate(analysis, request_dict)
+    report = run_decision([candidate], [scored], request_dict)
+    return {
+        "generated_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "candidates": [candidate],
+        "scored": [scored],
+        "decision": report.model_dump(),
+    }
+
+
+def _manual_waypoints_to_ordered(waypoints: list[tuple[float, float]]) -> list[dict]:
+    """
+    ordered_waypoints per la sezione Planner di una route creata dal tab
+    Manual — i waypoint sono le coordinate grezze effettivamente cliccate
+    dall'utente (nessuna geocodifica qui), tutte mandatory=True: sono
+    letteralmente le tappe passate a BRouter (vedi
+    route_editor_manual_splice_tool.generate_from_scratch/splice_in_segment).
+    """
+    n = len(waypoints)
+    out = []
+    for i, (lat, lon) in enumerate(waypoints):
+        role = "start" if i == 0 else ("end" if i == n - 1 else "via")
+        out.append(WaypointOrdered(
+            role=role, name=f"{lat:.5f},{lon:.5f}", lat=lat, lon=lon,
+            source="user", order=i, mandatory=True,
+        ).model_dump())
+    return out
 
 
 # ── Helper GPX ──────────────────────────────────────────────────────────
@@ -3385,6 +3523,200 @@ with tab_builder:
                     st.info(f"{t('builder.decision_choice')} {_q_b2}")
                 if _opts_b2:
                     st.radio(t("builder.decision_option"), _opts_b2, key="bld_compare_all_opt_radio")
+
+
+# ─── Tab: Manual ────────────────────────────────────────────────────────────
+# A differenza di Builder (gating totale, richiede sempre una route aperta),
+# funziona in entrambi i contesti — come Ride Analysis/Post Ride/GPX
+# Optimizer: precompila la modalità "modifica" col GPX del candidato
+# vincente se una route è aperta, altrimenti parte in "crea da zero" — mai un
+# placeholder di blocco. Corpo interattivo (mappa/click/genera/analisi
+# salite) interamente in route_editor_manual_splice_tool.render_manual_tab —
+# qui solo il collegamento alla route aperta e (sotto, Parti A/B) il
+# salvataggio. Testo dell'interfaccia qui e nel tool sotto restano in
+# italiano semplice, non ancora passati per i18n (t()) — scelta di scope
+# esplicita per questa integrazione, coerente con lo strumento standalone
+# che riusa così com'è.
+with tab_manual:
+    st.subheader(t("tabs.manual"))
+    st.caption(
+        "Modifica manuale via click sulla mappa (nessun Intent Parser/geocodifica "
+        "automatica) — genera un percorso da zero, o sostituisce un tratto di un "
+        "GPX esistente con un nuovo tratto BRouter."
+    )
+    _man_route_name = _open_route_name()
+    if _man_route_name:
+        st.success(f"Route aperta: **{_man_route_name}**")
+
+    _man_precompiled_path = None
+    _man_precompiled_label = None
+    if _man_route_name:
+        _man_winner = _find_route_winner_gpx(_man_route_name)
+        if _man_winner:
+            _wpath_m, _wid_m, _wprofile_m = _man_winner
+            _man_precompiled_path = str(_wpath_m)
+            _man_precompiled_label = f"{_wid_m} ({_wprofile_m})"
+
+    # ── Narrativa AI a richiesta (completamento Parte A) ──────────────────────
+    # route_narrative resta vuota di default al salvataggio (nessuna narrativa
+    # finta) — questo bottone è l'unico modo per popolarla, sempre su
+    # richiesta esplicita, mai automatico. Riusa
+    # planner_agent.generate_narrative_from_facts (dati REALI della route
+    # appena salvata), non il prompt di generate_raw_route (quello presuppone
+    # ricerca web + scelta dei waypoint, qui il percorso esiste già per
+    # davvero). Vive QUI, prima di chiamare render_manual_tab — non dentro il
+    # blocco "if _man_result" più sotto: salvare una route da zero la rende
+    # la route "aperta" con un vincitore, quindi il prossimo render precompila
+    # subito la modalità modifica su di essa, il che azzera lo stato interno
+    # dello strumento (result compreso) — questo pannello deve sopravvivere a
+    # quel reset, essendo tracciato in una chiave di sessione indipendente.
+    _man_last_saved = st.session_state.get("rem_last_saved_new_route")
+    if _man_last_saved:
+        _man_saved_route_data = _load_saved_routes().get(_man_last_saved["route_name"])
+        if _man_saved_route_data is None:
+            st.session_state.pop("rem_last_saved_new_route", None)
+        else:
+            st.caption(f"Ultima route salvata da qui: «{_man_last_saved['route_name']}»")
+            _man_current_narrative = _man_saved_route_data.get("route_narrative", "")
+            if _man_current_narrative:
+                st.info(_man_current_narrative)
+                if st.button("↩️ Chiudi", key="rem_dismiss_narrative_panel"):
+                    st.session_state.pop("rem_last_saved_new_route", None)
+                    st.rerun()
+            else:
+                st.caption("Narrativa vuota (nessuna generazione automatica).")
+                if st.button("✨ Genera narrativa con AI", key="rem_btn_gen_narrative"):
+                    try:
+                        with st.spinner("Genero la narrativa..."):
+                            _man_narrative = generate_narrative_from_facts(
+                                waypoint_names=_man_last_saved["waypoint_names"],
+                                distance_km=_man_last_saved["distance_km"],
+                                elevation_gain_m=_man_last_saved["elevation_gain_m"],
+                                route_type=_man_last_saved["route_type"],
+                            )
+                        _man_narr_path = _PLANNED_DIR / f"{_man_last_saved['route_name']}.json"
+                        _man_narr_payload = json.loads(_man_narr_path.read_text(encoding="utf-8"))
+                        _man_narr_payload["route_narrative"] = _man_narrative
+                        _man_narr_path.write_text(
+                            json.dumps(_man_narr_payload, ensure_ascii=False, indent=2),
+                            encoding="utf-8",
+                        )
+                        st.success("Narrativa generata e salvata.")
+                        st.rerun()
+                    except Exception as _man_exc:
+                        st.error(f"Errore generazione narrativa: {_man_exc}")
+        st.divider()
+
+    _man_out = render_manual_tab(
+        precompiled_gpx_path=_man_precompiled_path,
+        precompiled_label=_man_precompiled_label,
+    )
+
+    # ── Salvataggio (Parti A/B) ──────────────────────────────────────────────
+    _man_result = (_man_out or {}).get("result")
+    if _man_result and "error" not in _man_result:
+        st.divider()
+        st.subheader("Salva")
+        _man_analysis, _man_route_type = _analyze_manual_result(_man_result["out_path"])
+        st.caption(
+            f"{_man_analysis['distance_km']:.1f} km · {_man_analysis['elevation_gain_m']:.0f} m D+ · "
+            f"tipo dedotto: {_man_route_type}"
+        )
+
+        _MAN_OPT_NEW = "🆕 Salva come nuova route"
+        _man_can_update = _man_out["mode"] == "modifica" and _man_route_name
+        _man_choice = _MAN_OPT_NEW
+        if _man_can_update:
+            _MAN_OPT_UPDATE = f"🔀 Aggiorna «{_man_route_name}» come modifica (M)"
+            _man_choice = st.radio(
+                "Come vuoi salvare questo risultato?",
+                [_MAN_OPT_NEW, _MAN_OPT_UPDATE],
+                key="rem_save_choice",
+            )
+
+        if _man_choice == _MAN_OPT_NEW:
+            _man_new_name = st.text_input("Nome nuova route", key="rem_new_route_name")
+            if st.button(
+                "💾 Salva come nuova route", key="rem_btn_save_new",
+                disabled=not _man_new_name.strip(),
+            ):
+                _man_slug = re.sub(r"[^\w\-]", "_", _man_new_name.strip()) or "route"
+                if _man_slug in _load_saved_routes():
+                    st.error(f"Esiste già una route chiamata «{_man_slug}».")
+                else:
+                    try:
+                        _man_wps_dicts = _manual_waypoints_to_ordered(_man_out["waypoints"])
+                        _man_first_lat, _man_first_lon = _man_out["waypoints"][0]
+                        _man_req_obj = RouteRequest(
+                            start=StartPoint(
+                                name=f"{_man_first_lat:.5f},{_man_first_lon:.5f}",
+                                lat=_man_first_lat, lon=_man_first_lon,
+                            ),
+                            target_km=_man_analysis["distance_km"],
+                            route_type=_man_route_type,
+                        )
+                        _save_planned_route(
+                            route_name=_man_slug, request=_man_req_obj, ordered_wps=_man_wps_dicts,
+                            system_prompt="", user_prompt="", warnings=[],
+                            search_queries=[], route_narrative="",
+                        )
+                        _man_gpx_dest = _persist_manual_candidate_gpx(
+                            _man_result["out_path"], _man_slug, "A",
+                        )
+                        _man_run = _build_manual_builder_run(
+                            "A", f"Percorso manuale A ({_man_out['profile']})", _man_out["profile"],
+                            str(_man_gpx_dest), _man_analysis, _man_route_type, _man_req_obj.model_dump(),
+                        )
+                        _man_json_path = _PLANNED_DIR / f"{_man_slug}.json"
+                        _man_payload = json.loads(_man_json_path.read_text(encoding="utf-8"))
+                        _man_payload["builder_results"] = [_man_run]
+                        _man_json_path.write_text(
+                            json.dumps(_man_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                        )
+
+                        st.session_state["pl_loaded_route_name"] = _man_slug
+                        st.session_state.pop("bld_result", None)
+                        st.session_state["rem_last_saved_new_route"] = {
+                            "route_name": _man_slug,
+                            "waypoint_names": [w["name"] for w in _man_wps_dicts],
+                            "distance_km": _man_analysis["distance_km"],
+                            "elevation_gain_m": _man_analysis["elevation_gain_m"],
+                            "route_type": _man_route_type,
+                        }
+                        st.success(f"Route «{_man_slug}» salvata (Planner + Builder, candidato A).")
+                        st.rerun()
+                    except Exception as _man_exc:
+                        st.error(f"Errore salvataggio: {_man_exc}")
+        else:
+            st.caption(
+                "La sezione Planner della route resta invariata — M è una variante "
+                "manuale accodata a builder_results, non una ripianificazione."
+            )
+            if st.button(f"🔀 Aggiorna «{_man_route_name}»", key="rem_btn_save_m"):
+                try:
+                    _man_gpx_dest = _persist_manual_candidate_gpx(
+                        _man_result["out_path"], _man_route_name, "M",
+                    )
+                    _man_route_data_now = _load_saved_routes()[_man_route_name]
+                    _man_req_dict_now = _man_route_data_now.get("request", {})
+                    _man_run = _build_manual_builder_run(
+                        "M", f"Modifica manuale M ({_man_out['profile']})", _man_out["profile"],
+                        str(_man_gpx_dest), _man_analysis, _man_route_type, _man_req_dict_now,
+                    )
+                    _man_runs_now = _normalize_builder_results(_man_route_data_now)
+                    _man_runs_now.append(_man_run)
+                    _man_payload = dict(_man_route_data_now)
+                    _man_payload["builder_results"] = _man_runs_now
+                    _man_json_path = _PLANNED_DIR / f"{_man_route_name}.json"
+                    _man_json_path.write_text(
+                        json.dumps(_man_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+                    st.session_state.pop("bld_result", None)
+                    st.session_state.pop("bld_compare_all_result", None)
+                    st.success(f"Candidato M aggiunto a «{_man_route_name}» (sezione Planner invariata).")
+                    st.rerun()
+                except Exception as _man_exc:
+                    st.error(f"Errore salvataggio: {_man_exc}")
 
 
 # ─── GPX Optimizer — corpo condiviso ────────────────────────────────────────
