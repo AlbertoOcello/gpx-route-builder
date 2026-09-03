@@ -917,7 +917,10 @@ def generate_narrative_from_facts(
     wp_text = "; ".join(waypoint_names) if waypoint_names else ("none (two-point route)" if is_en else "nessuno (percorso a due soli punti)")
     if is_en:
         system = (
-            "You are a cycling touring assistant. Write a short narrative "
+            "You are a cycling touring assistant. IMPORTANT: write your ENTIRE "
+            "response in English, regardless of the language of the input data "
+            "below (e.g. Italian place names or facts) — this is a hard "
+            "requirement, not a stylistic preference. Write a short narrative "
             "(4-6 sentences, evocative but precise tone) in English for a bike "
             "route that has ALREADY been generated for real (not a draft), "
             "based ONLY on the facts given below. If waypoint names are raw "
@@ -934,18 +937,22 @@ def generate_narrative_from_facts(
             f"Route type: {route_type}\n"
             f"Scenery theme: {scenery_theme}\n"
             f"Athletic theme: {athletic_theme}\n\n"
-            "Write the narrative."
+            "Write the narrative. Remember: your entire answer must be in "
+            "English, no other language."
         )
     else:
         system = (
-            "Sei un assistente cicloturistico italiano. Scrivi una breve narrativa "
-            "(4-6 frasi, tono evocativo ma preciso) per un percorso in bicicletta "
-            "GIÀ generato per davvero (non una bozza) a partire SOLO dai fatti "
-            "forniti sotto. Se i nomi dei waypoint sono coordinate grezze "
-            "(\"lat,lon\") invece di toponimi, non inventare luoghi/monumenti/"
-            "paesaggi specifici che non ti vengono detti: descrivi il percorso in "
-            "termini onesti (lunghezza, dislivello, tipo di anello/tratta, stile "
-            "di guida suggerito dal tema), senza fabbricare dettagli geografici."
+            "Sei un assistente cicloturistico italiano. IMPORTANTE: scrivi "
+            "l'INTERA risposta in italiano, indipendentemente dalla lingua dei "
+            "dati sotto — è un requisito vincolante, non una preferenza "
+            "stilistica. Scrivi una breve narrativa (4-6 frasi, tono evocativo "
+            "ma preciso) per un percorso in bicicletta GIÀ generato per davvero "
+            "(non una bozza) a partire SOLO dai fatti forniti sotto. Se i nomi "
+            "dei waypoint sono coordinate grezze (\"lat,lon\") invece di "
+            "toponimi, non inventare luoghi/monumenti/paesaggi specifici che "
+            "non ti vengono detti: descrivi il percorso in termini onesti "
+            "(lunghezza, dislivello, tipo di anello/tratta, stile di guida "
+            "suggerito dal tema), senza fabbricare dettagli geografici."
         )
         user = (
             f"Waypoint (in ordine): {wp_text}\n"
@@ -954,7 +961,8 @@ def generate_narrative_from_facts(
             f"Tipo percorso: {route_type}\n"
             f"Tema scenografico: {scenery_theme}\n"
             f"Tema atletico: {athletic_theme}\n\n"
-            "Scrivi la narrativa."
+            "Scrivi la narrativa. Ricorda: l'intera risposta deve essere in "
+            "italiano, nessun'altra lingua."
         )
     # 350 era troppo stretto: con Claude, una risposta che finisce per
     # max_tokens fa sollevare RuntimeError("Risposta troncata") ad

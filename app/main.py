@@ -2006,44 +2006,60 @@ with tab_planner:
         _pl_narr_route_data = _load_saved_routes().get(_pl_narr_open_name)
         if _pl_narr_route_data:
             _pl_narr_existing = _pl_narr_route_data.get("route_narrative", "")
+            # route_narrative_lang assente (route con narrativa generata prima
+            # di questo campo, sempre in italiano allora) -> "it" di default.
+            _pl_narr_existing_lang = _pl_narr_route_data.get("route_narrative_lang", "it")
+
+            _pl_narr_runs = _normalize_builder_results(_pl_narr_route_data)
+            _pl_narr_winner = None
+            if _pl_narr_runs:
+                _pl_narr_winner_id = (_pl_narr_runs[-1].get("decision") or {}).get("winner")
+                _pl_narr_winner = next(
+                    (c for c in _pl_narr_runs[-1].get("candidates", []) if c.get("id") == _pl_narr_winner_id),
+                    None,
+                )
+
+            def _pl_regenerate_narrative(_target_lang: str) -> None:
+                try:
+                    _pl_narr_wp_names = [
+                        w.get("name", "") for w in _pl_narr_route_data.get("ordered_waypoints", [])
+                    ]
+                    with st.spinner(t("planner.narrative_generating_spinner")):
+                        _pl_narrative = generate_narrative_from_facts(
+                            waypoint_names=_pl_narr_wp_names,
+                            distance_km=_pl_narr_winner["analysis"]["distance_km"],
+                            elevation_gain_m=_pl_narr_winner["analysis"]["elevation_gain_m"],
+                            route_type=_pl_narr_winner.get(
+                                "route_type", _pl_narr_route_data.get("request", {}).get("route_type", "loop"),
+                            ),
+                            lang=_target_lang,
+                        )
+                    _pl_narr_path = _PLANNED_DIR / f"{_pl_narr_open_name}.json"
+                    _pl_narr_payload = json.loads(_pl_narr_path.read_text(encoding="utf-8"))
+                    _pl_narr_payload["route_narrative"] = _pl_narrative
+                    _pl_narr_payload["route_narrative_lang"] = _target_lang
+                    _pl_narr_path.write_text(
+                        json.dumps(_pl_narr_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                    )
+                    st.success(t("planner.narrative_ok"))
+                    st.rerun()
+                except Exception as _pl_narr_exc:
+                    st.error(f"{t('planner.narrative_error')}: {_pl_narr_exc}")
+
             if _pl_narr_existing:
                 st.info(_pl_narr_existing)
-            else:
-                _pl_narr_runs = _normalize_builder_results(_pl_narr_route_data)
-                _pl_narr_winner = None
-                if _pl_narr_runs:
-                    _pl_narr_winner_id = (_pl_narr_runs[-1].get("decision") or {}).get("winner")
-                    _pl_narr_winner = next(
-                        (c for c in _pl_narr_runs[-1].get("candidates", []) if c.get("id") == _pl_narr_winner_id),
-                        None,
-                    )
                 if _pl_narr_winner and _pl_narr_winner.get("analysis"):
-                    st.caption(t("planner.narrative_empty_caption"))
-                    if st.button(t("planner.narrative_generate_btn"), key="pl_btn_gen_narrative"):
-                        try:
-                            _pl_narr_wp_names = [
-                                w.get("name", "") for w in _pl_narr_route_data.get("ordered_waypoints", [])
-                            ]
-                            with st.spinner(t("planner.narrative_generating_spinner")):
-                                _pl_narrative = generate_narrative_from_facts(
-                                    waypoint_names=_pl_narr_wp_names,
-                                    distance_km=_pl_narr_winner["analysis"]["distance_km"],
-                                    elevation_gain_m=_pl_narr_winner["analysis"]["elevation_gain_m"],
-                                    route_type=_pl_narr_winner.get(
-                                        "route_type", _pl_narr_route_data.get("request", {}).get("route_type", "loop"),
-                                    ),
-                                    lang=active_lang(),
-                                )
-                            _pl_narr_path = _PLANNED_DIR / f"{_pl_narr_open_name}.json"
-                            _pl_narr_payload = json.loads(_pl_narr_path.read_text(encoding="utf-8"))
-                            _pl_narr_payload["route_narrative"] = _pl_narrative
-                            _pl_narr_path.write_text(
-                                json.dumps(_pl_narr_payload, ensure_ascii=False, indent=2), encoding="utf-8",
-                            )
-                            st.success(t("planner.narrative_ok"))
-                            st.rerun()
-                        except Exception as _pl_narr_exc:
-                            st.error(f"{t('planner.narrative_error')}: {_pl_narr_exc}")
+                    _pl_narr_other_lang = "en" if _pl_narr_existing_lang == "it" else "it"
+                    _pl_narr_other_label = t(f"planner.lang_name_{_pl_narr_other_lang}")
+                    if st.button(
+                        t("planner.narrative_switch_btn").format(lang=_pl_narr_other_label),
+                        key="pl_btn_switch_narrative_lang",
+                    ):
+                        _pl_regenerate_narrative(_pl_narr_other_lang)
+            elif _pl_narr_winner and _pl_narr_winner.get("analysis"):
+                st.caption(t("planner.narrative_empty_caption"))
+                if st.button(t("planner.narrative_generate_btn"), key="pl_btn_gen_narrative"):
+                    _pl_regenerate_narrative(active_lang())
         st.divider()
 
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
