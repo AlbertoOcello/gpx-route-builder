@@ -2018,13 +2018,13 @@ with tab_planner:
                         None,
                     )
                 if _pl_narr_winner and _pl_narr_winner.get("analysis"):
-                    st.caption("Narrativa vuota (nessuna generazione automatica).")
-                    if st.button("✨ Genera narrativa con AI", key="pl_btn_gen_narrative"):
+                    st.caption(t("planner.narrative_empty_caption"))
+                    if st.button(t("planner.narrative_generate_btn"), key="pl_btn_gen_narrative"):
                         try:
                             _pl_narr_wp_names = [
                                 w.get("name", "") for w in _pl_narr_route_data.get("ordered_waypoints", [])
                             ]
-                            with st.spinner("Genero la narrativa..."):
+                            with st.spinner(t("planner.narrative_generating_spinner")):
                                 _pl_narrative = generate_narrative_from_facts(
                                     waypoint_names=_pl_narr_wp_names,
                                     distance_km=_pl_narr_winner["analysis"]["distance_km"],
@@ -2032,6 +2032,7 @@ with tab_planner:
                                     route_type=_pl_narr_winner.get(
                                         "route_type", _pl_narr_route_data.get("request", {}).get("route_type", "loop"),
                                     ),
+                                    lang=active_lang(),
                                 )
                             _pl_narr_path = _PLANNED_DIR / f"{_pl_narr_open_name}.json"
                             _pl_narr_payload = json.loads(_pl_narr_path.read_text(encoding="utf-8"))
@@ -2039,10 +2040,10 @@ with tab_planner:
                             _pl_narr_path.write_text(
                                 json.dumps(_pl_narr_payload, ensure_ascii=False, indent=2), encoding="utf-8",
                             )
-                            st.success("Narrativa generata e salvata.")
+                            st.success(t("planner.narrative_ok"))
                             st.rerun()
                         except Exception as _pl_narr_exc:
-                            st.error(f"Errore generazione narrativa: {_pl_narr_exc}")
+                            st.error(f"{t('planner.narrative_error')}: {_pl_narr_exc}")
         st.divider()
 
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:

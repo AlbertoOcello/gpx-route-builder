@@ -85,6 +85,11 @@ it:
       di propri se necessario. Il Builder (Fase 2) genererà le tracce reali.
     open_route_banner: "Route aperta: **{name}**"
     new_route_label: "Nuova route (non salvata)"
+    narrative_empty_caption: "Narrativa vuota (nessuna generazione automatica)."
+    narrative_generate_btn: "✨ Genera narrativa con AI"
+    narrative_generating_spinner: "Genero la narrativa..."
+    narrative_ok: "Narrativa generata e salvata."
+    narrative_error: "Errore generazione narrativa"
     start_label: "**Partenza**"
     end_label: "**Punto di arrivo**"
     form:
@@ -748,6 +753,11 @@ en:
       where needed. The Builder (Phase 2) will generate the actual tracks.
     open_route_banner: "Open route: **{name}**"
     new_route_label: "New route (unsaved)"
+    narrative_empty_caption: "Empty narrative (no automatic generation)."
+    narrative_generate_btn: "✨ Generate narrative with AI"
+    narrative_generating_spinner: "Generating the narrative..."
+    narrative_ok: "Narrative generated and saved."
+    narrative_error: "Narrative generation error"
     start_label: "**Start**"
     end_label: "**End point**"
     form:

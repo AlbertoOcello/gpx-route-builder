@@ -893,6 +893,7 @@ def generate_narrative_from_facts(
     route_type: str = "loop",
     scenery_theme: str = "misto",
     athletic_theme: str = "medio",
+    lang: str = "it",
 ) -> str:
     """
     Narrativa breve generata da fatti REALI di una route già costruita
@@ -903,32 +904,63 @@ def generate_narrative_from_facts(
     il percorso esiste già (BRouter l'ha già generato per davvero), quindi il
     prompt è molto più mirato — nessuna ricerca, solo i fatti forniti.
 
-    Usata dal tab Manual (main.py, Parte A) quando l'utente clicca
-    esplicitamente "✨ Genera narrativa con AI" per una route creata da zero
-    con narrativa vuota — mai chiamata automaticamente.
+    lang ("it"/"en", tipicamente i18n.active_lang() del chiamante): la
+    narrativa viene scritta in quella lingua — prima era sempre in italiano
+    indipendentemente dalla lingua dell'interfaccia.
+
+    Usata dal tab Planner (main.py) quando l'utente clicca esplicitamente
+    "✨ Genera narrativa con AI" per una route aperta con narrativa vuota —
+    mai chiamata automaticamente.
     """
     _check_api_key()
-    wp_text = "; ".join(waypoint_names) if waypoint_names else "nessuno (percorso a due soli punti)"
-    system = (
-        "Sei un assistente cicloturistico italiano. Scrivi una breve narrativa "
-        "(4-6 frasi, tono evocativo ma preciso) per un percorso in bicicletta "
-        "GIÀ generato per davvero (non una bozza) a partire SOLO dai fatti "
-        "forniti sotto. Se i nomi dei waypoint sono coordinate grezze "
-        "(\"lat,lon\") invece di toponimi, non inventare luoghi/monumenti/"
-        "paesaggi specifici che non ti vengono detti: descrivi il percorso in "
-        "termini onesti (lunghezza, dislivello, tipo di anello/tratta, stile "
-        "di guida suggerito dal tema), senza fabbricare dettagli geografici."
-    )
-    user = (
-        f"Waypoint (in ordine): {wp_text}\n"
-        f"Distanza reale: {distance_km:.1f} km\n"
-        f"Dislivello reale: {elevation_gain_m:.0f} m\n"
-        f"Tipo percorso: {route_type}\n"
-        f"Tema scenografico: {scenery_theme}\n"
-        f"Tema atletico: {athletic_theme}\n\n"
-        "Scrivi la narrativa."
-    )
-    return ai_client.generate(system=system, prompt=user, max_tokens=350).strip()
+    is_en = lang == "en"
+    wp_text = "; ".join(waypoint_names) if waypoint_names else ("none (two-point route)" if is_en else "nessuno (percorso a due soli punti)")
+    if is_en:
+        system = (
+            "You are a cycling touring assistant. Write a short narrative "
+            "(4-6 sentences, evocative but precise tone) in English for a bike "
+            "route that has ALREADY been generated for real (not a draft), "
+            "based ONLY on the facts given below. If waypoint names are raw "
+            "coordinates (\"lat,lon\") instead of place names, do not invent "
+            "specific places/landmarks/scenery you weren't told about: "
+            "describe the route in honest terms (length, elevation gain, "
+            "loop/point-to-point type, riding style suggested by the theme), "
+            "without fabricating geographic details."
+        )
+        user = (
+            f"Waypoints (in order): {wp_text}\n"
+            f"Actual distance: {distance_km:.1f} km\n"
+            f"Actual elevation gain: {elevation_gain_m:.0f} m\n"
+            f"Route type: {route_type}\n"
+            f"Scenery theme: {scenery_theme}\n"
+            f"Athletic theme: {athletic_theme}\n\n"
+            "Write the narrative."
+        )
+    else:
+        system = (
+            "Sei un assistente cicloturistico italiano. Scrivi una breve narrativa "
+            "(4-6 frasi, tono evocativo ma preciso) per un percorso in bicicletta "
+            "GIÀ generato per davvero (non una bozza) a partire SOLO dai fatti "
+            "forniti sotto. Se i nomi dei waypoint sono coordinate grezze "
+            "(\"lat,lon\") invece di toponimi, non inventare luoghi/monumenti/"
+            "paesaggi specifici che non ti vengono detti: descrivi il percorso in "
+            "termini onesti (lunghezza, dislivello, tipo di anello/tratta, stile "
+            "di guida suggerito dal tema), senza fabbricare dettagli geografici."
+        )
+        user = (
+            f"Waypoint (in ordine): {wp_text}\n"
+            f"Distanza reale: {distance_km:.1f} km\n"
+            f"Dislivello reale: {elevation_gain_m:.0f} m\n"
+            f"Tipo percorso: {route_type}\n"
+            f"Tema scenografico: {scenery_theme}\n"
+            f"Tema atletico: {athletic_theme}\n\n"
+            "Scrivi la narrativa."
+        )
+    # 350 era troppo stretto: con Claude, una risposta che finisce per
+    # max_tokens fa sollevare RuntimeError("Risposta troncata") ad
+    # ai_client._generate_claude invece di restituire testo tagliato — una
+    # narrativa di 4-6 frasi lo supera facilmente. 900 dà margine reale.
+    return ai_client.generate(system=system, prompt=user, max_tokens=900).strip()
 
 
 def _check_api_key() -> None:
