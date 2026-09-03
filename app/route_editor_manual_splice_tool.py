@@ -84,7 +84,30 @@ _DEFAULT_PROFILE = "ebike_asphalt_safe"
 _SELECTED_KEY = "rem_selected_idx"
 _MOVE_MODE_KEY = "rem_move_mode"
 _MAP_CENTER_KEY = "rem_manual_map_center"
+_STALE_RESULT_KEY = "rem_manual_result_stale"
 _MAP_HEIGHT = 700
+
+
+def _invalidate_result_on_edit() -> None:
+    """
+    Chiamata da ogni operazione che modifica rem_manual_waypoints DOPO che un
+    "🚴 Genera" ha già prodotto un risultato (elimina/sposta/inserisci un
+    punto) — il GPX generato in precedenza è stato calcolato su una sequenza
+    di click che non esiste più, quindi non va più mostrato né, soprattutto,
+    salvato come se corrispondesse ancora ai waypoint correnti (bug reale:
+    prima di questo fix la vecchia generazione restava valida in
+    session_state e poteva essere salvata insieme a un ordered_waypoints
+    ormai diverso, risultato osservato — un "waypoint fantasma" nel GPX
+    salvato, assente dalla sequenza mostrata). rem_manual_result_stale resta
+    True finché non si preme di nuovo "Genera" (o "Svuota tutti i punti"),
+    solo per mostrare un messaggio esplicito invece di far sparire la
+    sezione risultato in silenzio.
+    """
+    prev = st.session_state.get("rem_manual_result")
+    if prev and "error" not in prev:
+        st.session_state[_STALE_RESULT_KEY] = True
+    st.session_state["rem_manual_result"] = None
+    st.session_state["rem_manual_climb_analysis"] = None
 
 
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -365,6 +388,7 @@ def render_manual_tab(
         st.session_state[_MOVE_MODE_KEY] = False
         st.session_state[_MAP_CENTER_KEY] = None
         st.session_state["rem_manual_climb_analysis"] = None
+        st.session_state[_STALE_RESULT_KEY] = False
 
     if mode == "modifica":
         if uploaded is not None:
@@ -387,6 +411,8 @@ def render_manual_tab(
         st.session_state[_SELECTED_KEY] = None
     if _MOVE_MODE_KEY not in st.session_state:
         st.session_state[_MOVE_MODE_KEY] = False
+    if _STALE_RESULT_KEY not in st.session_state:
+        st.session_state[_STALE_RESULT_KEY] = False
 
     wps = st.session_state["rem_manual_waypoints"]
     selected_idx = st.session_state[_SELECTED_KEY]
@@ -501,6 +527,7 @@ def render_manual_tab(
                 if selected_idx is not None and insert_at <= selected_idx:
                     st.session_state[_SELECTED_KEY] = selected_idx + 1
             st.session_state[_MAP_CENTER_KEY] = new_c
+            _invalidate_result_on_edit()
             st.rerun()
 
     st.subheader("2. Punto selezionato")
@@ -527,6 +554,7 @@ def render_manual_tab(
                     wps.pop(selected_idx)
                     st.session_state[_SELECTED_KEY] = None
                     st.session_state[_MOVE_MODE_KEY] = False
+                    _invalidate_result_on_edit()
                     st.rerun()
                 if not move_mode:
                     if csel2.button("📍 Sposta", use_container_width=True):
@@ -552,7 +580,16 @@ def render_manual_tab(
             st.session_state["rem_manual_result"] = None
             st.session_state[_SELECTED_KEY] = None
             st.session_state[_MOVE_MODE_KEY] = False
+            st.session_state[_STALE_RESULT_KEY] = False
             st.rerun()
+
+    if st.session_state.get(_STALE_RESULT_KEY):
+        st.warning(
+            "⚠️ Hai modificato i waypoint dopo l'ultima generazione — il "
+            "percorso generato in precedenza non corrisponde più a questa "
+            "sequenza ed è stato scartato. Premi di nuovo **\"Genera\"** "
+            "prima di salvare."
+        )
 
     st.divider()
     st.subheader("4. Genera")
@@ -577,6 +614,7 @@ def render_manual_tab(
             except Exception as exc:
                 st.session_state["rem_manual_result"] = {"error": str(exc)}
         st.session_state["rem_manual_climb_analysis"] = None  # risultato precedente non più valido
+        st.session_state[_STALE_RESULT_KEY] = False  # risultato appena rigenerato, di nuovo coerente coi waypoint
         st.rerun()
     if not can_generate:
         hint = "Servono almeno 2 waypoint." if mode == "generazione" else \

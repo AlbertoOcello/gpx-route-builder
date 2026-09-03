@@ -255,7 +255,17 @@ def _build_map(
     coords = _gpx_coords(gpx_path)
     folium.PolyLine(coords, color="blue", weight=4, opacity=0.85).add_to(m)
     if coords:
-        folium.Marker(coords[-1], tooltip="Fine traccia", icon=folium.Icon(color="red")).add_to(m)
+        # Anello chiuso (fine traccia entro _VIZ_LOOP_SAME_POINT_M dalla
+        # Partenza dichiarata, stessa soglia usata altrove per "è un loop")
+        # → niente secondo marker "Fine traccia": sarebbe praticamente sullo
+        # stesso punto del verde e mostrerebbe due colori diversi per lo
+        # stesso posto, fonte di confusione (visto dal vivo su
+        # Giro-Locale-Grande: verde=start dichiarato, rosso=fine reale del
+        # file, uno dei due sbagliato = i due marker sembravano contraddirsi).
+        # Per una tappa aperta (start ≠ end) resta informativo, disegnato.
+        end_closure_m = geodesic(coords[-1], (start_lat, start_lon)).meters
+        if end_closure_m >= _VIZ_LOOP_SAME_POINT_M:
+            folium.Marker(coords[-1], tooltip="Fine traccia", icon=folium.Icon(color="red")).add_to(m)
     if highlight_coords:
         folium.PolyLine(
             highlight_coords, color="#e74c3c", weight=6, opacity=0.9, dash_array="6 6",
@@ -1983,6 +1993,58 @@ with tab_planner:
         else t("planner.new_route_label")
     )
 
+    # ── Narrativa AI a richiesta ────────────────────────────────────────────
+    # Spostata qui da Manual (che ora si limita a salvare, vedi tab_manual):
+    # per QUALUNQUE route aperta con route_narrative ancora vuota, non solo
+    # quelle appena salvate da Manual — legge i fatti dal disco (candidato
+    # vincente dell'ultima run Builder + ordered_waypoints), non da uno stato
+    # di sessione transitorio, quindi funziona anche riaprendo una route in
+    # una sessione diversa. Riusa planner_agent.generate_narrative_from_facts
+    # tale quale, sempre su richiesta esplicita, mai automatico.
+    _pl_narr_open_name = _open_route_name()
+    if _pl_narr_open_name:
+        _pl_narr_route_data = _load_saved_routes().get(_pl_narr_open_name)
+        if _pl_narr_route_data:
+            _pl_narr_existing = _pl_narr_route_data.get("route_narrative", "")
+            if _pl_narr_existing:
+                st.info(_pl_narr_existing)
+            else:
+                _pl_narr_runs = _normalize_builder_results(_pl_narr_route_data)
+                _pl_narr_winner = None
+                if _pl_narr_runs:
+                    _pl_narr_winner_id = (_pl_narr_runs[-1].get("decision") or {}).get("winner")
+                    _pl_narr_winner = next(
+                        (c for c in _pl_narr_runs[-1].get("candidates", []) if c.get("id") == _pl_narr_winner_id),
+                        None,
+                    )
+                if _pl_narr_winner and _pl_narr_winner.get("analysis"):
+                    st.caption("Narrativa vuota (nessuna generazione automatica).")
+                    if st.button("✨ Genera narrativa con AI", key="pl_btn_gen_narrative"):
+                        try:
+                            _pl_narr_wp_names = [
+                                w.get("name", "") for w in _pl_narr_route_data.get("ordered_waypoints", [])
+                            ]
+                            with st.spinner("Genero la narrativa..."):
+                                _pl_narrative = generate_narrative_from_facts(
+                                    waypoint_names=_pl_narr_wp_names,
+                                    distance_km=_pl_narr_winner["analysis"]["distance_km"],
+                                    elevation_gain_m=_pl_narr_winner["analysis"]["elevation_gain_m"],
+                                    route_type=_pl_narr_winner.get(
+                                        "route_type", _pl_narr_route_data.get("request", {}).get("route_type", "loop"),
+                                    ),
+                                )
+                            _pl_narr_path = _PLANNED_DIR / f"{_pl_narr_open_name}.json"
+                            _pl_narr_payload = json.loads(_pl_narr_path.read_text(encoding="utf-8"))
+                            _pl_narr_payload["route_narrative"] = _pl_narrative
+                            _pl_narr_path.write_text(
+                                json.dumps(_pl_narr_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                            )
+                            st.success("Narrativa generata e salvata.")
+                            st.rerun()
+                        except Exception as _pl_narr_exc:
+                            st.error(f"Errore generazione narrativa: {_pl_narr_exc}")
+        st.divider()
+
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
     # solo un'assegnazione esplicita a session_state[key] fatta prima del
     # rendering del widget si riflette davvero sul valore mostrato nel DOM —
@@ -2799,7 +2861,16 @@ with tab_builder:
                 else f"{_target_km_b_disp} km",
             )
             col_rb2.metric(t("builder.metric_type"), req_b.get("route_type", "—"))
-            col_rb3.metric(t("builder.metric_waypoints"), len(wps_b))
+            # ordered_waypoints per una route nata da Manual è solo distacco/
+            # via/raccordo DELLA MODIFICA (pochi punti, es. 9), non l'intero
+            # percorso fuso — request.user_waypoints, quando popolato (Fix 2,
+            # extract_draft_waypoints_from_gpx sul GPX vincente completo), è
+            # più rappresentativo del percorso reale. Per una route Planner
+            # normale vale l'opposto (ordered_waypoints È il piano completo,
+            # user_waypoints sono solo gli hint grezzi digitati) — max() dei
+            # due copre entrambi i casi senza bisogno di distinguerli qui.
+            _bld_wp_count_b = max(len(wps_b), len(req_b.get("user_waypoints", [])))
+            col_rb3.metric(t("builder.metric_waypoints"), _bld_wp_count_b)
             st.caption(
                 f"Tema: **{req_b.get('scenery_theme','—')}** · "
                 f"Atletico: **{req_b.get('athletic_theme','—')}** · "
@@ -3557,19 +3628,15 @@ with tab_manual:
             _man_precompiled_path = str(_wpath_m)
             _man_precompiled_label = f"{_wid_m} ({_wprofile_m})"
 
-    # ── Narrativa AI a richiesta (completamento Parte A) ──────────────────────
-    # route_narrative resta vuota di default al salvataggio (nessuna narrativa
-    # finta) — questo bottone è l'unico modo per popolarla, sempre su
-    # richiesta esplicita, mai automatico. Riusa
-    # planner_agent.generate_narrative_from_facts (dati REALI della route
-    # appena salvata), non il prompt di generate_raw_route (quello presuppone
-    # ricerca web + scelta dei waypoint, qui il percorso esiste già per
-    # davvero). Vive QUI, prima di chiamare render_manual_tab — non dentro il
-    # blocco "if _man_result" più sotto: salvare una route da zero la rende
-    # la route "aperta" con un vincitore, quindi il prossimo render precompila
-    # subito la modalità modifica su di essa, il che azzera lo stato interno
-    # dello strumento (result compreso) — questo pannello deve sopravvivere a
-    # quel reset, essendo tracciato in una chiave di sessione indipendente.
+    # ── Promemoria ultima route salvata (completamento Parte A) ────────────────
+    # Manual qui si limita a salvare — la narrativa AI si genera dal tab
+    # Planner (route aperta), non più da qui. Vive QUI, prima di chiamare
+    # render_manual_tab — non dentro il blocco "if _man_result" più sotto:
+    # salvare una route da zero la rende la route "aperta" con un vincitore,
+    # quindi il prossimo render precompila subito la modalità modifica su di
+    # essa, il che azzera lo stato interno dello strumento (result compreso)
+    # — questo pannello deve sopravvivere a quel reset, essendo tracciato in
+    # una chiave di sessione indipendente.
     _man_last_saved = st.session_state.get("rem_last_saved_new_route")
     if _man_last_saved:
         _man_saved_route_data = _load_saved_routes().get(_man_last_saved["route_name"])
@@ -3577,34 +3644,71 @@ with tab_manual:
             st.session_state.pop("rem_last_saved_new_route", None)
         else:
             st.caption(f"Ultima route salvata da qui: «{_man_last_saved['route_name']}»")
-            _man_current_narrative = _man_saved_route_data.get("route_narrative", "")
-            if _man_current_narrative:
-                st.info(_man_current_narrative)
-                if st.button("↩️ Chiudi", key="rem_dismiss_narrative_panel"):
-                    st.session_state.pop("rem_last_saved_new_route", None)
-                    st.rerun()
+
+            # ── Pianificazione dal percorso reale a richiesta (Fix 2) ──────────
+            # Una route salvata da Manual ("crea da zero" o "modifica → salva
+            # come nuova route" — mai per un salvataggio "M", che non passa da
+            # qui) ha già un request/ordered_waypoints validi (Parte A), ma
+            # request.user_waypoints resta vuoto: _manual_waypoints_to_ordered
+            # scrive solo in ordered_waypoints (usato da Builder/mappe), non nel
+            # campo che il Planner rilegge quando la route viene caricata
+            # esplicitamente ("Carica nel Planner", Utility → Gestione file).
+            # Riusa TALE QUALE extract_draft_waypoints_from_gpx (già costruita
+            # per le route "solo D", vedi sezione "Bozza waypoint da percorso
+            # reale" nel Planner) sul GPX vincente appena salvato — l'intero
+            # percorso fuso, non solo il tratto di deviazione cliccato in
+            # Manual — nessuna nuova logica di estrazione. A differenza del
+            # bottone "solo D" (che precompila solo il campo testuale del form
+            # Planner, pl_wps), qui il risultato scrive direttamente
+            # request.user_waypoints nel JSON già salvato: la route esiste già
+            # per davvero, non serve far ripassare l'utente dal form prima di
+            # persisterlo.
+            _man_current_user_wps = ((_man_saved_route_data.get("request") or {}).get("user_waypoints") or [])
+            if _man_current_user_wps:
+                st.caption(f"Pianificazione: {len(_man_current_user_wps)} waypoint già estratti dal percorso reale.")
             else:
-                st.caption("Narrativa vuota (nessuna generazione automatica).")
-                if st.button("✨ Genera narrativa con AI", key="rem_btn_gen_narrative"):
+                st.caption("Pianificazione (request.user_waypoints) ancora vuota.")
+                if st.button("🔄 Genera pianificazione dal percorso reale", key="rem_btn_gen_planning_draft"):
                     try:
-                        with st.spinner("Genero la narrativa..."):
-                            _man_narrative = generate_narrative_from_facts(
-                                waypoint_names=_man_last_saved["waypoint_names"],
-                                distance_km=_man_last_saved["distance_km"],
-                                elevation_gain_m=_man_last_saved["elevation_gain_m"],
-                                route_type=_man_last_saved["route_type"],
-                            )
-                        _man_narr_path = _PLANNED_DIR / f"{_man_last_saved['route_name']}.json"
-                        _man_narr_payload = json.loads(_man_narr_path.read_text(encoding="utf-8"))
-                        _man_narr_payload["route_narrative"] = _man_narrative
-                        _man_narr_path.write_text(
-                            json.dumps(_man_narr_payload, ensure_ascii=False, indent=2),
-                            encoding="utf-8",
-                        )
-                        st.success("Narrativa generata e salvata.")
-                        st.rerun()
+                        _man_draft_winner = _find_route_winner_gpx(_man_last_saved["route_name"])
+                        if not _man_draft_winner:
+                            st.error("Nessun GPX vincente trovato per questa route.")
+                        else:
+                            _man_draft_gpx_path, _, _ = _man_draft_winner
+                            with st.spinner("Estraggo i waypoint dal percorso reale..."):
+                                # target_count=25 (non il default 15 dello slider "solo D",
+                                # pensato per un piano leggero da editare a mano): qui serve
+                                # densità sufficiente perché una rigenerazione Builder con lo
+                                # stesso profilo converga vicino all'originale — verificato
+                                # con BRouter reale su Giro-Locale-Grande, deviazione media
+                                # 43→19.6 m passando da 15 a 25 (oltre non migliora: il
+                                # filtro min_spacing_m=150m satura).
+                                _man_draft_wps = extract_draft_waypoints_from_gpx(
+                                    str(_man_draft_gpx_path), target_count=25,
+                                )
+                            if not _man_draft_wps:
+                                st.warning("Estrazione fallita: nessun waypoint rappresentativo trovato.")
+                            else:
+                                _man_plan_path = _PLANNED_DIR / f"{_man_last_saved['route_name']}.json"
+                                _man_plan_payload = json.loads(_man_plan_path.read_text(encoding="utf-8"))
+                                _man_plan_payload["request"]["user_waypoints"] = [
+                                    {"name": f"{lat:.6f},{lon:.6f}", "mandatory": True}
+                                    for lat, lon in _man_draft_wps
+                                ]
+                                _man_plan_path.write_text(
+                                    json.dumps(_man_plan_payload, ensure_ascii=False, indent=2),
+                                    encoding="utf-8",
+                                )
+                                st.success(f"{len(_man_draft_wps)} waypoint estratti e salvati in request.user_waypoints.")
+                                st.rerun()
                     except Exception as _man_exc:
-                        st.error(f"Errore generazione narrativa: {_man_exc}")
+                        st.error(f"Errore generazione pianificazione: {_man_exc}")
+
+            # Narrativa AI: si genera dal tab Planner (route aperta), non più
+            # qui — Manual si limita a salvare (vedi promemoria in cima).
+            if st.button("↩️ Chiudi promemoria", key="rem_dismiss_last_saved_panel"):
+                st.session_state.pop("rem_last_saved_new_route", None)
+                st.rerun()
         st.divider()
 
     _man_out = render_manual_tab(
