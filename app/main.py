@@ -1755,9 +1755,13 @@ with tab_file:
                     st.error(f"{t('builder.actual_ride_upload_error')}: {exc}")
                 else:
                     # La route appena creata diventa quella "aperta" (navigazione
-                    # documento aperto) — stesso comportamento di "Salva come
-                    # nuova route" nel Planner.
-                    st.session_state["pl_loaded_route_name"] = _sar_slug
+                    # documento aperto) — _open_route_pending, non un'assegnazione
+                    # diretta a pl_loaded_route_name: quest'ultima da sola marcava
+                    # la route come aperta senza mai ricaricare il form del
+                    # Planner, che restava sui valori precedenti (o i default)
+                    # invece dei dati veri appena calcolati da
+                    # _save_actual_ride_only_route.
+                    _open_route_pending(_sar_slug)
                     st.success(f"{t('file.save_actual_success').format(name=_sar_slug)} `{_sar_path}`")
                     st.rerun()
 
@@ -2135,7 +2139,13 @@ with tab_planner:
                 if _pl_wpx_rides and Path(_pl_wpx_rides[-1].get("gpx_path", "")).exists():
                     _pl_wpx_source_gpx = _pl_wpx_rides[-1]["gpx_path"]
 
-            if not _pl_wpx_current and _pl_wpx_source_gpx:
+            if _pl_wpx_current:
+                # Feedback persistente dopo un'estrazione riuscita — senza,
+                # il bottone/didascalia sotto sparivano al rerun (user_waypoints
+                # non più vuoto) senza mostrare nulla al posto loro, dando
+                # l'impressione che il click non avesse avuto alcun effetto.
+                st.caption(t("planner.wpx_already_done").format(n=len(_pl_wpx_current)))
+            elif _pl_wpx_source_gpx:
                 st.caption(t("planner.wpx_empty_caption"))
                 if st.button(t("planner.wpx_generate_btn"), key="pl_btn_gen_wpx"):
                     try:
@@ -2265,9 +2275,9 @@ with tab_planner:
             # Stesso motivo del reset "Nuovo": il pin verde apparteneva alla
             # route aperta prima di questo caricamento, non a quella nuova.
             st.session_state.pop("pl_geo_last_click", None)
-            # Route "solo Opzione D" (tab File → "Salva percorso reale come
-            # nuova route"): niente request salvata per costruzione — il form
-            # sopra si popola già con i default (vedi _load_req = {}), ma
+            # Route "solo Opzione D" create prima che _save_actual_ride_only_route
+            # popolasse sempre request: per queste (ormai solo dati storici) il
+            # form sopra si popola già con i default (vedi _load_req = {}), ma
             # senza un messaggio dedicato l'utente potrebbe pensare a un bug
             # invece che a una scelta di design.
             if "request" not in _load_data:
@@ -3854,7 +3864,12 @@ with tab_manual:
                             json.dumps(_man_payload, ensure_ascii=False, indent=2), encoding="utf-8",
                         )
 
-                        st.session_state["pl_loaded_route_name"] = _man_slug
+                        # _open_route_pending, non un'assegnazione diretta: così il
+                        # form del Planner si ricarica coi dati veri appena
+                        # calcolati (start/end/route_type/target_km), invece di
+                        # restare sui valori precedenti finché non si preme
+                        # esplicitamente "Carica nel Planner".
+                        _open_route_pending(_man_slug)
                         st.session_state.pop("bld_result", None)
                         st.session_state["rem_last_saved_new_route"] = {
                             "route_name": _man_slug,
