@@ -1424,15 +1424,16 @@ def _persist_manual_candidate_gpx(source_path: str, route_name: str, candidate_i
     return dest
 
 
-def _analyze_manual_result(gpx_path: str) -> tuple[dict, str]:
+def _analyze_route_gpx(gpx_path: str) -> tuple[dict, str]:
     """
-    (analysis, route_type) per un GPX prodotto dallo strumento Manual — riusa
-    analyze_gpx()/detect_climbs() così come sono, mai reinventato il
-    confronto primo/ultimo punto: un'unica chiamata con route_type="loop"
-    basta, perché loop_closed/closure_distance_m/out_and_back_percent sono
-    calcolati indipendentemente dal route_type richiesto (vedi
-    gpx_analyzer.analyze_gpx) — solo l'etichetta finale route_type cambia in
-    base al risultato.
+    (analysis, route_type) per un GPX qualunque — prodotto dallo strumento
+    Manual o un percorso realmente pedalato caricato come nuova route (tab
+    File) — riusa analyze_gpx()/detect_climbs() così come sono, mai
+    reinventato il confronto primo/ultimo punto: un'unica chiamata con
+    route_type="loop" basta, perché loop_closed/closure_distance_m/
+    out_and_back_percent sono calcolati indipendentemente dal route_type
+    richiesto (vedi gpx_analyzer.analyze_gpx) — solo l'etichetta finale
+    route_type cambia in base al risultato.
 
     Classificazione a tre vie (prima era binaria loop/out_and_back, senza
     alcuna categoria per un point-to-point vero — bug reale, trovato con un
@@ -1598,22 +1599,37 @@ def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> di
 
 def _save_actual_ride_only_route(route_name: str, actual_ride_record: dict) -> Path:
     """
-    Crea una route "solo Opzione D": nessuna pianificazione — niente
-    Planner/Builder coinvolti, per tenere in memoria un giro pedalato
-    libero mai pianificato con l'app (tab File → "Salva percorso reale
-    come nuova route"). Deliberatamente non deriva waypoint/narrativa/
-    candidati A/B/C dal GPX: la chiave "request" è omessa del tutto (non
-    None, non {}) — ogni lettore in questo file legge già
-    route_data.get("request", {}) seguito da altri .get() con default,
-    quindi la sua assenza è gestita ovunque senza toccare altro codice
-    (verificato: Planner "Carica nel Planner", riepilogo Builder, tab
-    File "Le mie route", Utility → Debug).
+    Crea una route da un percorso realmente pedalato (tab File → "Salva
+    percorso reale come nuova route") — nessun candidato A/B/C generato qui
+    (niente BRouter: quel percorso reale, l'"Opzione D", non va mai toccato/
+    ricalcolato), ma request (start/end/route_type/target_km) viene sempre
+    derivata dal GPX stesso, mai lasciata assente: partenza e arrivo sono i
+    veri primo/ultimo trkpt, target_km la distanza reale, route_type la
+    classificazione a tre vie di _analyze_route_gpx — un percorso reale ha
+    già tutte queste informazioni, non c'è motivo di lasciarle a un default
+    vuoto in attesa che l'utente lo ricarichi e le corregga a mano. Estrarre
+    i waypoint (request.user_waypoints) resta invece un passo a parte, a
+    discrezione dell'utente (vedi il bottone dedicato nel tab Planner) —
+    l'unica cosa che non si può dedurre in automatico dal tracciato.
+    Generare candidati A/B/C via Builder (con BRouter, eventualmente un
+    profilo diverso) resta anch'esso un passo successivo esplicito: qui
+    builder_results parte vuoto, la D non viene mai coinvolta/sovrascritta.
     """
+    gpx_path = actual_ride_record["gpx_path"]
+    analysis, route_type = _analyze_route_gpx(gpx_path)
+    (start_lat, start_lon), (end_lat, end_lon) = _gpx_coords(gpx_path)[0], _gpx_coords(gpx_path)[-1]
+    request = RouteRequest(
+        start=StartPoint(name=f"{start_lat:.5f},{start_lon:.5f}", lat=start_lat, lon=start_lon),
+        end={"name": f"{end_lat:.5f},{end_lon:.5f}", "lat": end_lat, "lon": end_lon},
+        target_km=analysis["distance_km"],
+        route_type=route_type,
+    )
     _PLANNED_DIR.mkdir(parents=True, exist_ok=True)
     path = _PLANNED_DIR / f"{route_name}.json"
     payload = {
         "route_name": route_name,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        "request": request.model_dump(),
         "route_narrative": "",
         "ordered_waypoints": [],
         "system_prompt": "",
@@ -2082,6 +2098,65 @@ with tab_planner:
                 st.caption(t("planner.narrative_empty_caption"))
                 if st.button(t("planner.narrative_generate_btn"), key="pl_btn_gen_narrative"):
                     _pl_regenerate_narrative(active_lang())
+        st.divider()
+
+    # ── Estrai waypoint dal percorso reale a richiesta ──────────────────────
+    # Generalizza in un solo meccanismo sia il vecchio bottone "Fix 2" (viveva
+    # solo nel pannello post-salvataggio di Manual, quindi irraggiungibile per
+    # una route con request creata altrove — es. importata dal tab File, vedi
+    # _save_actual_ride_only_route) sia l'idea del vecchio bottone "solo D"
+    # (che però scriveva solo nel campo testuale pl_wps, non direttamente in
+    # request.user_waypoints): qualunque route aperta CON request già valida
+    # (start/end/route_type/target_km — sempre presente per costruzione, sia
+    # nata da Manual sia da un percorso reale importato) ma user_waypoints
+    # ancora vuoto, con un GPX sorgente disponibile (il candidato vincente
+    # dell'ultima run Builder, altrimenti l'ultimo percorso reale caricato).
+    # extract_draft_waypoints_from_gpx tale quale, mai reinventata
+    # l'estrazione — target_count=25, non il default 15 (vedi commento
+    # originale rimosso da Manual: verificato con BRouter reale, deviazione
+    # media dimezzata rispetto a 15, oltre 25 il filtro min_spacing_m=150m
+    # satura e non aggiunge altro).
+    _pl_wpx_open_name = _open_route_name()
+    if _pl_wpx_open_name:
+        _pl_wpx_route_data = _load_saved_routes().get(_pl_wpx_open_name)
+        if _pl_wpx_route_data and "request" in _pl_wpx_route_data:
+            _pl_wpx_current = (_pl_wpx_route_data.get("request") or {}).get("user_waypoints") or []
+            _pl_wpx_source_gpx = None
+            _pl_wpx_runs = _normalize_builder_results(_pl_wpx_route_data)
+            if _pl_wpx_runs:
+                _pl_wpx_winner_id = (_pl_wpx_runs[-1].get("decision") or {}).get("winner")
+                _pl_wpx_winner = next(
+                    (c for c in _pl_wpx_runs[-1].get("candidates", []) if c.get("id") == _pl_wpx_winner_id), None,
+                )
+                if _pl_wpx_winner and _pl_wpx_winner.get("gpx_path") and Path(_pl_wpx_winner["gpx_path"]).exists():
+                    _pl_wpx_source_gpx = _pl_wpx_winner["gpx_path"]
+            if _pl_wpx_source_gpx is None:
+                _pl_wpx_rides = _pl_wpx_route_data.get("actual_rides") or []
+                if _pl_wpx_rides and Path(_pl_wpx_rides[-1].get("gpx_path", "")).exists():
+                    _pl_wpx_source_gpx = _pl_wpx_rides[-1]["gpx_path"]
+
+            if not _pl_wpx_current and _pl_wpx_source_gpx:
+                st.caption(t("planner.wpx_empty_caption"))
+                if st.button(t("planner.wpx_generate_btn"), key="pl_btn_gen_wpx"):
+                    try:
+                        with st.spinner(t("planner.wpx_generating_spinner")):
+                            _pl_wpx_draft = extract_draft_waypoints_from_gpx(_pl_wpx_source_gpx, target_count=25)
+                        if not _pl_wpx_draft:
+                            st.warning(t("planner.wpx_empty_result"))
+                        else:
+                            _pl_wpx_path = _PLANNED_DIR / f"{_pl_wpx_open_name}.json"
+                            _pl_wpx_payload = json.loads(_pl_wpx_path.read_text(encoding="utf-8"))
+                            _pl_wpx_payload["request"]["user_waypoints"] = [
+                                {"name": f"{lat:.6f},{lon:.6f}", "mandatory": True}
+                                for lat, lon in _pl_wpx_draft
+                            ]
+                            _pl_wpx_path.write_text(
+                                json.dumps(_pl_wpx_payload, ensure_ascii=False, indent=2), encoding="utf-8",
+                            )
+                            st.success(t("planner.wpx_ok").format(n=len(_pl_wpx_draft)))
+                            st.rerun()
+                    except Exception as _pl_wpx_exc:
+                        st.error(f"{t('planner.wpx_error')}: {_pl_wpx_exc}")
         st.divider()
 
     # Applica il reset PRIMA che i widget pl_ vengano istanziati in questo run:
@@ -3684,67 +3759,11 @@ with tab_manual:
         else:
             st.caption(f"Ultima route salvata da qui: «{_man_last_saved['route_name']}»")
 
-            # ── Pianificazione dal percorso reale a richiesta (Fix 2) ──────────
-            # Una route salvata da Manual ("crea da zero" o "modifica → salva
-            # come nuova route" — mai per un salvataggio "M", che non passa da
-            # qui) ha già un request/ordered_waypoints validi (Parte A), ma
-            # request.user_waypoints resta vuoto: _manual_waypoints_to_ordered
-            # scrive solo in ordered_waypoints (usato da Builder/mappe), non nel
-            # campo che il Planner rilegge quando la route viene caricata
-            # esplicitamente ("Carica nel Planner", Utility → Gestione file).
-            # Riusa TALE QUALE extract_draft_waypoints_from_gpx (già costruita
-            # per le route "solo D", vedi sezione "Bozza waypoint da percorso
-            # reale" nel Planner) sul GPX vincente appena salvato — l'intero
-            # percorso fuso, non solo il tratto di deviazione cliccato in
-            # Manual — nessuna nuova logica di estrazione. A differenza del
-            # bottone "solo D" (che precompila solo il campo testuale del form
-            # Planner, pl_wps), qui il risultato scrive direttamente
-            # request.user_waypoints nel JSON già salvato: la route esiste già
-            # per davvero, non serve far ripassare l'utente dal form prima di
-            # persisterlo.
-            _man_current_user_wps = ((_man_saved_route_data.get("request") or {}).get("user_waypoints") or [])
-            if _man_current_user_wps:
-                st.caption(f"Pianificazione: {len(_man_current_user_wps)} waypoint già estratti dal percorso reale.")
-            else:
-                st.caption("Pianificazione (request.user_waypoints) ancora vuota.")
-                if st.button("🔄 Genera pianificazione dal percorso reale", key="rem_btn_gen_planning_draft"):
-                    try:
-                        _man_draft_winner = _find_route_winner_gpx(_man_last_saved["route_name"])
-                        if not _man_draft_winner:
-                            st.error("Nessun GPX vincente trovato per questa route.")
-                        else:
-                            _man_draft_gpx_path, _, _ = _man_draft_winner
-                            with st.spinner("Estraggo i waypoint dal percorso reale..."):
-                                # target_count=25 (non il default 15 dello slider "solo D",
-                                # pensato per un piano leggero da editare a mano): qui serve
-                                # densità sufficiente perché una rigenerazione Builder con lo
-                                # stesso profilo converga vicino all'originale — verificato
-                                # con BRouter reale su Giro-Locale-Grande, deviazione media
-                                # 43→19.6 m passando da 15 a 25 (oltre non migliora: il
-                                # filtro min_spacing_m=150m satura).
-                                _man_draft_wps = extract_draft_waypoints_from_gpx(
-                                    str(_man_draft_gpx_path), target_count=25,
-                                )
-                            if not _man_draft_wps:
-                                st.warning("Estrazione fallita: nessun waypoint rappresentativo trovato.")
-                            else:
-                                _man_plan_path = _PLANNED_DIR / f"{_man_last_saved['route_name']}.json"
-                                _man_plan_payload = json.loads(_man_plan_path.read_text(encoding="utf-8"))
-                                _man_plan_payload["request"]["user_waypoints"] = [
-                                    {"name": f"{lat:.6f},{lon:.6f}", "mandatory": True}
-                                    for lat, lon in _man_draft_wps
-                                ]
-                                _man_plan_path.write_text(
-                                    json.dumps(_man_plan_payload, ensure_ascii=False, indent=2),
-                                    encoding="utf-8",
-                                )
-                                st.success(f"{len(_man_draft_wps)} waypoint estratti e salvati in request.user_waypoints.")
-                                st.rerun()
-                    except Exception as _man_exc:
-                        st.error(f"Errore generazione pianificazione: {_man_exc}")
-
-            # Narrativa AI: si genera dal tab Planner (route aperta), non più
-            # qui — Manual si limita a salvare (vedi promemoria in cima).
+            # Narrativa AI ed estrazione waypoint dal percorso reale si fanno
+            # entrambe dal tab Planner (route aperta) — non più qui: Manual si
+            # limita a salvare, stesso identico comportamento indipendentemente
+            # da come la route è nata (Manual, o un percorso reale importato
+            # dal tab File — vedi _save_actual_ride_only_route).
             if st.button("↩️ Chiudi promemoria", key="rem_dismiss_last_saved_panel"):
                 st.session_state.pop("rem_last_saved_new_route", None)
                 st.rerun()
@@ -3760,7 +3779,7 @@ with tab_manual:
     if _man_result and "error" not in _man_result:
         st.divider()
         st.subheader("Salva")
-        _man_analysis, _man_route_type = _analyze_manual_result(_man_result["out_path"])
+        _man_analysis, _man_route_type = _analyze_route_gpx(_man_result["out_path"])
         st.caption(
             f"{_man_analysis['distance_km']:.1f} km · {_man_analysis['elevation_gain_m']:.0f} m D+ · "
             f"tipo dedotto: {_man_route_type}"
