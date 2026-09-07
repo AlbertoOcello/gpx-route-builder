@@ -1429,12 +1429,34 @@ def _analyze_manual_result(gpx_path: str) -> tuple[dict, str]:
     (analysis, route_type) per un GPX prodotto dallo strumento Manual — riusa
     analyze_gpx()/detect_climbs() così come sono, mai reinventato il
     confronto primo/ultimo punto: un'unica chiamata con route_type="loop"
-    basta, perché loop_closed/closure_distance_m sono calcolati identici per
-    "loop" e "out_and_back" (vedi gpx_analyzer.analyze_gpx) — solo
-    l'etichetta finale route_type cambia in base al risultato.
+    basta, perché loop_closed/closure_distance_m/out_and_back_percent sono
+    calcolati indipendentemente dal route_type richiesto (vedi
+    gpx_analyzer.analyze_gpx) — solo l'etichetta finale route_type cambia in
+    base al risultato.
+
+    Classificazione a tre vie (prima era binaria loop/out_and_back, senza
+    alcuna categoria per un point-to-point vero — bug reale, trovato con un
+    GPX Pesaro→Senigallia: 81.3 km, closure_distance_m=33560,
+    out_and_back_percent=3.8%, veniva etichettato "out_and_back" e
+    scartato da score_candidate per "anello non chiuso"):
+    - loop_closed=True                                    -> "loop"
+    - loop_closed=False e out_and_back_percent alto        -> "out_and_back"
+      (il percorso ripercorre realmente sé stesso in gran parte)
+    - loop_closed=False e out_and_back_percent basso        -> "point_to_point"
+      (percorso genuinamente aperto tra due punti distinti)
+    Soglia: OUT_AND_BACK_WARN_THRESHOLD_PCT (20%, già usata altrove
+    nell'app — main.py/decision_agent.py — come soglia "il percorso
+    ripercorre sé stesso in modo significativo", coerente con questo uso;
+    _OUT_AND_BACK_INFO_THRESHOLD_PCT, 5%, è deliberatamente più sensibile e
+    pensata solo per un avviso informativo minore, non per classificare).
     """
     analysis = analyze_gpx(gpx_path, route_type="loop")
-    route_type = "loop" if analysis.get("loop_closed") else "out_and_back"
+    if analysis.get("loop_closed"):
+        route_type = "loop"
+    elif (analysis.get("out_and_back_percent") or 0.0) >= OUT_AND_BACK_WARN_THRESHOLD_PCT:
+        route_type = "out_and_back"
+    else:
+        route_type = "point_to_point"
     return analysis, route_type
 
 
@@ -3768,11 +3790,23 @@ with tab_manual:
                     try:
                         _man_wps_dicts = _manual_waypoints_to_ordered(_man_out["waypoints"])
                         _man_first_lat, _man_first_lon = _man_out["waypoints"][0]
+                        # end = ultimo trkpt REALE del GPX generato/fuso, non l'ultimo
+                        # click (raccordo) della sequenza — per un loop coincide con lo
+                        # start (stessa convenzione già in uso per i loop generati dal
+                        # Planner, vedi candidate_generator._apply_loop_fix); per un
+                        # point-to-point è il vero punto di arrivo, prima sempre assente
+                        # (request.end restava None indipendentemente dal route_type —
+                        # bug reale, trovato con un GPX Pesaro→Senigallia).
+                        _man_end_lat, _man_end_lon = _gpx_coords(_man_result["out_path"])[-1]
                         _man_req_obj = RouteRequest(
                             start=StartPoint(
                                 name=f"{_man_first_lat:.5f},{_man_first_lon:.5f}",
                                 lat=_man_first_lat, lon=_man_first_lon,
                             ),
+                            end={
+                                "name": f"{_man_end_lat:.5f},{_man_end_lon:.5f}",
+                                "lat": _man_end_lat, "lon": _man_end_lon,
+                            },
                             target_km=_man_analysis["distance_km"],
                             route_type=_man_route_type,
                         )
