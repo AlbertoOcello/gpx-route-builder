@@ -3789,15 +3789,21 @@ with tab_manual:
                 else:
                     try:
                         _man_wps_dicts = _manual_waypoints_to_ordered(_man_out["waypoints"])
-                        _man_first_lat, _man_first_lon = _man_out["waypoints"][0]
-                        # end = ultimo trkpt REALE del GPX generato/fuso, non l'ultimo
-                        # click (raccordo) della sequenza — per un loop coincide con lo
-                        # start (stessa convenzione già in uso per i loop generati dal
+                        # start/end = primo/ultimo trkpt REALI del GPX generato/fuso, non
+                        # il primo/ultimo click (distacco/raccordo) della sequenza — creando
+                        # una route da un percorso reale, request deve riflettere quel
+                        # percorso per intero, non lasciare al caso un estremo dedotto dal
+                        # punto in cui è capitato di cliccare durante l'editing. Per un loop
+                        # coincidono (stessa convenzione già in uso per i loop generati dal
                         # Planner, vedi candidate_generator._apply_loop_fix); per un
-                        # point-to-point è il vero punto di arrivo, prima sempre assente
-                        # (request.end restava None indipendentemente dal route_type —
-                        # bug reale, trovato con un GPX Pesaro→Senigallia).
-                        _man_end_lat, _man_end_lon = _gpx_coords(_man_result["out_path"])[-1]
+                        # point-to-point sono i veri punti di partenza/arrivo — prima lo
+                        # start veniva preso dal click e l'end restava sempre None
+                        # indipendentemente dal route_type (bug reale, trovato con un GPX
+                        # Pesaro→Senigallia: il Builder mostrava "Partenza" su un punto
+                        # intermedio invece che su Pesaro).
+                        _man_gpx_coords = _gpx_coords(_man_result["out_path"])
+                        _man_first_lat, _man_first_lon = _man_gpx_coords[0]
+                        _man_end_lat, _man_end_lon = _man_gpx_coords[-1]
                         _man_req_obj = RouteRequest(
                             start=StartPoint(
                                 name=f"{_man_first_lat:.5f},{_man_first_lon:.5f}",
