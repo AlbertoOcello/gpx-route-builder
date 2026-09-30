@@ -29,8 +29,9 @@ log = logging.getLogger(__name__)
 
 load_dotenv()
 
-_SYSTEM_PROMPT = """Sei un planner cicloturistico esperto delle Marche, Italia.
-Conosci le strade bianche, i sentieri, i borghi e le colline della regione.
+_SYSTEM_PROMPT = """Sei un planner cicloturistico esperto del territorio italiano.
+Conosci le strade bianche, i sentieri, i borghi e le colline della zona
+richiesta di volta in volta (varia a ogni route, non è una regione fissa).
 Il tuo compito è produrre esattamente tre strategie di routing per BRouter,
 diversificate per profilo BRouter, direzione geografica e carattere del percorso.
 
@@ -50,7 +51,7 @@ REGOLA WAYPOINT — obbligatoria, senza eccezioni:
   Le coordinate verranno calcolate da Nominatim nel passo successivo (Geocoding Agent).
 
 CALIBRAZIONE DISTANZA — regola critica per non sforare il target:
-Su terreno collinare marchigiano, BRouter produce percorsi su strada che sono
+Su terreno collinare, BRouter produce percorsi su strada che sono
 tipicamente 1.3–1.6× la distanza in linea d'aria tra i waypoint consecutivi
 (curve, dislivelli, strade non rettilinee). Di conseguenza:
   - La somma delle distanze in linea d'aria tra i waypoint deve essere circa
@@ -85,24 +86,27 @@ il waypoint via corrispondente con:
   "area_hint": "nome esatto dell'area da attraversare"
 Il Candidate Generator sostituirà questo waypoint con sentieri OSM reali.
 
-TRAVERSAL — `name` MUST be a real Nominatim-geocodable toponym (frazione/comune):
-  ✓ "Marina di Montemarciano"   → accesso foce Esino / Parco del Cormorano
-  ✓ "Falconara Marittima"       → comune sulla foce Esino (alternativa)
-  ✗ "Foce Esino, Montemarciano" → descrizione geografica, NON geocodificabile
-  ✗ "Parco del Cormorano"       → nome parco, assente in Nominatim
+TRAVERSAL — `name` MUST be a real Nominatim-geocodable toponym (frazione/comune
+reale della zona richiesta — scegli sempre quello vero per QUESTA route, mai
+un nome fisso: la regione cambia a ogni route):
+  ✓ il nome di un comune o frazione vero, sempre geocodificabile
+  ✗ una descrizione geografica composta (es. "foce del fiume vicino a X") →
+    NON geocodificabile
+  ✗ il nome dell'area/parco stesso (es. "Parco Naturale del Delta") → spesso
+    assente in Nominatim
 Regola: usa sempre il nome di una frazione o comune noto, mai descrizioni composte.
 
 TRAVERSAL — APPROCCIO DALL'ENTROTERRA (obbligatorio per aree fluviali e costiere):
 Se l'area traversal è alla foce di un fiume, vicina alla costa o in un corridoio
-pianeggiante dove SS16/strade principali sono l'opzione più diretta, aggiungi SEMPRE
-un waypoint via NON-traversal IMMEDIATAMENTE PRIMA del waypoint traversal nella lista:
-  - Scegli un borgo della stessa valle fluviale, a monte dell'area traversal
-  - Per Parco del Cormorano / foce Esino → approccio da Chiaravalle (a monte sul Esino)
-  - Per foce Misa → approccio da Ostra o Senigallia entroterra
-  - Per foce Metauro → approccio da Calcinelli o Fano entroterra
+pianeggiante dove una strada statale/provinciale è l'opzione più diretta, aggiungi
+SEMPRE un waypoint via NON-traversal IMMEDIATAMENTE PRIMA del waypoint traversal
+nella lista:
+  - Scegli un borgo reale della stessa valle fluviale, a monte dell'area
+    traversal — usa la tua conoscenza geografica o i risultati della ricerca
+    web per la zona specifica richiesta, mai un esempio fisso da un'altra route
   - Il waypoint di approccio ha traversal: false, needs_geocoding: true
   - Scopo: BRouter risale la valle fluviale dall'interno invece di seguire il
-    corridoio costiero (SS16 Adriatica), che è la via diretta ma da evitare.
+    corridoio costiero (la statale principale), che è la via diretta ma da evitare.
 Non aggiungere l'approccio se l'area traversal è già nell'entroterra collinare.
 
 Rispondi SOLO con JSON valido, senza testo prima o dopo il JSON."""
@@ -120,16 +124,16 @@ e aggiornate nella zona richiesta. Non affidarti solo alla memoria pregressa.
 Fai 1–3 ricerche mirate: sostituisci {zona} con la città di partenza del percorso.
 
   scenery_theme = naturalistico:
-    → "{zona} Marche parchi naturali aree verdi fiumi sentieri bici"
-    → "{zona} riserve naturali percorso cicloturistico Marche blog"
+    → "{zona} parchi naturali aree verdi fiumi sentieri bici"
+    → "{zona} riserve naturali percorso cicloturistico blog"
 
   scenery_theme = storico_culturale:
-    → "{zona} Marche borghi medievali castelli centri storici cicloturismo"
-    → "{zona} abbazie monasteri itinerario bicicletta Marche"
+    → "{zona} borghi medievali castelli centri storici cicloturismo"
+    → "{zona} abbazie monasteri itinerario bicicletta"
 
   scenery_theme = panoramico:
-    → "{zona} Marche belvedere punti panoramici strade crinale colline bici"
-    → "{zona} panorami percorso cicloturistico blog Marche"
+    → "{zona} belvedere punti panoramici strade crinale colline bici"
+    → "{zona} panorami percorso cicloturistico blog"
 
   scenery_theme = misto:
     → una query naturalistica + una storica (non due query dello stesso tipo)
@@ -188,8 +192,10 @@ WAYPOINT UTENTE vs. PLANNER:
 - Waypoint "user": già geocodificati. Non modificare le coordinate.
 - Waypoint "planner": aggiungi 2–3 usando i risultati della ricerca web.
   Per ciascuno includi il campo "rationale" con motivazione e fonte:
-    "rationale": "Trecastelli — borgo medievale Valle del Misa, segnalato su
-                  ciclovia-marche.it come tappa storica caratteristica"
+    "rationale": "<nome del luogo> — <caratteristica saliente, es. borgo
+                  medievale/punto panoramico/area naturalistica>, segnalato
+                  su <nome del sito/blog trovato con la ricerca web> come
+                  tappa caratteristica"
   Se non hai trovato una fonte esplicita, descrivi perché lo hai scelto.
   I waypoint "planner" hanno sempre mandatory:false.
 
@@ -208,7 +214,7 @@ SEQUENZA OTTIMALE:
 Ordina i waypoint nella sequenza che minimizza la distanza totale in linea d'aria.
 
 VARIETÀ — REGOLA ANTI-RIPETIZIONE:
-Non scegliere sempre i borghi più celebri e più citati (es. Corinaldo, Ostra).
+Non scegliere sempre i borghi più celebri e più citati della zona richiesta.
 Usa i risultati web per scoprire luoghi meno ovvi: frazioni collinari, abbazie,
 punti panoramici, borghi minori segnalati da blog locali o club ciclistici.
 Se un luogo compare spesso nelle ricerche ma è il solito "top hit" dell'area,
@@ -222,10 +228,12 @@ Il campo "free_text" ha precedenza su tutti gli altri parametri.
 Prima del JSON, genera il campo "route_narrative": una descrizione discorsiva in
 italiano (4–6 frasi) che spiega:
   1. Perché hai scelto questa sequenza di waypoint.
-  2. Le bellezze/caratteristiche principali del percorso
-     (es. "un anello che si snoda tra i vigneti del Verdicchio, toccando il
-     borgo murato di Corinaldo e risalendo la Valle del Misa con vista sulle
-     colline dell'entroterra marchigiano").
+  2. Le bellezze/caratteristiche principali del percorso, usando i luoghi REALI
+     scelti in Fase 2 — non un esempio fisso: la regione cambia a ogni route
+     (es. struttura tipo "un anello che alterna tratti di campagna aperta a un
+     borgo fortificato in quota, costeggia un corso d'acqua e chiude con
+     un'ultima salita panoramica prima del rientro", riempita con i nomi
+     reali di QUESTO percorso).
   3. Come risponde al tema richiesto (scenery_theme / athletic_theme) e al
      testo libero dell'utente se presente.
   4. Una nota onesta che il percorso reale (Fase 2 / BRouter) potrà discostarsi
@@ -386,8 +394,11 @@ def _geocode_user_waypoints(
     Coordinate dirette ("43.71,13.23") vengono parsificate senza API call.
     Nomi vengono risolti via geocode_place() con cache SQLite e fallback regionale:
       1. region specificata (es. "Senigallia, Italia")
-      2. "Marche, Italia"
-      3. "Italia"
+      2. "Italia"
+    (niente più un fallback regionale intermedio fisso, es. "Marche, Italia":
+    era corretto solo quando l'app copriva una sola regione — con route in
+    altre zone d'Italia avrebbe forzato la ricerca su una regione sbagliata
+    prima ancora di provare "Italia".)
 
     Sanity check: se il risultato è < PROXIMITY_WARN_KM dalla partenza, imposta
     proximity_warning=True nel dict restituito (visibile in UI come warning).
@@ -408,7 +419,7 @@ def _geocode_user_waypoints(
 
     user_wps = list(user_wps) + _extract_free_text_coord_waypoints(free_text, user_wps, start_coords)
 
-    fallback_regions = list(dict.fromkeys([region, "Marche, Italia", "Italia"]))
+    fallback_regions = list(dict.fromkeys([region, "Italia"]))
     # Nome della città di partenza (per il contesto della normalizzazione Claude)
     start_name = region.split(",")[0].strip() if "," in region else region
 

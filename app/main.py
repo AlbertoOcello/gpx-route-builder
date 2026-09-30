@@ -33,7 +33,10 @@ from brouter_client import ensure_tile, get_route
 from candidate_generator import _SLOT_LABELS, generate_candidates
 from climb_chart import render_climb_chart_html
 from decision_agent import run_decision
-from geocoding_agent import geocode_candidate, geocode_climbs, geocode_search_raw, reverse_geocode_address
+from geocoding_agent import (
+    geocode_candidate, geocode_climbs, geocode_search_raw,
+    reverse_geocode_address, reverse_geocode_locality,
+)
 from gpx_analyzer import (
     OUT_AND_BACK_WARN_THRESHOLD_PCT,
     analyze_gpx,
@@ -1564,6 +1567,31 @@ def _reverse_geocode_or_coords(lat: float, lon: float) -> str:
     return f"{lat:.5f}, {lon:.5f}"
 
 
+def _reverse_geocode_locality_or_coords(lat: float, lon: float) -> str:
+    """
+    Toponimo corto (città/paese/frazione) via reverse geocoding — usato per
+    popolare start.name/end.name quando una route nasce da un GPX reale
+    (import diretto dal tab File, o "modifica"/"crea da zero" nel tab
+    Manual), invece della coordinata grezza "lat,lon" usata prima. Bug reale,
+    trovato con una route nei Castelli Romani (Frascati): senza un toponimo
+    vero, il Planner (generate_raw_route) non aveva alcun segnale testuale su
+    dove si trovasse il percorso e ripiegava sugli esempi geografici fissi
+    scritti nel suo stesso system prompt ("Marche" — vedi planner_agent.py),
+    risultando in una narrativa/ricerca web ambientata nella regione
+    sbagliata. Stesso pattern di fallback di _reverse_geocode_or_coords (mai
+    bloccare il salvataggio se il servizio non risponde/va in timeout/non
+    trova nulla), ma un formato "lat,lon" senza spazio, compatibile con
+    UserWaypointInput/StartPoint.name altrove nell'app.
+    """
+    try:
+        name = reverse_geocode_locality(lat, lon)
+        if name:
+            return name
+    except Exception:
+        pass
+    return f"{lat:.5f},{lon:.5f}"
+
+
 def _save_actual_ride(route_name: str, raw: bytes, original_filename: str) -> dict:
     """
     Persiste su disco un GPX di un percorso realmente pedalato caricato nel
@@ -1618,9 +1646,19 @@ def _save_actual_ride_only_route(route_name: str, actual_ride_record: dict) -> P
     gpx_path = actual_ride_record["gpx_path"]
     analysis, route_type = _analyze_route_gpx(gpx_path)
     (start_lat, start_lon), (end_lat, end_lon) = _gpx_coords(gpx_path)[0], _gpx_coords(gpx_path)[-1]
+    # Toponimo reale, non la coordinata grezza (bug reale, vedi
+    # _reverse_geocode_locality_or_coords) — per loop/out_and_back end è
+    # comunque lo stesso luogo dello start (entro poche decine di metri),
+    # un secondo reverse geocode sarebbe uno spreco di una chiamata di rete;
+    # solo un vero point_to_point ha un end geograficamente distinto.
+    start_name = _reverse_geocode_locality_or_coords(start_lat, start_lon)
+    end_name = (
+        _reverse_geocode_locality_or_coords(end_lat, end_lon)
+        if route_type == "point_to_point" else start_name
+    )
     request = RouteRequest(
-        start=StartPoint(name=f"{start_lat:.5f},{start_lon:.5f}", lat=start_lat, lon=start_lon),
-        end={"name": f"{end_lat:.5f},{end_lon:.5f}", "lat": end_lat, "lon": end_lon},
+        start=StartPoint(name=start_name, lat=start_lat, lon=start_lon),
+        end={"name": end_name, "lat": end_lat, "lon": end_lon},
         target_km=analysis["distance_km"],
         route_type=route_type,
     )
@@ -3833,13 +3871,21 @@ with tab_manual:
                         _man_gpx_coords = _gpx_coords(_man_result["out_path"])
                         _man_first_lat, _man_first_lon = _man_gpx_coords[0]
                         _man_end_lat, _man_end_lon = _man_gpx_coords[-1]
+                        # Toponimo reale, non la coordinata grezza (stesso bug/fix di
+                        # _save_actual_ride_only_route — senza un nome vero qui, il
+                        # Planner non ha alcun segnale su dove si trovi il percorso).
+                        _man_start_name = _reverse_geocode_locality_or_coords(_man_first_lat, _man_first_lon)
+                        _man_end_name = (
+                            _reverse_geocode_locality_or_coords(_man_end_lat, _man_end_lon)
+                            if _man_route_type == "point_to_point" else _man_start_name
+                        )
                         _man_req_obj = RouteRequest(
                             start=StartPoint(
-                                name=f"{_man_first_lat:.5f},{_man_first_lon:.5f}",
+                                name=_man_start_name,
                                 lat=_man_first_lat, lon=_man_first_lon,
                             ),
                             end={
-                                "name": f"{_man_end_lat:.5f},{_man_end_lon:.5f}",
+                                "name": _man_end_name,
                                 "lat": _man_end_lat, "lon": _man_end_lon,
                             },
                             target_km=_man_analysis["distance_km"],

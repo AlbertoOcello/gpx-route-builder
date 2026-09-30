@@ -524,6 +524,33 @@ def reverse_geocode_address(lat: float, lon: float) -> str | None:
     return loc.address if loc else None
 
 
+_LOCALITY_ADDRESS_FIELDS = ("city", "town", "village", "hamlet", "suburb", "municipality", "county")
+
+
+def reverse_geocode_locality(lat: float, lon: float) -> str | None:
+    """
+    Nome sintetico del luogo (città/paese/frazione) più vicino a (lat, lon) —
+    a differenza di reverse_geocode_address (indirizzo completo, pensato per
+    la UI: "Via X, Frascati, Roma, Lazio, Italia"), qui serve un toponimo
+    corto da usare come start.name/end.name quando si importa un percorso
+    reale come nuova route: un indirizzo completo lì sarebbe rumore, non un
+    nome di zona utilizzabile dal Planner (query di ricerca web, fallback di
+    geocodifica — vedi planner_agent.py). Prova in ordine i campi Nominatim
+    più significativi (city/town/village/hamlet/suburb/municipality/county),
+    poi l'indirizzo completo come ultima risorsa. None se il servizio non
+    risponde o non trova nulla.
+    """
+    time.sleep(1.0)
+    loc = _GEOLOCATOR.reverse((lat, lon), language="it", addressdetails=True)
+    if not loc:
+        return None
+    addr = loc.raw.get("address", {})
+    for field in _LOCALITY_ADDRESS_FIELDS:
+        if addr.get(field):
+            return addr[field]
+    return loc.address
+
+
 _CLIMB_ZONE_UNAVAILABLE = "Zona non disponibile"
 
 
