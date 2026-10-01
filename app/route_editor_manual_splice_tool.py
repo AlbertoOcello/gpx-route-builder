@@ -85,6 +85,9 @@ _SELECTED_KEY = "rem_selected_idx"
 _MOVE_MODE_KEY = "rem_move_mode"
 _MAP_CENTER_KEY = "rem_manual_map_center"
 _STALE_RESULT_KEY = "rem_manual_result_stale"
+_CHANGE_START_MODE_KEY = "rem_change_start_mode"
+_ROTATED_PATH_KEY = "rem_manual_rotated_gpx_path"
+_LOOP_CLOSED_CACHE_KEY = "rem_manual_loop_closed_cache"
 _MAP_HEIGHT = 700
 
 
@@ -312,6 +315,77 @@ def splice_in_segment(
     }
 
 
+def rotate_closed_loop(
+    original_gpx_path: str,
+    click_point: tuple[float, float],
+    out_path: str,
+) -> dict:
+    """
+    "🔄 Cambia punto di partenza": ruota un anello chiuso in modo che il
+    punto più vicino a click_point diventi il nuovo inizio/fine — pura
+    manipolazione dei punti già esistenti, NESSUNA chiamata BRouter. Stessa
+    identica geometria (stessa sequenza di edge, quindi stessa distanza/
+    dislivello): il tracciato viene solo "tagliato" e richiuso in un punto
+    diverso lungo lo stesso anello, non rigenerato.
+
+    Il chiamante deve aver già verificato che original_gpx_path sia un
+    anello chiuso (analyze_gpx(...).loop_closed) — qui non viene
+    riverificato: su un tracciato aperto il risultato sarebbe comunque
+    geometricamente valido ma privo di senso (l'azione semplicemente non
+    deve essere proposta all'utente per un point-to-point).
+
+    Dato un anello con punti p[0..n-1] (p[0] ≈ p[n-1], la chiusura) e un
+    pivot all'indice i — cercato SOLO su p[0..n-2] (esclude l'ultimo punto,
+    duplicato di chiusura, mai un pivot valido a sé) — il nuovo ordine è
+    points[i:] + points[1:i+1]. Usa p[n-1] (non p[0]) come rappresentante
+    della vecchia giunzione nella nuova sequenza: p[0] e p[n-1] sono la
+    stessa posizione fisica (entro la soglia di chiusura), quindi includere
+    entrambi duplicherebbe quel punto — partendo la seconda metà da
+    points[1] (non points[0]) lo si esclude senza perdere né duplicare
+    alcun tratto reale. Lunghezza invariata: (n-i) + i = n.
+    """
+    gpx, points = _load_single_segment_gpx(original_gpx_path)
+    n = len(points)
+    if n < 3:
+        raise ValueError("Tracciato troppo corto per essere ruotato")
+
+    latlon = [(p.latitude, p.longitude) for p in points]
+    pivot_idx, pivot_dist_m = _nearest_index(latlon[:-1], *click_point)
+
+    rotated = points[pivot_idx:] + points[1:pivot_idx + 1]
+    gpx.tracks[0].segments[0].points = rotated
+
+    Path(out_path).parent.mkdir(parents=True, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(gpx.to_xml())
+
+    return {
+        "pivot_idx": pivot_idx,
+        "pivot_dist_m": round(pivot_dist_m, 1),
+        "n_points": len(rotated),
+        "new_start_latlon": (rotated[0].latitude, rotated[0].longitude),
+        "out_path": str(out_path),
+    }
+
+
+def _is_loop_closed_cached(gpx_path: str) -> bool:
+    """
+    loop_closed del tracciato — stesso campo/stessa soglia già calcolati da
+    gpx_analyzer.analyze_gpx (closure_distance_m < 100m), mai una nuova
+    definizione di chiusura reinventata qui. Cachato per percorso (session
+    state, invalidato automaticamente quando il percorso cambia — nuovo
+    upload o una rotazione appena applicata): analyze_gpx fa anche climb
+    detection sull'intero tracciato, non va richiamato a ogni rerun
+    (Streamlit ne fa uno a ogni click/pressione di bottone).
+    """
+    cache = st.session_state.get(_LOOP_CLOSED_CACHE_KEY)
+    if cache and cache.get("path") == gpx_path:
+        return cache["loop_closed"]
+    loop_closed = bool(analyze_gpx(gpx_path, route_type="loop").get("loop_closed"))
+    st.session_state[_LOOP_CLOSED_CACHE_KEY] = {"path": gpx_path, "loop_closed": loop_closed}
+    return loop_closed
+
+
 # ─────────────────────────────────────────────────────────────────────────
 _FORCE_SCRATCH_KEY = "rem_force_scratch"
 
@@ -389,6 +463,27 @@ def render_manual_tab(
         st.session_state[_MAP_CENTER_KEY] = None
         st.session_state["rem_manual_climb_analysis"] = None
         st.session_state[_STALE_RESULT_KEY] = False
+        # Un nuovo upload/candidato precompilato è una base completamente
+        # diversa — qualunque rotazione applicata alla base precedente non
+        # ha più senso, così come la cache di loop_closed (calcolata su un
+        # file diverso).
+        st.session_state[_ROTATED_PATH_KEY] = None
+        st.session_state[_CHANGE_START_MODE_KEY] = False
+        st.session_state[_LOOP_CLOSED_CACHE_KEY] = None
+        st.session_state["rem_last_rotation_result"] = None
+
+    # original_gpx_path: la base EFFETTIVA per la modalità "modifica" — il
+    # file caricato/precompilato (active_gpx_path), oppure il tracciato già
+    # ruotato in questa sessione (_ROTATED_PATH_KEY), se presente. Da qui in
+    # poi tutte le operazioni di modifica (mappa, distacco/raccordo,
+    # splice_in_segment, confronto salite) lavorano su questa base — mai
+    # più su active_gpx_path direttamente — così "Cambia punto di
+    # partenza" diventa la nuova base per qualunque modifica successiva,
+    # come richiesto.
+    original_gpx_path = (
+        (st.session_state.get(_ROTATED_PATH_KEY) or active_gpx_path)
+        if mode == "modifica" else None
+    )
 
     if mode == "modifica":
         if uploaded is not None:
@@ -398,7 +493,52 @@ def render_manual_tab(
                 f"📂 Modalità **modifica** — precompilato con il candidato vincente "
                 f"della route aperta ({precompiled_label})."
             )
-        original_latlon = _load_track_latlon(active_gpx_path)
+        original_latlon = _load_track_latlon(original_gpx_path)
+
+        # ── Cambia punto di partenza (solo anelli chiusi) ───────────────────
+        # Operazione preliminare indipendente dal flusso distacco→via→raccordo
+        # sotto: pura rotazione dei punti già esistenti (rotate_closed_loop),
+        # nessuna chiamata BRouter. Non ha senso su un tracciato aperto
+        # (point-to-point) — loop_closed è lo stesso campo/soglia già
+        # calcolato da gpx_analyzer.analyze_gpx altrove nell'app, non una
+        # nuova definizione di chiusura.
+        if _is_loop_closed_cached(original_gpx_path):
+            _rotation_msg = st.session_state.get("rem_last_rotation_result")
+            if _rotation_msg and "error" not in _rotation_msg:
+                _rs_lat, _rs_lon = _rotation_msg["new_start_latlon"]
+                st.success(
+                    f"✅ Punto di partenza cambiato — nuovo inizio/fine: "
+                    f"{_rs_lat:.6f}, {_rs_lon:.6f} "
+                    f"(agganciato a {_rotation_msg['pivot_dist_m']:.1f} m dal click)."
+                )
+            elif _rotation_msg and "error" in _rotation_msg:
+                st.error(f"Rotazione fallita: {_rotation_msg['error']}")
+
+            if not st.session_state[_CHANGE_START_MODE_KEY]:
+                if st.button("🔄 Cambia punto di partenza", key="rem_btn_change_start"):
+                    st.session_state[_CHANGE_START_MODE_KEY] = True
+                    # Entrare in questa modalità sostituisce qualunque altra
+                    # interazione di click in corso — stesso motivo per cui i
+                    # due rami restano comunque mutuamente esclusivi più sotto.
+                    st.session_state[_MOVE_MODE_KEY] = False
+                    st.session_state[_SELECTED_KEY] = None
+                    st.rerun()
+            else:
+                _wps_warn = (
+                    " La sequenza di punti correntemente costruita qui sotto "
+                    "verrà svuotata, dato che è riferita alla vecchia base."
+                    if st.session_state["rem_manual_waypoints"] else ""
+                )
+                st.warning(
+                    "🔄 Modalità **cambia punto di partenza** attiva — clicca "
+                    "sulla mappa il punto del tracciato originale (linea blu) "
+                    "che vuoi diventi il nuovo inizio/fine. Nessuna chiamata "
+                    f"BRouter: il tracciato viene solo ruotato, stessa identica "
+                    f"geometria.{_wps_warn}"
+                )
+                if st.button("❌ Annulla", key="rem_btn_cancel_change_start"):
+                    st.session_state[_CHANGE_START_MODE_KEY] = False
+                    st.rerun()
     else:
         st.info("🆕 Modalità **genera da zero** — nessun GPX caricato, mappa vuota.")
         original_latlon = None
@@ -413,6 +553,8 @@ def render_manual_tab(
         st.session_state[_MOVE_MODE_KEY] = False
     if _STALE_RESULT_KEY not in st.session_state:
         st.session_state[_STALE_RESULT_KEY] = False
+    if _CHANGE_START_MODE_KEY not in st.session_state:
+        st.session_state[_CHANGE_START_MODE_KEY] = False
 
     wps = st.session_state["rem_manual_waypoints"]
     selected_idx = st.session_state[_SELECTED_KEY]
@@ -518,7 +660,34 @@ def render_manual_tab(
         new_c = (round(float(plain_clicked["lat"]), 6), round(float(plain_clicked["lng"]), 6))
         if st.session_state.get("rem_manual_last_click") != new_c:
             st.session_state["rem_manual_last_click"] = new_c
-            if move_mode and selected_idx is not None and 0 <= selected_idx < len(wps):
+            if mode == "modifica" and st.session_state.get(_CHANGE_START_MODE_KEY):
+                # Consuma il click per la rotazione — priorità massima,
+                # esclude il ramo sposta/inserisci sotto anche se move_mode
+                # fosse rimasto attivo (non dovrebbe: lo si disattiva già
+                # all'attivazione di questa modalità, vedi sopra).
+                try:
+                    rot_out_path = _OUT_DIR / "rotated_input.gpx"
+                    rot_result = rotate_closed_loop(original_gpx_path, new_c, str(rot_out_path))
+                    st.session_state[_ROTATED_PATH_KEY] = rot_result["out_path"]
+                    st.session_state["rem_last_rotation_result"] = rot_result
+                    # La base è cambiata: la cache di loop_closed andava
+                    # calcolata sul nuovo file (si invalida da sola al
+                    # prossimo _is_loop_closed_cached, path diverso), e
+                    # qualunque sequenza di click/risultato precedente era
+                    # riferita alla vecchia orientazione del tracciato —
+                    # stesso reset di un cambio sorgente.
+                    st.session_state["rem_manual_waypoints"] = []
+                    st.session_state["rem_manual_result"] = None
+                    st.session_state["rem_manual_climb_analysis"] = None
+                    st.session_state[_SELECTED_KEY] = None
+                    st.session_state[_MOVE_MODE_KEY] = False
+                    st.session_state[_STALE_RESULT_KEY] = False
+                    st.session_state[_MAP_CENTER_KEY] = rot_result["new_start_latlon"]
+                except Exception as exc:
+                    st.session_state["rem_last_rotation_result"] = {"error": str(exc)}
+                st.session_state[_CHANGE_START_MODE_KEY] = False
+                st.rerun()
+            elif move_mode and selected_idx is not None and 0 <= selected_idx < len(wps):
                 wps[selected_idx] = new_c
                 st.session_state[_MOVE_MODE_KEY] = False
             else:
@@ -609,7 +778,7 @@ def render_manual_tab(
                 else:
                     out_path = _OUT_DIR / "spliced_result.gpx"
                     st.session_state["rem_manual_result"] = splice_in_segment(
-                        active_gpx_path, list(wps), str(out_path), profile=profile,
+                        original_gpx_path, list(wps), str(out_path), profile=profile,
                     )
             except Exception as exc:
                 st.session_state["rem_manual_result"] = {"error": str(exc)}
@@ -696,7 +865,7 @@ def render_manual_tab(
                         geocode_climbs(analysis_new["climbs"], context="Route Editor manuale — risultato")
                         payload = {"new": analysis_new}
                         if mode == "modifica":
-                            analysis_orig = analyze_gpx(active_gpx_path, route_type="loop")
+                            analysis_orig = analyze_gpx(original_gpx_path, route_type="loop")
                             geocode_climbs(analysis_orig["climbs"], context="Route Editor manuale — originale")
                             payload["orig"] = analysis_orig
                         st.session_state["rem_manual_climb_analysis"] = payload
@@ -735,7 +904,11 @@ def render_manual_tab(
     # standalone ignora semplicemente il valore di ritorno.
     return {
         "mode": mode,
-        "active_gpx_path": active_gpx_path,
+        # original_gpx_path (base effettiva, post eventuale rotazione), non
+        # active_gpx_path (il file letteralmente caricato/precompilato) —
+        # nessun chiamante attuale legge questa chiave, ma il suo nome
+        # ("active") descrive meglio il file su cui si sta lavorando ORA.
+        "active_gpx_path": original_gpx_path if mode == "modifica" else active_gpx_path,
         "waypoints": list(wps),
         "profile": profile,
         "result": result,
