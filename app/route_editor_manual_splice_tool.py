@@ -59,6 +59,7 @@ from pathlib import Path
 
 import folium
 import gpxpy
+from folium.plugins import PolyLineTextPath
 import streamlit as st
 import streamlit.components.v1 as st_components
 from streamlit_folium import st_folium
@@ -601,9 +602,18 @@ def render_manual_tab(
     m = folium.Map(location=map_center, zoom_start=zoom_level, scrollWheelZoom=False)
 
     if mode == "modifica":
-        folium.PolyLine(
+        _original_line = folium.PolyLine(
             original_latlon, color="blue", weight=3, opacity=0.75,
             tooltip="Tracciato originale caricato",
+        ).add_to(m)
+        # Frecce di direzione lungo la linea — senza, un anello (soprattutto
+        # dopo "Cambia punto di partenza") non comunica in che verso si
+        # percorre, rendendo impossibile scegliere a colpo d'occhio dove
+        # cliccare per distacco/raccordo/nuovo punto di partenza. Overlay
+        # puramente visivo (nessun punto nuovo nel tracciato).
+        PolyLineTextPath(
+            _original_line, "   ►   ", repeat=True, offset=8,
+            attributes={"fill": "#1a4fa0", "font-weight": "bold", "font-size": "15"},
         ).add_to(m)
         folium.Marker(
             original_latlon[0], tooltip="Partenza tracciato originale",
@@ -909,6 +919,16 @@ def render_manual_tab(
         # nessun chiamante attuale legge questa chiave, ma il suo nome
         # ("active") descrive meglio il file su cui si sta lavorando ORA.
         "active_gpx_path": original_gpx_path if mode == "modifica" else active_gpx_path,
+        # Valorizzato SOLO se in questa sessione è stata applicata una
+        # rotazione ("Cambia punto di partenza") — permette al chiamante
+        # (main.py, tab Manual) di offrire un salvataggio diretto del
+        # tracciato ruotato anche quando l'utente non ha mai premuto
+        # "Genera" (nessun _man_result): la rotazione da sola non passa mai
+        # da BRouter, quindi non ha senso richiedere una chiamata a vuoto
+        # solo per sbloccare il salvataggio.
+        "rotated_gpx_path": (
+            st.session_state.get(_ROTATED_PATH_KEY) if mode == "modifica" else None
+        ),
         "waypoints": list(wps),
         "profile": profile,
         "result": result,

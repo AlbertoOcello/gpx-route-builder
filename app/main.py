@@ -3824,10 +3824,37 @@ with tab_manual:
 
     # ── Salvataggio (Parti A/B) ──────────────────────────────────────────────
     _man_result = (_man_out or {}).get("result")
-    if _man_result and "error" not in _man_result:
+    _man_rotated_path = (_man_out or {}).get("rotated_gpx_path")
+    _man_has_pending_wps = bool((_man_out or {}).get("waypoints"))
+
+    # Sorgente salvabile: un risultato BRouter normale (_man_result), oppure —
+    # se l'utente ha SOLO ruotato il punto di partenza ("Cambia punto di
+    # partenza", nessuna sequenza di click in sospeso, "Genera" mai premuto)
+    # — il tracciato ruotato così com'è. Senza questo secondo caso non
+    # esisteva alcun modo di salvare una rotazione pura: il pannello "Salva"
+    # restava nascosto finché non si generava un risultato, e generarne uno
+    # "a vuoto" (due click vicini a inizio/fine) avrebbe comunque richiamato
+    # BRouter su un tratto quasi degenere, producendo un routing sbagliato
+    # invece di un no-op. Se c'è anche una sequenza di click in sospeso
+    # (_man_has_pending_wps) non si propone questo salvataggio diretto:
+    # andrebbe a ignorare silenziosamente quei click non ancora generati.
+    _man_rotation_only = bool(_man_rotated_path) and not _man_result and not _man_has_pending_wps
+    _man_savable_out_path = (
+        _man_result["out_path"] if (_man_result and "error" not in _man_result)
+        else _man_rotated_path if _man_rotation_only
+        else None
+    )
+
+    if _man_savable_out_path:
         st.divider()
         st.subheader("Salva")
-        _man_analysis, _man_route_type = _analyze_route_gpx(_man_result["out_path"])
+        _man_analysis, _man_route_type = _analyze_route_gpx(_man_savable_out_path)
+        if _man_rotation_only:
+            st.caption(
+                "Nessuna generazione BRouter — stai salvando il tracciato "
+                "ruotato così com'è (stessa geometria, solo il punto di "
+                "partenza/arrivo è cambiato)."
+            )
         st.caption(
             f"{_man_analysis['distance_km']:.1f} km · {_man_analysis['elevation_gain_m']:.0f} m D+ · "
             f"tipo dedotto: {_man_route_type}"
@@ -3868,7 +3895,7 @@ with tab_manual:
                         # indipendentemente dal route_type (bug reale, trovato con un GPX
                         # Pesaro→Senigallia: il Builder mostrava "Partenza" su un punto
                         # intermedio invece che su Pesaro).
-                        _man_gpx_coords = _gpx_coords(_man_result["out_path"])
+                        _man_gpx_coords = _gpx_coords(_man_savable_out_path)
                         _man_first_lat, _man_first_lon = _man_gpx_coords[0]
                         _man_end_lat, _man_end_lon = _man_gpx_coords[-1]
                         # Toponimo reale, non la coordinata grezza (stesso bug/fix di
@@ -3897,10 +3924,14 @@ with tab_manual:
                             search_queries=[], route_narrative="",
                         )
                         _man_gpx_dest = _persist_manual_candidate_gpx(
-                            _man_result["out_path"], _man_slug, "A",
+                            _man_savable_out_path, _man_slug, "A",
+                        )
+                        _man_strategy_label = (
+                            "Punto di partenza cambiato (rotazione, nessuna modifica col routing)"
+                            if _man_rotation_only else f"Percorso manuale A ({_man_out['profile']})"
                         )
                         _man_run = _build_manual_builder_run(
-                            "A", f"Percorso manuale A ({_man_out['profile']})", _man_out["profile"],
+                            "A", _man_strategy_label, _man_out["profile"],
                             str(_man_gpx_dest), _man_analysis, _man_route_type, _man_req_obj.model_dump(),
                         )
                         _man_json_path = _PLANNED_DIR / f"{_man_slug}.json"
@@ -3936,12 +3967,16 @@ with tab_manual:
             if st.button(f"🔀 Aggiorna «{_man_route_name}»", key="rem_btn_save_m"):
                 try:
                     _man_gpx_dest = _persist_manual_candidate_gpx(
-                        _man_result["out_path"], _man_route_name, "M",
+                        _man_savable_out_path, _man_route_name, "M",
                     )
                     _man_route_data_now = _load_saved_routes()[_man_route_name]
                     _man_req_dict_now = _man_route_data_now.get("request", {})
+                    _man_strategy_label = (
+                        "Punto di partenza cambiato (rotazione, nessuna modifica col routing)"
+                        if _man_rotation_only else f"Modifica manuale M ({_man_out['profile']})"
+                    )
                     _man_run = _build_manual_builder_run(
-                        "M", f"Modifica manuale M ({_man_out['profile']})", _man_out["profile"],
+                        "M", _man_strategy_label, _man_out["profile"],
                         str(_man_gpx_dest), _man_analysis, _man_route_type, _man_req_dict_now,
                     )
                     _man_runs_now = _normalize_builder_results(_man_route_data_now)
